@@ -148,6 +148,53 @@
         /* Rule suggestion toast */
         .rule-suggestion { background: #1c2333; border: 1px solid #58a6ff; border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.82rem; }
         .rule-suggestion code { color: #79c0ff; }
+
+        /* Executive summary */
+        .finding-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; border-left: 4px solid #30363d; }
+        .finding-card.danger { border-left-color: #f85149; }
+        .finding-card.warning { border-left-color: #d29922; }
+        .finding-card.info { border-left-color: #58a6ff; }
+        .finding-card .finding-title { font-weight: 700; font-size: 0.85rem; }
+        .finding-card .finding-detail { font-size: 0.78rem; color: #8b949e; margin-top: 2px; }
+        .risk-gauge { width: 100%; height: 12px; background: #21262d; border-radius: 6px; overflow: hidden; }
+        .risk-gauge-fill { height: 100%; border-radius: 6px; transition: width 0.5s ease; }
+
+        /* Timeline bar */
+        .timeline-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.75rem; }
+        .timeline-bar { display: flex; height: 16px; flex-shrink: 0; border-radius: 3px; overflow: hidden; }
+        .timeline-bar .bar-in { background: #3fb950; }
+        .timeline-bar .bar-out { background: #f85149; }
+        .timeline-bar .bar-xfer { background: #d29922; }
+        .timeline-flag { color: #f85149; font-size: 0.6rem; }
+
+        /* Money flow */
+        .flow-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+        .flow-arrow { color: #58a6ff; font-size: 1.2rem; margin: 0 10px; }
+
+        /* Quick date picks */
+        .date-picks { display: flex; gap: 4px; margin-bottom: 10px; }
+        .date-picks .btn { font-size: 0.7rem; padding: 2px 8px; }
+
+        /* Print styles */
+        @media print {
+            .sidebar, .view-toggle-bar, .sidebar-footer, .filter-bar, .btn, button,
+            .upload-zone, #upload-preview, .toast-container, .modal { display: none !important; }
+            .main-content { margin-left: 0 !important; padding: 10px !important; }
+            body { background: #fff !important; color: #000 !important; font-size: 11pt !important; }
+            .card-dark { background: #fff !important; border: 1px solid #ccc !important; }
+            .card-dark .card-header { background: #f0f0f0 !important; color: #000 !important; }
+            .table-dark-custom { color: #000 !important; }
+            .table-dark-custom th { background: #e0e0e0 !important; color: #000 !important; }
+            .table-dark-custom td { border-color: #ccc !important; }
+            .table-dark-custom tr:hover td { background: transparent !important; color: #000 !important; }
+            .stat-card { border: 1px solid #ccc !important; background: #f9f9f9 !important; }
+            .stat-card .stat-value { color: #000 !important; }
+            .amount-negative { color: #c00 !important; }
+            .amount-positive { color: #060 !important; }
+            .finding-card { background: #f9f9f9 !important; }
+            .page-section { page-break-inside: avoid; }
+            h4 { page-break-after: avoid; }
+        }
     </style>
 </head>
 <body>
@@ -164,6 +211,8 @@
             <a class="nav-link" href="#" data-page="recipients"><i class="fas fa-user-secret"></i> Who Gets The Money</a>
             <a class="nav-link" href="#" data-page="deposit-aging"><i class="fas fa-clock"></i> Deposit Aging</a>
             <a class="nav-link" href="#" data-page="cardholders"><i class="fas fa-users"></i> Cardholder Compare</a>
+            <a class="nav-link" href="#" data-page="money-flow"><i class="fas fa-project-diagram"></i> Money Flow</a>
+            <a class="nav-link" href="#" data-page="timeline"><i class="fas fa-chart-line"></i> Timeline</a>
             <a class="nav-link" href="#" data-page="accounts"><i class="fas fa-university"></i> Accounts</a>
             <a class="nav-link" href="#" data-page="upload"><i class="fas fa-cloud-upload-alt"></i> Upload</a>
             <a class="nav-link" href="#" data-page="documents"><i class="fas fa-folder-open"></i> Documents</a>
@@ -172,6 +221,7 @@
         </nav>
         <div class="sidebar-footer">
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i class="fas fa-download"></i> Export CSV</button>
+            <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="printReport()"><i class="fas fa-print"></i> Print Report</button>
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="recategorizeAll()"><i class="fas fa-sync"></i> Re-categorize</button>
             <button class="btn btn-outline-danger btn-sm w-100" onclick="clearAllData()"><i class="fas fa-trash-alt"></i> Clear All Data</button>
         </div>
@@ -191,6 +241,25 @@
         <div class="page-section active" id="page-dashboard">
             <h4 class="mb-1"><i class="fas fa-chart-pie text-info"></i> Dashboard</h4>
             <p class="text-muted small mb-3">Click any card or table row to drill down into the detail</p>
+
+            <!-- Date Range Quick Picks -->
+            <div class="date-picks" id="date-picks">
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('all')">All Time</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('30')">Last 30 Days</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('90')">Last 90 Days</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('ytd')">YTD</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2024')">2024</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2023')">2023</button>
+            </div>
+
+            <!-- Executive Summary -->
+            <div class="card-dark mb-3" id="executive-summary" style="display:none;">
+                <div class="card-header" style="background:rgba(88,166,255,0.08);">
+                    <span><i class="fas fa-clipboard-check me-1"></i> Investigation Summary</span>
+                    <div class="d-flex align-items-center gap-2" id="risk-gauge-wrap"></div>
+                </div>
+                <div class="p-3" id="exec-findings"></div>
+            </div>
 
             <!-- Summary Cards -->
             <div class="row g-3 mb-3" id="stats-cards"></div>
@@ -404,6 +473,50 @@
             </div>
         </div>
 
+        <!-- ========== MONEY FLOW ========== -->
+        <div class="page-section" id="page-money-flow">
+            <h4 class="mb-1"><i class="fas fa-project-diagram text-info"></i> Money Flow</h4>
+            <p class="text-muted small mb-3">Track how money moves between accounts and payment channels</p>
+            <div id="money-flow-summary" class="row g-3 mb-3"></div>
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-university me-1"></i> Account Flows</div>
+                        <div class="scrollable-table" id="flow-accounts"></div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-exchange-alt me-1"></i> Transfer Destinations</div>
+                        <div class="scrollable-table" id="flow-transfers"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-dark">
+                <div class="card-header"><i class="fas fa-credit-card me-1"></i> Payment Method Breakdown</div>
+                <div class="scrollable-table" id="flow-methods"></div>
+            </div>
+        </div>
+
+        <!-- ========== TIMELINE ========== -->
+        <div class="page-section" id="page-timeline">
+            <h4 class="mb-1"><i class="fas fa-chart-line text-info"></i> Transaction Timeline</h4>
+            <p class="text-muted small mb-3">Daily money movement over time - green bars = deposits, red bars = spending, yellow = transfers</p>
+            <div id="timeline-summary" class="row g-3 mb-3"></div>
+            <div class="card-dark">
+                <div class="card-header">
+                    <span><i class="fas fa-calendar-alt me-1"></i> Daily Activity</span>
+                    <div>
+                        <select class="form-select form-select-sm d-inline-block" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="timeline-scale" onchange="renderTimeline()">
+                            <option value="auto">Auto Scale</option>
+                            <option value="fixed">Fixed Scale</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="p-3" id="timeline-chart" style="max-height:70vh;overflow-y:auto;"></div>
+            </div>
+        </div>
+
         <!-- ========== AUDIT TRAIL ========== -->
         <div class="page-section" id="page-audit-trail">
             <h4 class="mb-1"><i class="fas fa-history text-info"></i> Audit Trail</h4>
@@ -530,6 +643,8 @@
         else if (page === 'recipients') loadRecipients();
         else if (page === 'deposit-aging') loadDepositAging();
         else if (page === 'cardholders') loadCardholders();
+        else if (page === 'money-flow') loadMoneyFlow();
+        else if (page === 'timeline') loadTimeline();
         else if (page === 'accounts') loadAccounts();
         else if (page === 'documents') loadDocuments();
         else if (page === 'categories') loadCategoriesPage();
@@ -543,10 +658,46 @@
     }
 
     // ===== DASHBOARD =====
+    // ===== DATE RANGE QUICK PICKS =====
+    let dashDateRange = 'all';
+
+    function setDateRange(range) {
+        dashDateRange = range;
+        document.querySelectorAll('.date-picks .btn').forEach(b => b.classList.remove('btn-info'));
+        event.target.classList.add('btn-info');
+        event.target.classList.remove('btn-outline-light');
+        loadDashboard();
+    }
+
+    function getDateRangeParams() {
+        const now = new Date();
+        const params = {};
+        if (dashDateRange === '30') {
+            const d = new Date(now); d.setDate(d.getDate() - 30);
+            params.date_from = d.toISOString().slice(0,10);
+        } else if (dashDateRange === '90') {
+            const d = new Date(now); d.setDate(d.getDate() - 90);
+            params.date_from = d.toISOString().slice(0,10);
+        } else if (dashDateRange === 'ytd') {
+            params.date_from = now.getFullYear() + '-01-01';
+        } else if (dashDateRange === '2024') {
+            params.date_from = '2024-01-01'; params.date_to = '2024-12-31';
+        } else if (dashDateRange === '2023') {
+            params.date_from = '2023-01-01'; params.date_to = '2023-12-31';
+        }
+        return params;
+    }
+
     async function loadDashboard() {
-        dashStats = await api('/api/stats?' + new URLSearchParams(viewMode !== 'all' ? {view_mode: viewMode} : {}).toString());
+        const dateParams = getDateRangeParams();
+        const statsParams = {...dateParams};
+        if (viewMode !== 'all') statsParams.view_mode = viewMode;
+        dashStats = await api('/api/stats?' + new URLSearchParams(statsParams).toString());
         const s = dashStats;
         const net = s.total_deposits - s.total_withdrawals;
+
+        // Load executive summary
+        loadExecutiveSummary();
 
         document.getElementById('stats-cards').innerHTML = `
             <div class="col"><div class="stat-card success" onclick="drillToTransactions({trans_type:'deposit'})"><div class="stat-value">$${fmt(s.total_deposits)}</div><div class="stat-label"><i class="fas fa-arrow-down"></i> Deposits (${s.deposit_count})</div></div></div>
@@ -1294,6 +1445,178 @@
         if (!trail.length) html += '<tr><td colspan="6" class="text-muted text-center py-4">No audit trail entries yet. Edit or delete transactions to see changes logged here.</td></tr>';
         html += '</tbody></table>';
         document.getElementById('audit-trail-table').innerHTML = html;
+    }
+
+    // ===== EXECUTIVE SUMMARY =====
+    async function loadExecutiveSummary() {
+        const summary = await api('/api/analysis/summary');
+        const el = document.getElementById('executive-summary');
+        if (!summary || summary.total_analyzed === 0) { el.style.display = 'none'; return; }
+        el.style.display = 'block';
+
+        // Risk gauge
+        const riskColor = summary.risk_score >= 60 ? '#f85149' : summary.risk_score >= 30 ? '#d29922' : '#3fb950';
+        const riskLabel = summary.risk_score >= 60 ? 'HIGH RISK' : summary.risk_score >= 30 ? 'MEDIUM RISK' : 'LOW RISK';
+        document.getElementById('risk-gauge-wrap').innerHTML = `
+            <span class="small text-muted">${summary.total_analyzed} transactions | ${summary.date_range}</span>
+            <div style="width:100px;"><div class="risk-gauge"><div class="risk-gauge-fill" style="width:${summary.risk_score}%;background:${riskColor};"></div></div></div>
+            <span class="risk-badge" style="background:${riskColor}20;color:${riskColor};">${riskLabel} ${summary.risk_score}</span>
+        `;
+
+        // Findings
+        let html = '<div class="row g-2">';
+        summary.findings.forEach(f => {
+            html += `<div class="col-md-6"><div class="finding-card ${f.severity}">
+                <div class="finding-title"><i class="fas fa-${f.severity === 'danger' ? 'exclamation-triangle text-danger' : f.severity === 'warning' ? 'exclamation-circle text-warning' : 'info-circle text-info'} me-1"></i>${esc(f.title)}</div>
+                <div class="finding-detail">${esc(f.detail)}</div>
+            </div></div>`;
+        });
+        html += '</div>';
+        document.getElementById('exec-findings').innerHTML = html;
+    }
+
+    // ===== MONEY FLOW =====
+    let moneyFlowData = null;
+
+    async function loadMoneyFlow() {
+        moneyFlowData = await api('/api/analysis/money-flow');
+        const d = moneyFlowData;
+
+        // Summary
+        const totalIn = d.accounts.reduce((s,a) => s + a.inflow, 0);
+        const totalOut = d.accounts.reduce((s,a) => s + a.outflow, 0);
+        const totalXfer = d.flows.reduce((s,f) => s + f.total, 0);
+        document.getElementById('money-flow-summary').innerHTML = `
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(totalIn)}</div><div class="stat-label">Total Inflows</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalOut)}</div><div class="stat-label">Total Outflows</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">$${fmt(totalXfer)}</div><div class="stat-label">Cross-Account Transfers</div></div></div>
+            <div class="col"><div class="stat-card info"><div class="stat-value">${d.accounts.length}</div><div class="stat-label">Accounts</div></div></div>
+            <div class="col"><div class="stat-card purple"><div class="stat-value">${d.methods.length}</div><div class="stat-label">Payment Methods</div></div></div>
+        `;
+
+        // Account flows table
+        let acctHtml = '<table class="table table-dark-custom"><thead><tr><th>Account</th><th>Type</th><th>In</th><th>Out</th><th>Net</th><th>Flow</th></tr></thead><tbody>';
+        const maxFlow = Math.max(...d.accounts.map(a => Math.max(a.inflow, a.outflow)), 1);
+        d.accounts.forEach(a => {
+            const net = a.inflow - a.outflow;
+            const inW = Math.round(a.inflow / maxFlow * 120);
+            const outW = Math.round(a.outflow / maxFlow * 120);
+            acctHtml += `<tr>
+                <td><strong>${esc(a.account_name || 'Unknown')}</strong><br><span class="text-muted" style="font-size:0.7rem;">${esc(a.institution || '')}</span></td>
+                <td><span class="badge badge-${a.account_type === 'bank' ? 'deposit' : a.account_type === 'credit_card' ? 'transfer' : 'venmo'}">${a.account_type || 'unknown'}</span></td>
+                <td class="amount-positive">$${fmt(a.inflow)}</td>
+                <td class="amount-negative">$${fmt(a.outflow)}</td>
+                <td class="${net < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(net))}</td>
+                <td><div style="display:flex;gap:1px;"><div style="background:#3fb950;height:10px;width:${inW}px;border-radius:2px;"></div><div style="background:#f85149;height:10px;width:${outW}px;border-radius:2px;"></div></div></td>
+            </tr>`;
+        });
+        if (!d.accounts.length) acctHtml += '<tr><td colspan="6" class="text-muted text-center py-3">No account data.</td></tr>';
+        acctHtml += '</tbody></table>';
+        document.getElementById('flow-accounts').innerHTML = acctHtml;
+
+        // Transfer destinations
+        let xferHtml = '<table class="table table-dark-custom"><thead><tr><th>Destination</th><th>Total</th><th>Count</th><th>Period</th></tr></thead><tbody>';
+        d.flows.forEach(f => {
+            xferHtml += `<tr>
+                <td><i class="fas fa-arrow-right text-warning me-1"></i>${esc(f.destination)}</td>
+                <td class="amount-negative fw-bold">$${fmt(f.total)}</td>
+                <td>${f.count}</td>
+                <td style="font-size:0.72rem;">${f.first_date || ''} to ${f.last_date || ''}</td>
+            </tr>`;
+        });
+        if (!d.flows.length) xferHtml += '<tr><td colspan="4" class="text-muted text-center py-3">No cross-account transfers detected.</td></tr>';
+        xferHtml += '</tbody></table>';
+        document.getElementById('flow-transfers').innerHTML = xferHtml;
+
+        // Payment methods
+        let methHtml = '<table class="table table-dark-custom"><thead><tr><th>Method</th><th>Total</th><th>Count</th><th>Share</th></tr></thead><tbody>';
+        d.methods.forEach(m => {
+            const pct = totalOut > 0 ? (m.total / totalOut * 100).toFixed(1) : 0;
+            const barW = totalOut > 0 ? Math.round(m.total / totalOut * 200) : 0;
+            methHtml += `<tr>
+                <td><strong>${esc(m.payment_method)}</strong></td>
+                <td class="amount-negative">$${fmt(m.total)}</td>
+                <td>${m.cnt}</td>
+                <td><div style="display:flex;align-items:center;gap:6px;"><div style="background:#58a6ff;height:10px;width:${barW}px;border-radius:2px;"></div><span class="text-muted small">${pct}%</span></div></td>
+            </tr>`;
+        });
+        if (!d.methods.length) methHtml += '<tr><td colspan="4" class="text-muted text-center py-3">No payment method data.</td></tr>';
+        methHtml += '</tbody></table>';
+        document.getElementById('flow-methods').innerHTML = methHtml;
+    }
+
+    // ===== TIMELINE =====
+    let timelineData = [];
+
+    async function loadTimeline() {
+        timelineData = await api('/api/analysis/timeline');
+        renderTimeline();
+    }
+
+    function renderTimeline() {
+        if (!timelineData.length) {
+            document.getElementById('timeline-chart').innerHTML = '<p class="text-muted text-center py-4">No timeline data. Upload statements to see the timeline.</p>';
+            document.getElementById('timeline-summary').innerHTML = '';
+            return;
+        }
+
+        const maxAmt = Math.max(...timelineData.map(d => Math.max(d.day_in, d.day_out)));
+        const maxBar = 300;
+        const totalDays = timelineData.length;
+        const totalIn = timelineData.reduce((s,d) => s + d.day_in, 0);
+        const totalOut = timelineData.reduce((s,d) => s + d.day_out, 0);
+        const peakDay = timelineData.reduce((p,d) => d.day_out > (p.day_out||0) ? d : p, {});
+        const minBal = Math.min(...timelineData.map(d => d.running_balance));
+        const maxBal = Math.max(...timelineData.map(d => d.running_balance));
+
+        document.getElementById('timeline-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${totalDays}</div><div class="stat-label">Days with Activity</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">${peakDay.trans_date || 'N/A'}</div><div class="stat-label">Peak Spending Day ($${fmt(peakDay.day_out||0)})</div></div></div>
+            <div class="col"><div class="stat-card ${minBal < 0 ? 'danger' : 'success'}"><div class="stat-value">$${fmt(Math.abs(minBal))}</div><div class="stat-label">${minBal < 0 ? 'Max Deficit' : 'Min Balance'}</div></div></div>
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(maxBal)}</div><div class="stat-label">Peak Balance</div></div></div>
+        `;
+
+        let html = '';
+        timelineData.forEach(d => {
+            const inW = maxAmt > 0 ? Math.round(d.day_in / maxAmt * maxBar) : 0;
+            const outW = maxAmt > 0 ? Math.round(d.day_out / maxAmt * maxBar) : 0;
+            const xferW = maxAmt > 0 ? Math.round(d.day_transfers / maxAmt * maxBar) : 0;
+            const flagIcon = d.day_flagged > 0 ? `<span class="timeline-flag"><i class="fas fa-flag"></i>${d.day_flagged}</span>` : '';
+            const notable = d.notable ? `<span class="text-muted" style="font-size:0.65rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;" title="${esc(d.notable)}">${esc(d.notable).substring(0,50)}</span>` : '';
+
+            html += `<div class="timeline-row" onclick="drillToTransactions({date_from:'${d.trans_date}',date_to:'${d.trans_date}'})" style="cursor:pointer;">
+                <span style="width:80px;flex-shrink:0;font-weight:600;">${d.trans_date.substring(5)}</span>
+                <span style="width:25px;flex-shrink:0;text-align:center;color:#8b949e;">${d.day_count}</span>
+                <div class="timeline-bar" style="width:${Math.max(inW + outW, 4)}px;">
+                    ${inW > 0 ? `<div class="bar-in" style="width:${inW}px;" title="In: $${fmt(d.day_in)}"></div>` : ''}
+                    ${outW > 0 ? `<div class="bar-out" style="width:${outW - xferW}px;" title="Out: $${fmt(d.day_out)}"></div>` : ''}
+                    ${xferW > 0 ? `<div class="bar-xfer" style="width:${xferW}px;" title="Transfers: $${fmt(d.day_transfers)}"></div>` : ''}
+                </div>
+                <span style="width:80px;flex-shrink:0;text-align:right;" class="${d.running_balance < 0 ? 'amount-negative' : 'text-muted'}" style="font-size:0.7rem;">$${fmt(Math.abs(d.running_balance))}</span>
+                ${flagIcon} ${notable}
+            </div>`;
+        });
+        document.getElementById('timeline-chart').innerHTML = html;
+    }
+
+    // ===== PRINT REPORT =====
+    function printReport() {
+        // Show dashboard and summary, then trigger print
+        navigateTo('dashboard');
+        setTimeout(() => { window.print(); }, 500);
+    }
+
+    // ===== LIVE SEARCH (debounce) =====
+    let searchTimer = null;
+    const searchInput = document.getElementById('filter-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => {
+                const activePage = document.querySelector('.nav-link.active');
+                if (activePage && activePage.dataset.page === 'transactions') loadTransactions();
+            }, 400);
+        });
     }
 
     // ===== UTILITIES =====

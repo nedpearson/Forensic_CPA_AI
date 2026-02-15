@@ -532,6 +532,248 @@ def get_audit_trail(limit=200):
     return rows
 
 
+def get_executive_summary():
+    """Generate an executive summary of key forensic findings."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    summary = {'findings': [], 'risk_score': 0, 'total_analyzed': 0}
+
+    # Total transactions
+    cursor.execute("SELECT COUNT(*) as cnt, MIN(trans_date) as first_date, MAX(trans_date) as last_date FROM transactions")
+    row = dict(cursor.fetchone())
+    summary['total_analyzed'] = row['cnt']
+    summary['date_range'] = f"{row['first_date'] or 'N/A'} to {row['last_date'] or 'N/A'}"
+
+    if row['cnt'] == 0:
+        conn.close()
+        summary['findings'].append({'severity': 'info', 'title': 'No Data', 'detail': 'Upload statements to begin analysis.'})
+        return summary
+
+    # Total money flow
+    cursor.execute("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) as total_in, COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END),0) as total_out FROM transactions")
+    flow = dict(cursor.fetchone())
+    summary['total_in'] = flow['total_in']
+    summary['total_out'] = flow['total_out']
+    summary['net_flow'] = flow['total_in'] - flow['total_out']
+
+    # Finding: Net cash position
+    if summary['net_flow'] < -1000:
+        summary['findings'].append({
+            'severity': 'warning', 'title': 'Net Cash Outflow',
+            'detail': f"${abs(summary['net_flow']):,.2f} more went out than came in."
+        })
+        summary['risk_score'] += 10
+
+    # Finding: Flagged transactions
+    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE is_flagged = 1")
+    flagged = dict(cursor.fetchone())
+    if flagged['cnt'] > 0:
+        summary['findings'].append({
+            'severity': 'danger', 'title': f"{flagged['cnt']} Flagged Transactions",
+            'detail': f"${flagged['total']:,.2f} in flagged activity detected."
+        })
+        summary['risk_score'] += min(30, flagged['cnt'] * 3)
+
+    # Finding: Personal spending on business account
+    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE is_personal = 1")
+    personal = dict(cursor.fetchone())
+    if personal['cnt'] > 0:
+        pct = (personal['total'] / flow['total_out'] * 100) if flow['total_out'] > 0 else 0
+        summary['findings'].append({
+            'severity': 'warning' if pct > 15 else 'info',
+            'title': f"Personal Spending: ${personal['total']:,.2f}",
+            'detail': f"{personal['cnt']} personal transactions ({pct:.1f}% of outflows)."
+        })
+        if pct > 15:
+            summary['risk_score'] += 10
+
+    # Finding: Transfer concentration
+    cursor.execute("SELECT COALESCE(SUM(ABS(amount)),0) as total, COUNT(*) as cnt FROM transactions WHERE is_transfer = 1 AND amount < 0")
+    transfers = dict(cursor.fetchone())
+    if transfers['cnt'] > 0:
+        xfer_pct = (transfers['total'] / flow['total_out'] * 100) if flow['total_out'] > 0 else 0
+        if xfer_pct > 30:
+            summary['findings'].append({
+                'severity': 'danger', 'title': f"High Transfer Activity: {xfer_pct:.0f}%",
+                'detail': f"${transfers['total']:,.2f} moved via transfers ({transfers['cnt']} transactions)."
+            })
+            summary['risk_score'] += 15
+
+    # Finding: Rapid deposit drain
+    cursor.execute("""
+        SELECT COUNT(*) as cnt FROM (
+            SELECT d.id, d.amount as dep_amt,
+                COALESCE(SUM(CASE WHEN w.trans_date BETWEEN d.trans_date AND date(d.trans_date, '+3 days')
+                    THEN ABS(w.amount) ELSE 0 END), 0) as out_3day
+            FROM transactions d
+            LEFT JOIN transactions w ON w.amount < 0 AND w.trans_date >= d.trans_date
+            WHERE d.amount > 0
+            GROUP BY d.id
+            HAVING out_3day > dep_amt * 0.8
+        )
+    """)
+    rapid = cursor.fetchone()['cnt']
+    if rapid > 0:
+        summary['findings'].append({
+            'severity': 'danger', 'title': f"{rapid} Rapid Deposit Drains",
+            'detail': f"Deposits with 80%+ withdrawn within 3 days."
+        })
+        summary['risk_score'] += min(20, rapid * 5)
+
+    # Finding: Round-number transactions
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE amount < 0 AND ABS(amount) >= 500 AND CAST(ABS(amount) AS INTEGER) % 500 = 0")
+    round_nums = cursor.fetchone()['cnt']
+    if round_nums >= 5:
+        summary['findings'].append({
+            'severity': 'warning', 'title': f"{round_nums} Round-Number Payments",
+            'detail': f"Multiple payments in exact $500 increments - potential structuring."
+        })
+        summary['risk_score'] += 10
+
+    # Finding: Uncategorized transactions
+    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'")
+    uncat = dict(cursor.fetchone())
+    if uncat['cnt'] > 10:
+        summary['findings'].append({
+            'severity': 'info', 'title': f"{uncat['cnt']} Uncategorized",
+            'detail': f"${uncat['total']:,.2f} in transactions need categorization."
+        })
+
+    # Finding: Top recipient concentration
+    cursor.execute("""
+        SELECT description, COALESCE(SUM(ABS(amount)),0) as total, COUNT(*) as cnt
+        FROM transactions WHERE amount < 0
+        GROUP BY UPPER(SUBSTR(description, 1, 20))
+        ORDER BY total DESC LIMIT 1
+    """)
+    top_recip = cursor.fetchone()
+    if top_recip and flow['total_out'] > 0:
+        top = dict(top_recip)
+        concentration = top['total'] / flow['total_out'] * 100
+        if concentration > 20:
+            summary['findings'].append({
+                'severity': 'warning', 'title': f"Top Recipient: {concentration:.0f}% Concentration",
+                'detail': f"Single entity received ${top['total']:,.2f} across {top['cnt']} payments."
+            })
+            summary['risk_score'] += 10
+
+    summary['risk_score'] = min(100, summary['risk_score'])
+    conn.close()
+    return summary
+
+
+def get_money_flow():
+    """Track money flow between accounts - where money enters and exits."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Get flow by account
+    cursor.execute("""
+        SELECT a.account_name, a.account_type, a.institution,
+            COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as inflow,
+            COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as outflow,
+            COUNT(*) as trans_count
+        FROM transactions t
+        LEFT JOIN accounts a ON t.account_id = a.id
+        GROUP BY t.account_id
+        ORDER BY outflow DESC
+    """)
+    accounts = [dict(r) for r in cursor.fetchall()]
+
+    # Detect cross-account transfers
+    cursor.execute("""
+        SELECT description, amount, trans_date, cardholder_name, account_id
+        FROM transactions
+        WHERE is_transfer = 1
+        ORDER BY trans_date
+    """)
+    transfers = [dict(r) for r in cursor.fetchall()]
+
+    # Group transfers to detect flows between accounts
+    flows = []
+    desc_upper_map = {}
+    for t in transfers:
+        desc = t['description'].upper()
+        # Look for account references in transfer descriptions
+        acct_ref = None
+        if 'CAPITAL ONE' in desc:
+            acct_ref = 'Capital One'
+        elif 'VENMO' in desc:
+            acct_ref = 'Venmo'
+        elif re.search(r'TO\s+\d{4}', desc):
+            match = re.search(r'TO\s+(\d{4})', desc)
+            acct_ref = f'Account #{match.group(1)}'
+        elif re.search(r'FROM\s+\d{4}', desc):
+            match = re.search(r'FROM\s+(\d{4})', desc)
+            acct_ref = f'Account #{match.group(1)}'
+
+        if acct_ref:
+            key = acct_ref
+            if key not in desc_upper_map:
+                desc_upper_map[key] = {'destination': acct_ref, 'total': 0, 'count': 0, 'dates': []}
+            desc_upper_map[key]['total'] += abs(t['amount'])
+            desc_upper_map[key]['count'] += 1
+            desc_upper_map[key]['dates'].append(t['trans_date'])
+
+    for key, data in desc_upper_map.items():
+        data['first_date'] = min(data['dates']) if data['dates'] else ''
+        data['last_date'] = max(data['dates']) if data['dates'] else ''
+        del data['dates']
+        flows.append(data)
+
+    flows.sort(key=lambda x: x['total'], reverse=True)
+
+    # Payment method breakdown
+    cursor.execute("""
+        SELECT payment_method,
+            COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as total,
+            COUNT(*) as cnt
+        FROM transactions
+        WHERE payment_method IS NOT NULL AND payment_method != ''
+        GROUP BY payment_method
+        ORDER BY total DESC
+    """)
+    methods = [dict(r) for r in cursor.fetchall()]
+
+    conn.close()
+    return {'accounts': accounts, 'flows': flows, 'methods': methods}
+
+
+def get_timeline_data():
+    """Get transaction data organized for timeline visualization."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT trans_date,
+            COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as day_in,
+            COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as day_out,
+            COUNT(*) as day_count,
+            COALESCE(SUM(CASE WHEN is_flagged = 1 THEN 1 ELSE 0 END), 0) as day_flagged,
+            COALESCE(SUM(CASE WHEN is_transfer = 1 AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) as day_transfers,
+            GROUP_CONCAT(
+                CASE WHEN ABS(amount) > 1000 THEN
+                    SUBSTR(description, 1, 30) || ' $' || CAST(ROUND(ABS(amount),2) AS TEXT)
+                ELSE NULL END,
+                ' | '
+            ) as notable
+        FROM transactions
+        GROUP BY trans_date
+        ORDER BY trans_date
+    """)
+    days = [dict(r) for r in cursor.fetchall()]
+
+    # Running balance
+    running = 0
+    for d in days:
+        running += d['day_in'] - d['day_out']
+        d['running_balance'] = round(running, 2)
+
+    conn.close()
+    return days
+
+
 def suggest_rule_from_edit(transaction_id):
     """Suggest a categorization rule based on a manually edited transaction."""
     conn = get_db()

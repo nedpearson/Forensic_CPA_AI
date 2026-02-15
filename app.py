@@ -23,7 +23,8 @@ from categorizer import (
     categorize_transaction, recategorize_all,
     detect_deposit_transfer_patterns, get_cardholder_spending_summary,
     get_recipient_analysis, get_deposit_aging, get_cardholder_comparison,
-    get_audit_trail, suggest_rule_from_edit
+    get_audit_trail, suggest_rule_from_edit,
+    get_executive_summary, get_money_flow, get_timeline_data
 )
 from parsers import compute_transaction_hash
 
@@ -590,6 +591,24 @@ def api_add_manual_transaction():
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+
+@app.route('/api/analysis/summary', methods=['GET'])
+def api_executive_summary():
+    """Executive summary with auto-generated key findings."""
+    return jsonify(get_executive_summary())
+
+
+@app.route('/api/analysis/money-flow', methods=['GET'])
+def api_money_flow():
+    """Cross-account money flow tracking."""
+    return jsonify(get_money_flow())
+
+
+@app.route('/api/analysis/timeline', methods=['GET'])
+def api_timeline():
+    """Daily timeline data for visualization."""
+    return jsonify(get_timeline_data())
 
 
 @app.route('/api/analysis/recipients', methods=['GET'])
