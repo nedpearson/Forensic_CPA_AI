@@ -575,13 +575,30 @@ def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
+@app.route('/health')
+def health():
+    """Health check endpoint for LocalProgramControlCenter."""
+    return jsonify({'status': 'ok', 'service': 'Forensic CPA AI'})
+
+
 if __name__ == '__main__':
+    import sys
+
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     init_db()
+
+    # Support PORT from environment (LocalProgramControlCenter) or command-line arg
+    port = int(os.environ.get('PORT', 5000))
+    for arg in sys.argv[1:]:
+        if arg.startswith('--port='):
+            port = int(arg.split('=')[1])
+        elif arg.isdigit():
+            port = int(arg)
+
     print("\n" + "=" * 60)
     print("  FORENSIC CPA AI - Your Financial Private Investigator")
     print("=" * 60)
-    print(f"  Open in your browser: http://localhost:5000")
+    print(f"  Open in your browser: http://localhost:{port}")
     print(f"  Upload folder: {app.config['UPLOAD_FOLDER']}")
     print("=" * 60 + "\n")
-    app.run(debug=True, port=5000)
+    app.run(debug=False, host='127.0.0.1', port=port)
