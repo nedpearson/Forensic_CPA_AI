@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/*.db
+uploads/*
+!uploads/.gitkeep
+.claude/
+*.zip

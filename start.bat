@@ -1,0 +1,12 @@
+@echo off
+echo ============================================================
+echo   FORENSIC CPA AI - Your Financial Private Investigator
+echo ============================================================
+echo.
+echo Starting server...
+echo Open your browser to: http://localhost:5000
+echo.
+echo Press Ctrl+C to stop the server.
+echo ============================================================
+"C:\Users\nedpe\AppData\Local\Programs\Python\Python312\python.exe" app.py
+pause

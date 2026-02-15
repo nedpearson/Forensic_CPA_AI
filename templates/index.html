@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forensic CPA AI - Your Financial Private Investigator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <style>
+        :root { --sidebar-width: 250px; }
+        * { box-sizing: border-box; }
+        body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { color: #79c0ff; text-decoration: underline; }
+
+        /* Sidebar */
+        .sidebar { position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 100vh; background: #161b22; border-right: 1px solid #30363d; z-index: 100; overflow-y: auto; display: flex; flex-direction: column; }
+        .sidebar .brand { padding: 18px 16px; border-bottom: 1px solid #30363d; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); }
+        .sidebar .brand h5 { color: #58a6ff; margin: 0; font-weight: 700; font-size: 1rem; }
+        .sidebar .brand small { color: #8b949e; font-size: 0.7rem; }
+        .sidebar .nav-link { color: #8b949e; padding: 10px 16px; font-size: 0.85rem; border-left: 3px solid transparent; transition: all 0.15s; display: flex; align-items: center; gap: 10px; }
+        .sidebar .nav-link:hover { color: #c9d1d9; background: #1c2333; }
+        .sidebar .nav-link.active { color: #58a6ff; background: #1c2333; border-left-color: #58a6ff; font-weight: 600; }
+        .sidebar .nav-link i { width: 20px; text-align: center; }
+        .sidebar-footer { margin-top: auto; padding: 12px; border-top: 1px solid #30363d; }
+
+        .main-content { margin-left: var(--sidebar-width); padding: 20px 24px; min-height: 100vh; }
+
+        /* Cards */
+        .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 18px; cursor: pointer; transition: all 0.15s; }
+        .stat-card:hover { border-color: #58a6ff; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .stat-card .stat-value { font-size: 1.4rem; font-weight: 700; }
+        .stat-card .stat-label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+        .stat-card.danger .stat-value { color: #f85149; }
+        .stat-card.success .stat-value { color: #3fb950; }
+        .stat-card.warning .stat-value { color: #d29922; }
+        .stat-card.info .stat-value { color: #58a6ff; }
+        .stat-card.purple .stat-value { color: #bc8cff; }
+
+        .card-dark { background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+        .card-dark .card-header { background: #1c2333; border-bottom: 1px solid #30363d; padding: 10px 16px; font-weight: 600; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
+
+        /* Tables */
+        .table-dark-custom { background: transparent; color: #c9d1d9; font-size: 0.8rem; margin-bottom: 0; }
+        .table-dark-custom th { background: #1c2333; border-color: #30363d; color: #8b949e; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; padding: 8px 10px; }
+        .table-dark-custom td { border-color: #21262d; vertical-align: middle; padding: 6px 10px; }
+        .table-dark-custom tr:hover td { background: #e8d44d !important; color: #000 !important; }
+        .table-dark-custom tr:hover td * { color: #000 !important; }
+        .table-dark-custom tr:hover td .badge { color: #fff !important; }
+        .table-dark-custom tr:hover td select { background: #fff; color: #000; border-color: #999; }
+        .table-dark-custom tr:hover td code { color: #000 !important; }
+        .table-dark-custom tr:hover td .btn { color: #000 !important; border-color: #666 !important; }
+        .table-dark-custom tr.clickable-row { cursor: pointer; }
+        .table-dark-custom tr.clickable-row:hover td { background: #e8d44d !important; color: #000 !important; }
+
+        .amount-negative { color: #f85149; font-weight: 600; }
+        .amount-positive { color: #3fb950; font-weight: 600; }
+        .amount-zero { color: #8b949e; }
+
+        /* Badges */
+        .badge-personal { background: #fd7e14; }
+        .badge-business { background: #1f6feb; }
+        .badge-transfer { background: #da3633; }
+        .badge-deposit { background: #238636; }
+        .badge-fee { background: #d29922; color: #000; }
+        .badge-flagged { background: #f85149; animation: pulse 2s infinite; }
+        .badge-venmo { background: #3d95ce; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+        /* Filters */
+        .filter-bar { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+        .filter-bar .form-control, .filter-bar .form-select { background: #0d1117; border-color: #30363d; color: #c9d1d9; font-size: 0.8rem; padding: 4px 8px; }
+        .filter-bar .form-control:focus, .filter-bar .form-select:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
+
+        /* Upload */
+        .upload-zone { border: 2px dashed #30363d; border-radius: 12px; padding: 40px; text-align: center; transition: all 0.2s; cursor: pointer; }
+        .upload-zone:hover, .upload-zone.dragover { border-color: #58a6ff; background: rgba(88,166,255,0.05); }
+        .upload-zone i.upload-icon { font-size: 2.5rem; color: #30363d; margin-bottom: 12px; }
+        .upload-zone:hover i.upload-icon { color: #58a6ff; }
+
+        /* Forms */
+        .form-control, .form-select { background: #0d1117; border-color: #30363d; color: #c9d1d9; }
+        .form-control:focus, .form-select:focus { background: #0d1117; border-color: #58a6ff; color: #c9d1d9; box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
+        .modal-content { background: #161b22; border-color: #30363d; color: #c9d1d9; }
+        .modal-header { border-color: #30363d; }
+        .modal-footer { border-color: #30363d; }
+        .btn-outline-light { border-color: #30363d; color: #c9d1d9; }
+        .btn-outline-light:hover { background: #30363d; color: #fff; }
+
+        .scrollable-table { max-height: 60vh; overflow-y: auto; }
+        .scrollable-table-sm { max-height: 35vh; overflow-y: auto; }
+        .page-section { display: none; }
+        .page-section.active { display: block; }
+
+        .category-select { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 6px; border-radius: 4px; font-size: 0.76rem; max-width: 160px; }
+        .checkbox-cell { width: 28px; text-align: center; }
+
+        .drill-breadcrumb { font-size: 0.8rem; color: #8b949e; margin-bottom: 12px; }
+        .drill-breadcrumb a { cursor: pointer; }
+        .drill-breadcrumb .sep { margin: 0 6px; }
+
+        .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
+
+        /* Drill-down panel */
+        .drill-panel { background: #1c2333; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; animation: slideDown 0.2s ease; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        .drill-panel .close-drill { cursor: pointer; color: #8b949e; float: right; }
+        .drill-panel .close-drill:hover { color: #f85149; }
+
+        .mini-bar { display: inline-block; height: 10px; border-radius: 2px; margin-right: 2px; vertical-align: middle; }
+
+        /* Account cards */
+        .account-card { border-left: 3px solid #58a6ff; padding-left: 12px; margin-bottom: 12px; }
+        .account-card.bank { border-left-color: #3fb950; }
+        .account-card.credit { border-left-color: #f85149; }
+        .account-card.venmo { border-left-color: #3d95ce; }
+    </style>
+</head>
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="brand">
+            <h5><i class="fas fa-search-dollar"></i> Forensic CPA AI</h5>
+            <small>Your Financial Private Investigator</small>
+        </div>
+        <nav class="nav flex-column mt-2">
+            <a class="nav-link active" href="#" data-page="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</a>
+            <a class="nav-link" href="#" data-page="transactions"><i class="fas fa-list-alt"></i> All Transactions</a>
+            <a class="nav-link" href="#" data-page="analysis"><i class="fas fa-magnifying-glass-chart"></i> Forensic Analysis</a>
+            <a class="nav-link" href="#" data-page="cardholders"><i class="fas fa-users"></i> Cardholders</a>
+            <a class="nav-link" href="#" data-page="accounts"><i class="fas fa-university"></i> Accounts</a>
+            <a class="nav-link" href="#" data-page="upload"><i class="fas fa-cloud-upload-alt"></i> Upload</a>
+            <a class="nav-link" href="#" data-page="documents"><i class="fas fa-folder-open"></i> Documents</a>
+            <a class="nav-link" href="#" data-page="categories"><i class="fas fa-tags"></i> Rules</a>
+        </nav>
+        <div class="sidebar-footer">
+            <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i class="fas fa-download"></i> Export CSV</button>
+            <button class="btn btn-outline-light btn-sm w-100" onclick="recategorizeAll()"><i class="fas fa-sync"></i> Re-categorize</button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+
+        <!-- ========== DASHBOARD ========== -->
+        <div class="page-section active" id="page-dashboard">
+            <h4 class="mb-1"><i class="fas fa-chart-pie text-info"></i> Dashboard</h4>
+            <p class="text-muted small mb-3">Click any card or table row to drill down into the detail</p>
+
+            <!-- Summary Cards -->
+            <div class="row g-3 mb-3" id="stats-cards"></div>
+
+            <!-- Drill-down panel (appears when clicking stats) -->
+            <div id="dashboard-drill" style="display:none;"></div>
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-user me-1"></i> Spending by Cardholder</div>
+                        <div class="scrollable-table-sm" id="dash-cardholder-table"></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-tags me-1"></i> Spending by Category</div>
+                        <div class="scrollable-table-sm" id="dash-category-table"></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-flag text-danger me-1"></i> Recently Flagged</div>
+                        <div class="scrollable-table-sm" id="dash-flagged-table"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-3">
+                <div class="col-12">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-chart-bar me-1"></i> Monthly Cash Flow (click month to drill down)</div>
+                        <div class="scrollable-table-sm" id="dash-monthly"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== TRANSACTIONS ========== -->
+        <div class="page-section" id="page-transactions">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h4 class="mb-0"><i class="fas fa-list-alt text-info"></i> Transactions</h4>
+                <div>
+                    <button class="btn btn-sm btn-outline-light me-1" onclick="showAddTransactionModal()"><i class="fas fa-plus"></i> Add Manual</button>
+                    <button class="btn btn-sm btn-outline-danger me-1" id="bulk-delete-btn" style="display:none" onclick="bulkDelete()"><i class="fas fa-trash"></i> Delete Selected</button>
+                    <button class="btn btn-sm btn-outline-warning" id="bulk-edit-btn" style="display:none" onclick="showBulkEditModal()"><i class="fas fa-edit"></i> Bulk Edit</button>
+                </div>
+            </div>
+            <div class="filter-bar">
+                <div class="row g-2 align-items-end">
+                    <div class="col"><input type="text" class="form-control form-control-sm" id="filter-search" placeholder="Search..."></div>
+                    <div class="col"><select class="form-select form-select-sm" id="filter-category"><option value="">All Categories</option></select></div>
+                    <div class="col"><select class="form-select form-select-sm" id="filter-cardholder"><option value="">All Cardholders</option></select></div>
+                    <div class="col"><select class="form-select form-select-sm" id="filter-type">
+                        <option value="">All Types</option><option value="debit">Debit</option><option value="credit">Credit</option><option value="deposit">Deposit</option><option value="fee">Fee</option><option value="payment">Payment</option>
+                    </select></div>
+                    <div class="col"><input type="date" class="form-control form-control-sm" id="filter-date-from"></div>
+                    <div class="col"><input type="date" class="form-control form-control-sm" id="filter-date-to"></div>
+                    <div class="col"><select class="form-select form-select-sm" id="filter-flags">
+                        <option value="">All</option><option value="flagged">Flagged</option><option value="personal">Personal</option><option value="business">Business</option><option value="transfer">Transfers</option>
+                    </select></div>
+                    <div class="col"><input type="number" class="form-control form-control-sm" id="filter-min-amt" placeholder="Min $"></div>
+                    <div class="col-auto"><button class="btn btn-sm btn-info" onclick="loadTransactions()"><i class="fas fa-filter"></i> Filter</button></div>
+                    <div class="col-auto"><button class="btn btn-sm btn-outline-light" onclick="clearFilters()"><i class="fas fa-times"></i></button></div>
+                </div>
+            </div>
+            <div class="card-dark">
+                <div class="scrollable-table">
+                    <table class="table table-dark-custom">
+                        <thead><tr>
+                            <th class="checkbox-cell"><input type="checkbox" id="select-all"></th>
+                            <th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Cardholder</th><th>Card</th><th>Method</th><th>Tags</th><th>Actions</th>
+                        </tr></thead>
+                        <tbody id="transactions-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center p-2" style="border-top:1px solid #30363d;">
+                    <span id="trans-count" class="text-muted small"></span>
+                    <span id="trans-total" class="text-muted small fw-bold"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== FORENSIC ANALYSIS ========== -->
+        <div class="page-section" id="page-analysis">
+            <h4 class="mb-1"><i class="fas fa-magnifying-glass-chart text-danger"></i> Forensic Analysis</h4>
+            <p class="text-muted small mb-3">Tracking money flow: deposits, transfers, and suspicious patterns</p>
+
+            <div class="card-dark mb-3">
+                <div class="card-header" style="background:rgba(248,81,73,0.1);">
+                    <span><i class="fas fa-exchange-alt text-danger me-1"></i> Deposit-to-Transfer Tracking</span>
+                    <small class="text-muted">Deposits followed by outbound transfers within 7 days</small>
+                </div>
+                <div class="scrollable-table" id="deposit-transfer-analysis"></div>
+            </div>
+
+            <div class="card-dark mb-3">
+                <div class="card-header"><i class="fas fa-flag text-danger me-1"></i> All Flagged Transactions</div>
+                <div class="scrollable-table" id="flagged-transactions"></div>
+            </div>
+
+            <div class="card-dark mb-3">
+                <div class="card-header"><i class="fas fa-hand-holding-usd text-warning me-1"></i> Venmo Payment Analysis</div>
+                <div class="scrollable-table" id="venmo-analysis"></div>
+            </div>
+        </div>
+
+        <!-- ========== CARDHOLDERS ========== -->
+        <div class="page-section" id="page-cardholders">
+            <h4 class="mb-1"><i class="fas fa-users text-info"></i> Cardholder Breakdown</h4>
+            <p class="text-muted small mb-3">Click any cardholder to see their full transaction history</p>
+            <div id="cardholders-content"></div>
+        </div>
+
+        <!-- ========== ACCOUNTS ========== -->
+        <div class="page-section" id="page-accounts">
+            <h4 class="mb-1"><i class="fas fa-university text-info"></i> Accounts Overview</h4>
+            <p class="text-muted small mb-3">All linked accounts and their transaction summaries</p>
+            <div id="accounts-content"></div>
+        </div>
+
+        <!-- ========== UPLOAD ========== -->
+        <div class="page-section" id="page-upload">
+            <h4 class="mb-3"><i class="fas fa-cloud-upload-alt text-info"></i> Upload Documents</h4>
+            <div class="row g-4">
+                <div class="col-md-8">
+                    <div class="upload-zone" id="upload-zone">
+                        <i class="fas fa-file-pdf upload-icon"></i>
+                        <h5>Drop files here or click to browse</h5>
+                        <p class="text-muted small">PDF, Excel (.xlsx), CSV, Word (.docx) - up to 50MB</p>
+                        <input type="file" id="file-input" multiple accept=".pdf,.xlsx,.xls,.csv,.docx" style="display:none">
+                    </div>
+                    <div id="upload-results" class="mt-3"></div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-dark">
+                        <div class="card-header">Upload Settings</div>
+                        <div class="card-body">
+                            <div class="mb-3"><label class="form-label small">Document Type</label>
+                                <select class="form-select form-select-sm" id="upload-doc-type">
+                                    <option value="auto">Auto-Detect</option><option value="bank_statement">Bank Statement</option><option value="credit_card">Credit Card</option><option value="venmo">Venmo</option><option value="excel">Excel</option><option value="proof">Proof Document</option>
+                                </select>
+                            </div>
+                            <div class="mb-3"><label class="form-label small">Category</label>
+                                <select class="form-select form-select-sm" id="upload-doc-category">
+                                    <option value="bank_statement">Bank Statement</option><option value="credit_card">Credit Card</option><option value="venmo">Venmo</option><option value="proof">Proof/Evidence</option><option value="other">Other</option>
+                                </select>
+                            </div>
+                            <div class="alert alert-info small py-2"><i class="fas fa-info-circle"></i> Transactions auto-categorize on upload. Edit/recategorize any time.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== DOCUMENTS ========== -->
+        <div class="page-section" id="page-documents">
+            <h4 class="mb-3"><i class="fas fa-folder-open text-info"></i> Uploaded Documents</h4>
+            <div class="card-dark"><div class="scrollable-table"><table class="table table-dark-custom"><thead><tr><th>Filename</th><th>Type</th><th>Category</th><th>Account</th><th>Period</th><th>Uploaded</th></tr></thead><tbody id="documents-tbody"></tbody></table></div></div>
+        </div>
+
+        <!-- ========== CATEGORIES/RULES ========== -->
+        <div class="page-section" id="page-categories">
+            <h4 class="mb-3"><i class="fas fa-tags text-info"></i> Categories & Rules</h4>
+            <div class="row g-4">
+                <div class="col-md-4"><div class="card-dark"><div class="card-header">Categories</div><div class="scrollable-table" id="categories-list"></div></div></div>
+                <div class="col-md-8"><div class="card-dark"><div class="card-header"><span>Auto-Categorization Rules</span><button class="btn btn-sm btn-info" onclick="showAddRuleModal()"><i class="fas fa-plus"></i> Add</button></div><div class="scrollable-table" id="rules-list"></div></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Transaction Modal -->
+    <div class="modal fade" id="editModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h6 class="modal-title"><i class="fas fa-edit"></i> Edit Transaction</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body" id="edit-form-body"></div>
+        <div class="modal-footer"><button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-sm btn-info" onclick="saveTransaction()">Save</button></div>
+    </div></div></div>
+
+    <!-- Add Transaction Modal -->
+    <div class="modal fade" id="addTransModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h6 class="modal-title"><i class="fas fa-plus"></i> Add Transaction</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <div class="mb-2"><label class="form-label small">Date</label><input type="date" class="form-control form-control-sm" id="add-date"></div>
+            <div class="mb-2"><label class="form-label small">Description</label><input type="text" class="form-control form-control-sm" id="add-desc"></div>
+            <div class="mb-2"><label class="form-label small">Amount (negative=debit)</label><input type="number" step="0.01" class="form-control form-control-sm" id="add-amount"></div>
+            <div class="mb-2"><label class="form-label small">Category</label><select class="form-select form-select-sm" id="add-category"></select></div>
+            <div class="mb-2"><label class="form-label small">Cardholder</label><input type="text" class="form-control form-control-sm" id="add-cardholder"></div>
+            <div class="mb-2"><label class="form-label small">Card Last 4</label><input type="text" class="form-control form-control-sm" id="add-card" maxlength="4"></div>
+            <div class="mb-2"><label class="form-label small">Method</label><select class="form-select form-select-sm" id="add-method"><option value="">--</option><option>debit</option><option>credit</option><option>check</option><option>venmo</option><option>transfer</option><option>wire</option><option>cash</option></select></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="add-personal"><label class="form-check-label small">Personal</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="add-business"><label class="form-check-label small">Business</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="add-transfer"><label class="form-check-label small">Transfer</label></div>
+        </div>
+        <div class="modal-footer"><button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-sm btn-info" onclick="addManualTransaction()">Add</button></div>
+    </div></div></div>
+
+    <!-- Bulk Edit Modal -->
+    <div class="modal fade" id="bulkEditModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h6 class="modal-title"><i class="fas fa-edit"></i> Bulk Edit <span id="bulk-count"></span></h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <div class="mb-2"><label class="form-label small">Category</label><select class="form-select form-select-sm" id="bulk-category"><option value="">-- No Change --</option></select></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="bulk-personal"><label class="form-check-label small">Personal</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="bulk-business"><label class="form-check-label small">Business</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="bulk-transfer"><label class="form-check-label small">Transfer</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="bulk-flagged"><label class="form-check-label small">Flagged</label></div>
+            <div class="mt-2"><label class="form-label small">Notes</label><input type="text" class="form-control form-control-sm" id="bulk-notes"></div>
+        </div>
+        <div class="modal-footer"><button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-sm btn-warning" onclick="saveBulkEdit()">Apply</button></div>
+    </div></div></div>
+
+    <!-- Add Rule Modal -->
+    <div class="modal fade" id="addRuleModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h6 class="modal-title"><i class="fas fa-plus"></i> Add Rule</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <div class="mb-2"><label class="form-label small">Pattern (% = wildcard)</label><input type="text" class="form-control form-control-sm" id="rule-pattern" placeholder="%WALMART%"></div>
+            <div class="mb-2"><label class="form-label small">Category</label><select class="form-select form-select-sm" id="rule-category"></select></div>
+            <div class="mb-2"><label class="form-label small">Priority</label><input type="number" class="form-control form-control-sm" id="rule-priority" value="50"></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="rule-personal"><label class="form-check-label small">Personal</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="rule-business"><label class="form-check-label small">Business</label></div>
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" id="rule-transfer-flag"><label class="form-check-label small">Transfer</label></div>
+        </div>
+        <div class="modal-footer"><button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-sm btn-info" onclick="addRule()">Add</button></div>
+    </div></div></div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // ===== STATE =====
+    let allTransactions = [];
+    let allCategories = [];
+    let selectedIds = new Set();
+    let editingId = null;
+    let dashStats = null;
+
+    // ===== NAVIGATION =====
+    document.querySelectorAll('.nav-link[data-page]').forEach(link => {
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            navigateTo(link.dataset.page);
+        });
+    });
+
+    function navigateTo(page, filters) {
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.nav-link[data-page="${page}"]`);
+        if (link) link.classList.add('active');
+        document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
+        const section = document.getElementById('page-' + page);
+        if (section) section.classList.add('active');
+        loadPageData(page, filters);
+    }
+
+    function loadPageData(page, filters) {
+        if (page === 'dashboard') loadDashboard();
+        else if (page === 'transactions') loadTransactions(filters);
+        else if (page === 'analysis') loadAnalysis();
+        else if (page === 'cardholders') loadCardholders();
+        else if (page === 'accounts') loadAccounts();
+        else if (page === 'documents') loadDocuments();
+        else if (page === 'categories') loadCategoriesPage();
+    }
+
+    // ===== DRILL-DOWN: Navigate to transactions with pre-set filters =====
+    function drillToTransactions(filterObj) {
+        // Set filter UI values then navigate
+        navigateTo('transactions', filterObj);
+    }
+
+    // ===== DASHBOARD =====
+    async function loadDashboard() {
+        dashStats = await api('/api/stats');
+        const s = dashStats;
+        const net = s.total_deposits - s.total_withdrawals;
+
+        document.getElementById('stats-cards').innerHTML = `
+            <div class="col"><div class="stat-card success" onclick="drillToTransactions({trans_type:'deposit'})"><div class="stat-value">$${fmt(s.total_deposits)}</div><div class="stat-label"><i class="fas fa-arrow-down"></i> Deposits (${s.deposit_count})</div></div></div>
+            <div class="col"><div class="stat-card danger" onclick="drillToTransactions({})"><div class="stat-value">$${fmt(s.total_withdrawals)}</div><div class="stat-label"><i class="fas fa-arrow-up"></i> Withdrawals (${s.withdrawal_count})</div></div></div>
+            <div class="col"><div class="stat-card danger" onclick="drillToTransactions({is_transfer:'1'})"><div class="stat-value">$${fmt(s.transfers_out)}</div><div class="stat-label"><i class="fas fa-exchange-alt"></i> Transfers Out (${s.transfer_out_count})</div></div></div>
+            <div class="col"><div class="stat-card warning" onclick="drillToTransactions({is_personal:'1'})"><div class="stat-value">$${fmt(s.personal_total)}</div><div class="stat-label"><i class="fas fa-user"></i> Personal (${s.personal_count})</div></div></div>
+            <div class="col"><div class="stat-card info" onclick="drillToTransactions({is_business:'1'})"><div class="stat-value">$${fmt(s.business_total)}</div><div class="stat-label"><i class="fas fa-briefcase"></i> Business (${s.business_count})</div></div></div>
+            <div class="col"><div class="stat-card ${s.flagged_count > 0 ? 'danger' : ''}" onclick="drillToTransactions({is_flagged:'1'})"><div class="stat-value">${s.flagged_count}</div><div class="stat-label"><i class="fas fa-flag"></i> Flagged</div></div></div>
+            <div class="col"><div class="stat-card ${net < 0 ? 'danger' : 'success'}"><div class="stat-value">$${fmt(Math.abs(net))}</div><div class="stat-label"><i class="fas fa-${net < 0 ? 'arrow-trend-down' : 'arrow-trend-up'}"></i> Net ${net < 0 ? 'Outflow' : 'Inflow'}</div></div></div>
+        `;
+
+        // Cardholder table (clickable)
+        let chHtml = '<table class="table table-dark-custom"><thead><tr><th>Cardholder</th><th>Spent</th><th>Count</th><th>Bar</th></tr></thead><tbody>';
+        const maxSpent = Math.max(...(s.by_cardholder || []).map(c => c.total_spent), 1);
+        (s.by_cardholder || []).forEach(ch => {
+            const pct = (ch.total_spent / maxSpent * 100).toFixed(0);
+            chHtml += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})" title="Click to see all transactions">
+                <td>${esc(ch.cardholder_name || 'Unknown')}</td>
+                <td class="amount-negative">$${fmt(ch.total_spent)}</td>
+                <td>${ch.cnt}</td>
+                <td><div class="mini-bar" style="background:#f85149;width:${pct}%;">&nbsp;</div></td>
+            </tr>`;
+        });
+        chHtml += '</tbody></table>';
+        document.getElementById('dash-cardholder-table').innerHTML = chHtml;
+
+        // Category table (clickable)
+        let catHtml = '<table class="table table-dark-custom"><thead><tr><th>Category</th><th>Spent</th><th>Count</th></tr></thead><tbody>';
+        (s.by_category || []).forEach(c => {
+            catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.category)}'})" title="Click to filter by category">
+                <td>${c.category}</td>
+                <td class="amount-negative">$${fmt(c.spent)}</td>
+                <td>${c.cnt}</td>
+            </tr>`;
+        });
+        catHtml += '</tbody></table>';
+        document.getElementById('dash-category-table').innerHTML = catHtml;
+
+        // Flagged preview
+        const flagged = await api('/api/transactions?is_flagged=1');
+        let flHtml = '<table class="table table-dark-custom"><tbody>';
+        flagged.slice(0, 10).forEach(t => {
+            flHtml += `<tr class="clickable-row" onclick="editTransaction(${t.id})" title="${esc(t.flag_reason||'')}">
+                <td>${t.trans_date||''}</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+            </tr>`;
+        });
+        if (flagged.length === 0) flHtml += '<tr><td class="text-muted text-center py-2">No flagged items</td></tr>';
+        else if (flagged.length > 10) flHtml += `<tr><td colspan="3" class="text-center"><a href="#" onclick="drillToTransactions({is_flagged:'1'});return false;">View all ${flagged.length} flagged...</a></td></tr>`;
+        flHtml += '</tbody></table>';
+        document.getElementById('dash-flagged-table').innerHTML = flHtml;
+
+        // Monthly chart (clickable)
+        const maxM = Math.max(...(s.monthly_trend || []).map(m => Math.max(m.deposits, m.withdrawals)), 1);
+        let mHtml = '<table class="table table-dark-custom"><thead><tr><th>Month</th><th>Deposits</th><th>Withdrawals</th><th>Transfers Out</th><th>Net</th><th style="width:30%">Visual</th></tr></thead><tbody>';
+        (s.monthly_trend || []).forEach(m => {
+            const dW = Math.round((m.deposits / maxM) * 200);
+            const wW = Math.round((m.withdrawals / maxM) * 200);
+            const net = m.deposits - m.withdrawals;
+            mHtml += `<tr class="clickable-row" onclick="drillToMonth('${m.month}')" title="Click to see ${m.month} transactions">
+                <td><strong>${m.month}</strong></td>
+                <td class="amount-positive">$${fmt(m.deposits)}</td>
+                <td class="amount-negative">$${fmt(m.withdrawals)}</td>
+                <td class="amount-negative">$${fmt(m.transfers_out)}</td>
+                <td class="${net<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(net))}</td>
+                <td><div style="display:flex;gap:1px;align-items:center;"><div style="background:#3fb950;height:14px;width:${dW}px;border-radius:2px;"></div><div style="background:#f85149;height:14px;width:${wW}px;border-radius:2px;"></div></div></td>
+            </tr>`;
+        });
+        mHtml += '</tbody></table>';
+        document.getElementById('dash-monthly').innerHTML = mHtml;
+    }
+
+    function drillToMonth(month) {
+        drillToTransactions({ date_from: month + '-01', date_to: month + '-31' });
+    }
+
+    // ===== TRANSACTIONS =====
+    async function loadTransactions(prefillFilters) {
+        await ensureCategories();
+
+        // Apply prefilled filters if provided
+        if (prefillFilters) {
+            if (prefillFilters.category) document.getElementById('filter-category').value = prefillFilters.category;
+            if (prefillFilters.cardholder) document.getElementById('filter-cardholder').value = prefillFilters.cardholder;
+            if (prefillFilters.trans_type) document.getElementById('filter-type').value = prefillFilters.trans_type;
+            if (prefillFilters.date_from) document.getElementById('filter-date-from').value = prefillFilters.date_from;
+            if (prefillFilters.date_to) document.getElementById('filter-date-to').value = prefillFilters.date_to;
+            if (prefillFilters.is_flagged) document.getElementById('filter-flags').value = 'flagged';
+            if (prefillFilters.is_personal) document.getElementById('filter-flags').value = 'personal';
+            if (prefillFilters.is_business) document.getElementById('filter-flags').value = 'business';
+            if (prefillFilters.is_transfer) document.getElementById('filter-flags').value = 'transfer';
+            if (prefillFilters.search) document.getElementById('filter-search').value = prefillFilters.search;
+        }
+
+        const params = new URLSearchParams();
+        const fv = (id) => document.getElementById(id)?.value || '';
+        if (fv('filter-search')) params.set('search', fv('filter-search'));
+        if (fv('filter-category')) params.set('category', fv('filter-category'));
+        if (fv('filter-cardholder')) params.set('cardholder', fv('filter-cardholder'));
+        if (fv('filter-type')) params.set('trans_type', fv('filter-type'));
+        if (fv('filter-date-from')) params.set('date_from', fv('filter-date-from'));
+        if (fv('filter-date-to')) params.set('date_to', fv('filter-date-to'));
+        if (fv('filter-min-amt')) params.set('min_amount', fv('filter-min-amt'));
+        const fl = fv('filter-flags');
+        if (fl === 'flagged') params.set('is_flagged', '1');
+        if (fl === 'personal') params.set('is_personal', '1');
+        if (fl === 'business') params.set('is_business', '1');
+        if (fl === 'transfer') params.set('is_transfer', '1');
+
+        allTransactions = await api('/api/transactions?' + params.toString());
+        selectedIds.clear();
+        populateCardholderFilter();
+        renderTransactions();
+    }
+
+    function clearFilters() {
+        ['filter-search','filter-category','filter-cardholder','filter-type','filter-date-from','filter-date-to','filter-flags','filter-min-amt'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        loadTransactions();
+    }
+
+    function renderTransactions() {
+        const tbody = document.getElementById('transactions-tbody');
+        let html = '', totalDebits = 0, totalCredits = 0;
+
+        allTransactions.forEach(t => {
+            if (t.amount < 0) totalDebits += Math.abs(t.amount); else totalCredits += t.amount;
+            let tags = '';
+            if (t.is_personal) tags += '<span class="badge badge-personal me-1">Personal</span>';
+            if (t.is_business) tags += '<span class="badge badge-business me-1">Business</span>';
+            if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">Transfer</span>';
+            if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason||'')}">FLAG</span>`;
+            if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
+
+            html += `<tr>
+                <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id)?'checked':''}></td>
+                <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date||''}</td>
+                <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: '+esc(t.user_notes) : ''}">${esc(t.description)}</td>
+                <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                <td><select class="category-select" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select></td>
+                <td style="font-size:0.75rem;">${esc(t.cardholder_name||'')}</td>
+                <td style="font-size:0.75rem;">${t.card_last_four ? '#'+t.card_last_four : ''}</td>
+                <td style="font-size:0.75rem;">${t.payment_method||''}</td>
+                <td style="white-space:nowrap;">${tags}</td>
+                <td style="white-space:nowrap;">
+                    <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
+                    <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+                    <button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="toggleFlag(${t.id})" title="Flag"><i class="fas fa-flag fa-xs"></i></button>
+                </td>
+            </tr>`;
+        });
+
+        tbody.innerHTML = html || '<tr><td colspan="10" class="text-center text-muted py-4">No transactions found.</td></tr>';
+        document.getElementById('trans-count').textContent = `${allTransactions.length} transactions`;
+        document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
+
+        document.querySelectorAll('.row-check').forEach(cb => {
+            cb.addEventListener('change', () => {
+                if (cb.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value);
+                updateBulkButtons();
+            });
+        });
+    }
+
+    document.getElementById('select-all').addEventListener('change', function() {
+        document.querySelectorAll('.row-check').forEach(cb => { cb.checked = this.checked; if (this.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value); });
+        updateBulkButtons();
+    });
+    function updateBulkButtons() { const show = selectedIds.size > 0; document.getElementById('bulk-delete-btn').style.display = show?'':'none'; document.getElementById('bulk-edit-btn').style.display = show?'':'none'; }
+
+    async function quickCategory(id, cat) { await api(`/api/transactions/${id}`, 'PUT', { category: cat }); toast('Updated'); }
+    async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged?0:1 }); loadTransactions(); toast(t.is_flagged?'Unflagged':'Flagged'); }
+
+    function editTransaction(id) {
+        // Find in current list or fetch
+        let t = allTransactions.find(x => x.id === id);
+        if (!t) { toast('Transaction not found in current view'); return; }
+        editingId = id;
+        document.getElementById('edit-form-body').innerHTML = `
+            <div class="row g-2">
+                <div class="col-6 mb-2"><label class="form-label small">Date</label><input type="text" class="form-control form-control-sm" id="edit-date" value="${t.trans_date||''}"></div>
+                <div class="col-6 mb-2"><label class="form-label small">Amount</label><input type="number" step="0.01" class="form-control form-control-sm" id="edit-amount" value="${t.amount}"></div>
+            </div>
+            <div class="mb-2"><label class="form-label small">Description</label><input type="text" class="form-control form-control-sm" id="edit-desc" value="${esc(t.description)}"></div>
+            <div class="mb-2"><label class="form-label small">Category</label><select class="form-select form-select-sm" id="edit-category">${categoryOptions(t.category)}</select></div>
+            <div class="row g-2">
+                <div class="col-6 mb-2"><label class="form-label small">Cardholder</label><input type="text" class="form-control form-control-sm" id="edit-cardholder" value="${esc(t.cardholder_name||'')}"></div>
+                <div class="col-3 mb-2"><label class="form-label small">Card #</label><input type="text" class="form-control form-control-sm" id="edit-card4" value="${t.card_last_four||''}" maxlength="4"></div>
+                <div class="col-3 mb-2"><label class="form-label small">Method</label><select class="form-select form-select-sm" id="edit-method"><option value="">--</option>${['debit','credit','check','venmo','transfer','wire','cash'].map(m=>`<option ${t.payment_method===m?'selected':''}>${m}</option>`).join('')}</select></div>
+            </div>
+            <div class="mb-2"><label class="form-label small">Notes</label><input type="text" class="form-control form-control-sm" id="edit-notes" value="${esc(t.user_notes||'')}"></div>
+            <div class="d-flex gap-3 mb-2">
+                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-personal" ${t.is_personal?'checked':''}><label class="form-check-label small">Personal</label></div>
+                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-business" ${t.is_business?'checked':''}><label class="form-check-label small">Business</label></div>
+                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-transfer" ${t.is_transfer?'checked':''}><label class="form-check-label small">Transfer</label></div>
+                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-flagged" ${t.is_flagged?'checked':''}><label class="form-check-label small">Flagged</label></div>
+            </div>
+            <div class="mb-0"><label class="form-label small">Flag Reason</label><input type="text" class="form-control form-control-sm" id="edit-flag-reason" value="${esc(t.flag_reason||'')}"></div>
+        `;
+        new bootstrap.Modal(document.getElementById('editModal')).show();
+    }
+
+    async function saveTransaction() {
+        await api(`/api/transactions/${editingId}`, 'PUT', {
+            trans_date: document.getElementById('edit-date').value,
+            description: document.getElementById('edit-desc').value,
+            amount: parseFloat(document.getElementById('edit-amount').value),
+            category: document.getElementById('edit-category').value,
+            cardholder_name: document.getElementById('edit-cardholder').value,
+            card_last_four: document.getElementById('edit-card4').value,
+            payment_method: document.getElementById('edit-method').value,
+            user_notes: document.getElementById('edit-notes').value,
+            is_personal: document.getElementById('edit-personal').checked?1:0,
+            is_business: document.getElementById('edit-business').checked?1:0,
+            is_transfer: document.getElementById('edit-transfer').checked?1:0,
+            is_flagged: document.getElementById('edit-flagged').checked?1:0,
+            flag_reason: document.getElementById('edit-flag-reason').value,
+        });
+        bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+        loadTransactions(); toast('Saved');
+    }
+
+    async function deleteTransaction(id) { if (!confirm('Delete this transaction?')) return; await api(`/api/transactions/${id}`, 'DELETE'); loadTransactions(); toast('Deleted'); }
+    async function bulkDelete() { if (!confirm(`Delete ${selectedIds.size} transactions?`)) return; for (const id of selectedIds) await api(`/api/transactions/${id}`, 'DELETE'); selectedIds.clear(); loadTransactions(); toast('Deleted'); }
+    function showBulkEditModal() { document.getElementById('bulk-count').textContent = `(${selectedIds.size})`; loadCategoryOptions('bulk-category', true); new bootstrap.Modal(document.getElementById('bulkEditModal')).show(); }
+    async function saveBulkEdit() {
+        const fields = {};
+        const cat = document.getElementById('bulk-category').value; if (cat) fields.category = cat;
+        if (document.getElementById('bulk-personal').checked) fields.is_personal = 1;
+        if (document.getElementById('bulk-business').checked) fields.is_business = 1;
+        if (document.getElementById('bulk-transfer').checked) fields.is_transfer = 1;
+        if (document.getElementById('bulk-flagged').checked) fields.is_flagged = 1;
+        const n = document.getElementById('bulk-notes').value; if (n) fields.user_notes = n;
+        await api('/api/transactions/bulk', 'POST', { ids: [...selectedIds], fields });
+        bootstrap.Modal.getInstance(document.getElementById('bulkEditModal')).hide();
+        selectedIds.clear(); loadTransactions(); toast('Updated');
+    }
+    function showAddTransactionModal() { loadCategoryOptions('add-category'); new bootstrap.Modal(document.getElementById('addTransModal')).show(); }
+    async function addManualTransaction() {
+        await api('/api/add-transaction', 'POST', {
+            trans_date: document.getElementById('add-date').value, description: document.getElementById('add-desc').value,
+            amount: parseFloat(document.getElementById('add-amount').value), category: document.getElementById('add-category').value,
+            cardholder_name: document.getElementById('add-cardholder').value, card_last_four: document.getElementById('add-card').value,
+            payment_method: document.getElementById('add-method').value,
+            is_personal: document.getElementById('add-personal').checked?1:0, is_business: document.getElementById('add-business').checked?1:0, is_transfer: document.getElementById('add-transfer').checked?1:0,
+        });
+        bootstrap.Modal.getInstance(document.getElementById('addTransModal')).hide(); loadTransactions(); toast('Added');
+    }
+
+    // ===== FORENSIC ANALYSIS =====
+    async function loadAnalysis() {
+        // Deposit-transfer patterns
+        const patterns = await api('/api/analysis/deposit-transfers');
+        let dtHtml = '<table class="table table-dark-custom"><thead><tr><th>Deposit Date</th><th>Deposit Amt</th><th>Transfers Within 7 Days</th><th>Total Moved</th><th>% Moved</th></tr></thead><tbody>';
+        if (!patterns.length) dtHtml += '<tr><td colspan="5" class="text-center text-muted py-3">No patterns detected. Upload bank statements to analyze.</td></tr>';
+        patterns.forEach(p => {
+            const cls = p.pct_transferred > 50 ? 'text-danger fw-bold' : p.pct_transferred > 25 ? 'text-warning' : '';
+            dtHtml += `<tr><td>${p.deposit.trans_date}</td><td class="amount-positive">$${fmt(p.deposit_amount)}</td>
+                <td>${p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0,50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('')}</td>
+                <td class="amount-negative">$${fmt(p.transfer_total)}</td><td class="${cls}">${p.pct_transferred}%</td></tr>`;
+        });
+        dtHtml += '</tbody></table>';
+        document.getElementById('deposit-transfer-analysis').innerHTML = dtHtml;
+
+        // Flagged
+        const flagged = await api('/api/transactions?is_flagged=1');
+        let flHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Cardholder</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
+        flagged.forEach(t => {
+            flHtml += `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                <td>${esc(t.cardholder_name||'')}</td><td class="text-warning small">${esc(t.flag_reason||'')}</td>
+                <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=flagged;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`;
+        });
+        if (!flagged.length) flHtml += '<tr><td colspan="6" class="text-muted text-center py-3">No flagged transactions</td></tr>';
+        flHtml += '</tbody></table>';
+        document.getElementById('flagged-transactions').innerHTML = flHtml;
+        // Make flagged available for editing
+        window._flaggedTrans = flagged;
+
+        // Venmo analysis
+        const venmo = await api('/api/transactions?search=VENMO');
+        let vHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Recipient</th><th>Amount</th><th>Note/Description</th><th>Flagged</th></tr></thead><tbody>';
+        let venmoTotal = 0;
+        const venmoByPerson = {};
+        venmo.forEach(t => {
+            venmoTotal += Math.abs(t.amount);
+            const name = t.cardholder_name || 'Unknown';
+            venmoByPerson[name] = (venmoByPerson[name] || 0) + Math.abs(t.amount);
+            vHtml += `<tr><td>${t.trans_date}</td><td>${esc(t.cardholder_name||'')}</td>
+                <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+                <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td>${t.is_flagged?'<span class="badge badge-flagged">FLAG</span>':''}</td></tr>`;
+        });
+        vHtml += `</tbody></table>`;
+
+        // Venmo summary by person
+        let vSummary = `<div class="p-3 mb-2"><strong>Total Venmo: <span class="amount-negative">$${fmt(venmoTotal)}</span></strong> across ${venmo.length} payments</div>`;
+        vSummary += '<div class="px-3 pb-2"><strong>By Recipient:</strong></div><div class="px-3 pb-2">';
+        Object.entries(venmoByPerson).sort((a,b) => b[1]-a[1]).forEach(([name, total]) => {
+            vSummary += `<span class="badge bg-secondary me-1 mb-1" style="cursor:pointer;" onclick="drillToTransactions({search:'VENMO',cardholder:'${esc(name)}'})">${name}: $${fmt(total)}</span>`;
+        });
+        vSummary += '</div>';
+
+        document.getElementById('venmo-analysis').innerHTML = vSummary + vHtml;
+    }
+
+    // ===== CARDHOLDERS =====
+    async function loadCardholders() {
+        const spending = await api('/api/analysis/cardholder-spending');
+        let html = '';
+        for (const [name, data] of Object.entries(spending)) {
+            html += `<div class="card-dark mb-3">
+                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({cardholder:'${esc(name)}'})">
+                    <span><i class="fas fa-user me-1"></i> ${esc(name)}</span>
+                    <span class="small">Spent: <span class="amount-negative">$${fmt(data.total_spent)}</span> | ${data.total_transactions} transactions
+                        <button class="btn btn-sm btn-outline-light ms-2 py-0" onclick="event.stopPropagation();drillToTransactions({cardholder:'${esc(name)}'})"><i class="fas fa-external-link-alt fa-xs"></i> View All</button>
+                    </span>
+                </div>
+                <div class="scrollable-table-sm"><table class="table table-dark-custom"><thead><tr><th>Category</th><th>Spent</th><th>Received</th><th>Count</th></tr></thead><tbody>`;
+            data.categories.forEach(c => {
+                html += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(name)}',category:'${esc(c.category)}'})">
+                    <td>${c.category}</td><td class="amount-negative">$${fmt(c.spent)}</td><td class="amount-positive">$${fmt(c.received)}</td><td>${c.transaction_count}</td></tr>`;
+            });
+            html += '</tbody></table></div></div>';
+        }
+        document.getElementById('cardholders-content').innerHTML = html || '<p class="text-muted">No cardholder data.</p>';
+    }
+
+    // ===== ACCOUNTS =====
+    async function loadAccounts() {
+        const accounts = await api('/api/accounts');
+        let html = '<div class="row g-3">';
+        for (const acct of accounts) {
+            const typeClass = acct.account_type === 'bank' ? 'bank' : acct.account_type === 'venmo' ? 'venmo' : 'credit';
+            const icon = acct.account_type === 'bank' ? 'university' : acct.account_type === 'venmo' ? 'mobile-alt' : 'credit-card';
+            html += `<div class="col-md-4"><div class="card-dark p-3">
+                <div class="account-card ${typeClass}">
+                    <h6><i class="fas fa-${icon} me-1"></i> ${esc(acct.account_name)}</h6>
+                    <div class="small text-muted">${esc(acct.institution||'')} | #${esc(acct.account_number||'')}</div>
+                    <div class="small text-muted">Type: ${acct.account_type} ${acct.cardholder_name ? '| '+esc(acct.cardholder_name) : ''}</div>
+                    <button class="btn btn-sm btn-outline-light mt-2" onclick="drillToTransactions({account_id:'${acct.id}'})"><i class="fas fa-list"></i> View Transactions</button>
+                </div>
+            </div></div>`;
+        }
+        html += '</div>';
+        document.getElementById('accounts-content').innerHTML = html || '<p class="text-muted">No accounts.</p>';
+    }
+
+    // ===== UPLOAD =====
+    const uploadZone = document.getElementById('upload-zone');
+    const fileInput = document.getElementById('file-input');
+    uploadZone.addEventListener('click', () => fileInput.click());
+    uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+    uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+    fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+    async function handleFiles(files) {
+        const results = document.getElementById('upload-results');
+        for (const file of files) {
+            const elId = 'u' + Math.random().toString(36).substr(2, 6);
+            results.innerHTML += `<div class="alert alert-info small py-2" id="${elId}"><i class="fas fa-spinner fa-spin"></i> Uploading ${file.name}...</div>`;
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('doc_type', document.getElementById('upload-doc-type').value);
+            fd.append('doc_category', document.getElementById('upload-doc-category').value);
+            try {
+                const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                const data = await resp.json();
+                const el = document.getElementById(elId);
+                if (data.error) { el.className = 'alert alert-danger small py-2'; el.innerHTML = `<i class="fas fa-times-circle"></i> ${file.name}: ${data.error}`; }
+                else { el.className = 'alert alert-success small py-2'; el.innerHTML = `<i class="fas fa-check-circle"></i> ${file.name}: ${data.transactions_added} transactions imported`; }
+            } catch (err) { const el = document.getElementById(elId); if (el) { el.className = 'alert alert-danger small py-2'; el.innerHTML = `<i class="fas fa-times-circle"></i> ${file.name}: ${err.message}`; } }
+        }
+        fileInput.value = '';
+    }
+
+    // ===== DOCUMENTS =====
+    async function loadDocuments() {
+        const docs = await api('/api/documents');
+        let html = '';
+        docs.forEach(d => {
+            const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : 'fa-file text-info';
+            html += `<tr><td><i class="fas ${icon} me-1"></i>${esc(d.filename)}</td><td>${d.file_type}</td><td>${d.doc_category||''}</td><td>${d.account_name||''}</td><td>${d.statement_start_date||''} - ${d.statement_end_date||''}</td><td>${(d.upload_date||'').substring(0,16)}</td></tr>`;
+        });
+        document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="6" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
+    }
+
+    // ===== CATEGORIES =====
+    async function loadCategoriesPage() {
+        await ensureCategories();
+        let catHtml = '<table class="table table-dark-custom"><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>';
+        allCategories.forEach(c => { catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})"><td><span style="color:${c.color}"><i class="fas fa-${c.icon||'tag'}"></i></span> ${c.name}</td><td>${c.category_type||''}</td></tr>`; });
+        catHtml += '</tbody></table>';
+        document.getElementById('categories-list').innerHTML = catHtml;
+
+        const rules = await api('/api/categories/rules');
+        let rHtml = '<table class="table table-dark-custom"><thead><tr><th>Pattern</th><th>Category</th><th>P</th><th>B</th><th>T</th><th>Priority</th></tr></thead><tbody>';
+        rules.forEach(r => { rHtml += `<tr><td><code style="color:#79c0ff;">${esc(r.pattern)}</code></td><td>${r.category}</td><td>${r.is_personal?'<i class="fas fa-check text-warning"></i>':''}</td><td>${r.is_business?'<i class="fas fa-check text-info"></i>':''}</td><td>${r.is_transfer?'<i class="fas fa-check text-danger"></i>':''}</td><td>${r.priority}</td></tr>`; });
+        rHtml += '</tbody></table>';
+        document.getElementById('rules-list').innerHTML = rHtml;
+    }
+
+    function showAddRuleModal() { loadCategoryOptions('rule-category'); new bootstrap.Modal(document.getElementById('addRuleModal')).show(); }
+    async function addRule() {
+        await api('/api/categories/rules', 'POST', { pattern: document.getElementById('rule-pattern').value, category: document.getElementById('rule-category').value, priority: parseInt(document.getElementById('rule-priority').value)||50, is_personal: document.getElementById('rule-personal').checked?1:0, is_business: document.getElementById('rule-business').checked?1:0, is_transfer: document.getElementById('rule-transfer-flag').checked?1:0 });
+        bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide(); loadCategoriesPage(); toast('Rule added');
+    }
+
+    // ===== UTILITIES =====
+    async function ensureCategories() {
+        if (!allCategories.length) allCategories = await api('/api/categories');
+        // Populate filter dropdowns
+        const fc = document.getElementById('filter-category');
+        if (fc && fc.options.length <= 1) { allCategories.forEach(c => fc.add(new Option(c.name, c.name))); }
+    }
+
+    function populateCardholderFilter() {
+        const fc = document.getElementById('filter-cardholder');
+        if (!fc) return;
+        const current = fc.value;
+        const holders = [...new Set(allTransactions.map(t => t.cardholder_name).filter(Boolean))].sort();
+        fc.innerHTML = '<option value="">All Cardholders</option>';
+        holders.forEach(h => fc.add(new Option(h, h)));
+        fc.value = current;
+    }
+
+    async function loadCategoryOptions(selectId, includeEmpty) {
+        await ensureCategories();
+        if (selectId) {
+            const sel = document.getElementById(selectId);
+            if (sel) { sel.innerHTML = (includeEmpty ? '<option value="">-- No Change --</option>' : '') + allCategories.map(c => `<option value="${c.name}">${c.name}</option>`).join(''); }
+        }
+    }
+
+    function categoryOptions(selected) { return allCategories.map(c => `<option value="${c.name}" ${c.name===selected?'selected':''}>${c.name}</option>`).join(''); }
+    async function recategorizeAll() { if (!confirm('Re-run auto-categorization?')) return; const r = await api('/api/recategorize', 'POST'); toast(`Updated ${r.updated} transactions`); loadDashboard(); }
+    function exportCSV() { window.open('/api/export/csv', '_blank'); }
+
+    async function api(url, method='GET', body=null) {
+        const opts = { method, headers: {} };
+        if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+        try { const r = await fetch(url, opts); return await r.json(); } catch(e) { toast('Error: ' + e.message); return []; }
+    }
+
+    function fmt(n) { return (n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+    function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function toast(msg) { const c = document.getElementById('toast-container'); const el = document.createElement('div'); el.className = 'alert alert-info small py-2 px-3 mb-2'; el.style.cssText = 'min-width:200px;'; el.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${msg}`; c.appendChild(el); setTimeout(() => el.remove(), 3000); }
+
+    // ===== INIT =====
+    (async () => { allCategories = await api('/api/categories'); loadDashboard(); })();
+    </script>
+</body>
+</html>
