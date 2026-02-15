@@ -5,13 +5,17 @@ Web-based forensic auditing tool for bank/credit card/Venmo statements.
 import os
 import json
 import shutil
+import uuid
+import glob as glob_mod
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
 from werkzeug.utils import secure_filename
 from database import (
     init_db, get_db, add_account, get_or_create_account, add_document,
     add_transaction, update_transaction, delete_transaction,
     get_transactions, get_categories, get_accounts, get_documents,
-    get_summary_stats, add_category_rule, get_category_rules
+    get_summary_stats, add_category_rule, get_category_rules,
+    clear_all_data, link_proof, unlink_proof,
+    get_proofs_for_transaction, get_transactions_for_proof
 )
 from parsers import parse_document, parse_pdf_text
 from categorizer import (
@@ -25,6 +29,9 @@ app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc'}
+
+# In-memory storage for upload previews (preview_id -> parsed data)
+upload_previews = {}
 
 
 def allowed_file(filename):
@@ -71,6 +78,7 @@ def api_stats():
         'date_from': request.args.get('date_from'),
         'date_to': request.args.get('date_to'),
         'cardholder': request.args.get('cardholder'),
+        'view_mode': request.args.get('view_mode'),
     }
     filters = {k: v for k, v in filters.items() if v}
     stats = get_summary_stats(filters if filters else None)
@@ -93,6 +101,7 @@ def api_transactions():
         'account_id': request.args.get('account_id'),
         'min_amount': request.args.get('min_amount'),
         'max_amount': request.args.get('max_amount'),
+        'view_mode': request.args.get('view_mode'),
     }
     filters = {k: v for k, v in filters.items() if v}
     transactions = get_transactions(filters if filters else None)
@@ -321,6 +330,219 @@ def api_export_csv():
         mimetype='text/csv',
         headers={'Content-Disposition': 'attachment; filename=forensic_audit_export.csv'}
     )
+
+
+@app.route('/api/clear-data', methods=['POST'])
+def api_clear_data():
+    """Clear all financial data for a fresh start."""
+    clear_all_data()
+    # Clear uploaded files (keep .gitkeep)
+    upload_dir = app.config['UPLOAD_FOLDER']
+    for f in os.listdir(upload_dir):
+        if f != '.gitkeep':
+            fpath = os.path.join(upload_dir, f)
+            if os.path.isfile(fpath):
+                os.remove(fpath)
+    return jsonify({'status': 'ok', 'message': 'All data cleared'})
+
+
+@app.route('/api/upload/preview', methods=['POST'])
+def api_upload_preview():
+    """Parse uploaded file and return preview without saving to DB."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({'error': f'File type not allowed. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
+
+    doc_type = request.form.get('doc_type', 'auto')
+    doc_category = request.form.get('doc_category', 'bank_statement')
+
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+    # Avoid overwriting
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    while os.path.exists(filepath):
+        filename = f"{base}_{counter}{ext}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        counter += 1
+
+    file.save(filepath)
+
+    # Parse the document
+    try:
+        transactions, account_info = parse_document(filepath, doc_type)
+    except Exception as e:
+        os.remove(filepath)
+        return jsonify({'error': f'Failed to parse document: {str(e)}'}), 500
+
+    # For proof/word docs, skip preview and commit directly
+    if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
+        doc_id = add_document(filename, filepath, ext.replace('.', ''), 'proof')
+        return jsonify({
+            'status': 'ok',
+            'mode': 'proof',
+            'document_id': doc_id,
+            'message': f'Proof document uploaded: {filename}',
+            'transactions_added': 0,
+        })
+
+    # Auto-categorize for preview
+    for trans in transactions:
+        cat_result = categorize_transaction(
+            trans['description'], trans['amount'],
+            trans.get('trans_type', ''), trans.get('payment_method', '')
+        )
+        trans['category'] = cat_result['category']
+        trans['subcategory'] = cat_result['subcategory']
+        trans['is_personal'] = cat_result['is_personal']
+        trans['is_business'] = cat_result['is_business']
+        trans['is_transfer'] = cat_result['is_transfer']
+        trans['is_flagged'] = cat_result['is_flagged']
+        trans['flag_reason'] = cat_result['flag_reason']
+        trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
+
+    # Store preview data
+    preview_id = str(uuid.uuid4())[:8]
+    upload_previews[preview_id] = {
+        'transactions': transactions,
+        'account_info': account_info,
+        'filename': filename,
+        'filepath': filepath,
+        'ext': ext,
+        'doc_category': doc_category,
+    }
+
+    return jsonify({
+        'status': 'ok',
+        'mode': 'preview',
+        'preview_id': preview_id,
+        'filename': filename,
+        'transactions': transactions,
+        'account_info': account_info,
+        'transaction_count': len(transactions),
+    })
+
+
+@app.route('/api/upload/commit', methods=['POST'])
+def api_upload_commit():
+    """Commit a previewed upload to the database."""
+    data = request.get_json()
+    preview_id = data.get('preview_id')
+
+    if preview_id not in upload_previews:
+        return jsonify({'error': 'Preview not found or expired'}), 404
+
+    preview = upload_previews.pop(preview_id)
+    transactions = data.get('transactions', preview['transactions'])
+    account_info = preview['account_info']
+    filename = preview['filename']
+    filepath = preview['filepath']
+    ext = preview['ext']
+    doc_category = preview['doc_category']
+
+    # Create/get account
+    account_id = None
+    if account_info.get('account_number'):
+        account_id = get_or_create_account(
+            account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
+            account_number=account_info['account_number'],
+            account_type=account_info.get('account_type', 'bank'),
+            institution=account_info.get('institution', 'Unknown'),
+            cardholder_name=account_info.get('account_name'),
+            card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
+        )
+
+    # Save document record
+    doc_id = add_document(
+        filename=filename,
+        original_path=filepath,
+        file_type=ext.replace('.', ''),
+        doc_category=doc_category,
+        account_id=account_id,
+        statement_start=account_info.get('statement_start'),
+        statement_end=account_info.get('statement_end'),
+    )
+
+    # Save transactions
+    added = 0
+    for trans in transactions:
+        add_transaction(
+            doc_id=doc_id,
+            account_id=account_id,
+            trans_date=trans['trans_date'],
+            post_date=trans.get('post_date', trans['trans_date']),
+            description=trans['description'],
+            amount=trans['amount'],
+            trans_type=trans.get('trans_type', 'debit'),
+            category=trans.get('category', 'Uncategorized'),
+            subcategory=trans.get('subcategory'),
+            cardholder_name=trans.get('cardholder_name', ''),
+            card_last_four=trans.get('card_last_four', ''),
+            payment_method=trans.get('payment_method', ''),
+            is_transfer=trans.get('is_transfer', 0),
+            is_personal=trans.get('is_personal', 0),
+            is_business=trans.get('is_business', 0),
+            is_flagged=trans.get('is_flagged', 0),
+            flag_reason=trans.get('flag_reason'),
+        )
+        added += 1
+
+    return jsonify({
+        'status': 'ok',
+        'document_id': doc_id,
+        'filename': filename,
+        'transactions_added': added,
+    })
+
+
+@app.route('/api/upload/cancel', methods=['POST'])
+def api_upload_cancel():
+    """Cancel a previewed upload and delete the temp file."""
+    data = request.get_json()
+    preview_id = data.get('preview_id')
+
+    if preview_id in upload_previews:
+        preview = upload_previews.pop(preview_id)
+        filepath = preview['filepath']
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/transactions/<int:trans_id>/proofs', methods=['GET'])
+def api_get_proofs(trans_id):
+    proofs = get_proofs_for_transaction(trans_id)
+    return jsonify(proofs)
+
+
+@app.route('/api/transactions/<int:trans_id>/proofs', methods=['POST'])
+def api_link_proof(trans_id):
+    data = request.get_json()
+    doc_id = data.get('document_id')
+    if not doc_id:
+        return jsonify({'error': 'document_id required'}), 400
+    link_proof(trans_id, doc_id)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/transactions/<int:trans_id>/proofs/<int:doc_id>', methods=['DELETE'])
+def api_unlink_proof(trans_id, doc_id):
+    unlink_proof(trans_id, doc_id)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/documents/<int:doc_id>/transactions', methods=['GET'])
+def api_doc_transactions(doc_id):
+    transactions = get_transactions_for_proof(doc_id)
+    return jsonify(transactions)
 
 
 @app.route('/api/add-transaction', methods=['POST'])

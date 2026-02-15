@@ -114,6 +114,23 @@
         .account-card.bank { border-left-color: #3fb950; }
         .account-card.credit { border-left-color: #f85149; }
         .account-card.venmo { border-left-color: #3d95ce; }
+
+        /* View Toggle Bar */
+        .view-toggle-bar { display: flex; gap: 0; margin-bottom: 16px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 4px; width: fit-content; }
+        .view-toggle-bar .toggle-btn { padding: 6px 20px; border: none; background: transparent; color: #8b949e; font-size: 0.82rem; font-weight: 600; cursor: pointer; border-radius: 6px; transition: all 0.15s; }
+        .view-toggle-bar .toggle-btn:hover { color: #c9d1d9; background: #1c2333; }
+        .view-toggle-bar .toggle-btn.active { background: #58a6ff; color: #fff; }
+        .view-toggle-bar .toggle-btn.active[data-mode="personal"] { background: #fd7e14; }
+        .view-toggle-bar .toggle-btn.active[data-mode="business"] { background: #1f6feb; }
+
+        /* Upload preview */
+        .preview-panel { background: #1c2333; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-top: 12px; }
+        .preview-panel .preview-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+
+        /* Proof docs in edit modal */
+        .proof-section { border-top: 1px solid #30363d; padding-top: 10px; margin-top: 10px; }
+        .proof-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 0.8rem; }
+        .proof-item a { color: #58a6ff; }
     </style>
 </head>
 <body>
@@ -135,12 +152,20 @@
         </nav>
         <div class="sidebar-footer">
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i class="fas fa-download"></i> Export CSV</button>
-            <button class="btn btn-outline-light btn-sm w-100" onclick="recategorizeAll()"><i class="fas fa-sync"></i> Re-categorize</button>
+            <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="recategorizeAll()"><i class="fas fa-sync"></i> Re-categorize</button>
+            <button class="btn btn-outline-danger btn-sm w-100" onclick="clearAllData()"><i class="fas fa-trash-alt"></i> Clear All Data</button>
         </div>
     </div>
 
     <!-- Main Content -->
     <div class="main-content">
+
+        <!-- View Mode Toggle -->
+        <div class="view-toggle-bar" id="view-toggle">
+            <button class="toggle-btn active" data-mode="all" onclick="setViewMode('all')"><i class="fas fa-globe me-1"></i>All</button>
+            <button class="toggle-btn" data-mode="personal" onclick="setViewMode('personal')"><i class="fas fa-user me-1"></i>Personal</button>
+            <button class="toggle-btn" data-mode="business" onclick="setViewMode('business')"><i class="fas fa-briefcase me-1"></i>Business</button>
+        </div>
 
         <!-- ========== DASHBOARD ========== -->
         <div class="page-section active" id="page-dashboard">
@@ -278,6 +303,8 @@
                         <p class="text-muted small">PDF, Excel (.xlsx), CSV, Word (.docx) - up to 50MB</p>
                         <input type="file" id="file-input" multiple accept=".pdf,.xlsx,.xls,.csv,.docx" style="display:none">
                     </div>
+                    <div id="upload-status" class="mt-3"></div>
+                    <div id="upload-preview" style="display:none;"></div>
                     <div id="upload-results" class="mt-3"></div>
                 </div>
                 <div class="col-md-4">
@@ -294,7 +321,7 @@
                                     <option value="bank_statement">Bank Statement</option><option value="credit_card">Credit Card</option><option value="venmo">Venmo</option><option value="proof">Proof/Evidence</option><option value="other">Other</option>
                                 </select>
                             </div>
-                            <div class="alert alert-info small py-2"><i class="fas fa-info-circle"></i> Transactions auto-categorize on upload. Edit/recategorize any time.</div>
+                            <div class="alert alert-info small py-2"><i class="fas fa-info-circle"></i> Files are previewed before import. Review and edit categories, then commit.</div>
                         </div>
                     </div>
                 </div>
@@ -304,7 +331,7 @@
         <!-- ========== DOCUMENTS ========== -->
         <div class="page-section" id="page-documents">
             <h4 class="mb-3"><i class="fas fa-folder-open text-info"></i> Uploaded Documents</h4>
-            <div class="card-dark"><div class="scrollable-table"><table class="table table-dark-custom"><thead><tr><th>Filename</th><th>Type</th><th>Category</th><th>Account</th><th>Period</th><th>Uploaded</th></tr></thead><tbody id="documents-tbody"></tbody></table></div></div>
+            <div class="card-dark"><div class="scrollable-table"><table class="table table-dark-custom"><thead><tr><th>Filename</th><th>Type</th><th>Category</th><th>Account</th><th>Period</th><th>Linked</th><th>Uploaded</th></tr></thead><tbody id="documents-tbody"></tbody></table></div></div>
         </div>
 
         <!-- ========== CATEGORIES/RULES ========== -->
@@ -380,6 +407,29 @@
     let selectedIds = new Set();
     let editingId = null;
     let dashStats = null;
+    let currentPreviewId = null;
+    let viewMode = sessionStorage.getItem('viewMode') || 'all';
+
+    // ===== VIEW MODE TOGGLE =====
+    function setViewMode(mode) {
+        viewMode = mode;
+        sessionStorage.setItem('viewMode', mode);
+        document.querySelectorAll('.view-toggle-bar .toggle-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.mode === mode);
+        });
+        // Reload current page
+        const activePage = document.querySelector('.nav-link.active');
+        if (activePage) loadPageData(activePage.dataset.page);
+    }
+
+    // Initialize toggle state on load
+    document.querySelectorAll('.view-toggle-bar .toggle-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === viewMode);
+    });
+
+    function getViewModeParam() {
+        return viewMode !== 'all' ? `&view_mode=${viewMode}` : '';
+    }
 
     // ===== NAVIGATION =====
     document.querySelectorAll('.nav-link[data-page]').forEach(link => {
@@ -417,7 +467,7 @@
 
     // ===== DASHBOARD =====
     async function loadDashboard() {
-        dashStats = await api('/api/stats');
+        dashStats = await api('/api/stats?' + new URLSearchParams(viewMode !== 'all' ? {view_mode: viewMode} : {}).toString());
         const s = dashStats;
         const net = s.total_deposits - s.total_withdrawals;
 
@@ -459,7 +509,7 @@
         document.getElementById('dash-category-table').innerHTML = catHtml;
 
         // Flagged preview
-        const flagged = await api('/api/transactions?is_flagged=1');
+        const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
         let flHtml = '<table class="table table-dark-custom"><tbody>';
         flagged.slice(0, 10).forEach(t => {
             flHtml += `<tr class="clickable-row" onclick="editTransaction(${t.id})" title="${esc(t.flag_reason||'')}">
@@ -529,6 +579,7 @@
         if (fl === 'personal') params.set('is_personal', '1');
         if (fl === 'business') params.set('is_business', '1');
         if (fl === 'transfer') params.set('is_transfer', '1');
+        if (viewMode !== 'all') params.set('view_mode', viewMode);
 
         allTransactions = await api('/api/transactions?' + params.toString());
         selectedIds.clear();
@@ -596,11 +647,37 @@
     async function quickCategory(id, cat) { await api(`/api/transactions/${id}`, 'PUT', { category: cat }); toast('Updated'); }
     async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged?0:1 }); loadTransactions(); toast(t.is_flagged?'Unflagged':'Flagged'); }
 
-    function editTransaction(id) {
+    async function editTransaction(id) {
         // Find in current list or fetch
         let t = allTransactions.find(x => x.id === id);
         if (!t) { toast('Transaction not found in current view'); return; }
         editingId = id;
+
+        // Load proof documents for this transaction
+        const proofs = await api(`/api/transactions/${id}/proofs`);
+        const allDocs = await api('/api/documents');
+        const proofDocs = allDocs.filter(d => d.doc_category === 'proof');
+
+        let proofsHtml = '<div class="proof-section"><label class="form-label small fw-bold"><i class="fas fa-paperclip me-1"></i>Proof Documents</label>';
+        if (proofs.length > 0) {
+            proofsHtml += '<div class="mb-2">';
+            proofs.forEach(p => {
+                proofsHtml += `<div class="proof-item"><a href="/uploads/${encodeURIComponent(p.filename)}" target="_blank"><i class="fas fa-file me-1"></i>${esc(p.filename)}</a><button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="unlinkProof(${id},${p.id})"><i class="fas fa-unlink fa-xs"></i></button></div>`;
+            });
+            proofsHtml += '</div>';
+        } else {
+            proofsHtml += '<div class="text-muted small mb-2">No proof documents linked</div>';
+        }
+        if (proofDocs.length > 0) {
+            proofsHtml += `<div class="d-flex gap-2"><select class="form-select form-select-sm" id="edit-proof-select" style="max-width:250px;"><option value="">-- Link a proof doc --</option>`;
+            proofDocs.forEach(d => {
+                const alreadyLinked = proofs.some(p => p.id === d.id);
+                if (!alreadyLinked) proofsHtml += `<option value="${d.id}">${esc(d.filename)}</option>`;
+            });
+            proofsHtml += `</select><button class="btn btn-sm btn-info" onclick="linkProofFromEdit(${id})"><i class="fas fa-link"></i></button></div>`;
+        }
+        proofsHtml += '</div>';
+
         document.getElementById('edit-form-body').innerHTML = `
             <div class="row g-2">
                 <div class="col-6 mb-2"><label class="form-label small">Date</label><input type="text" class="form-control form-control-sm" id="edit-date" value="${t.trans_date||''}"></div>
@@ -621,8 +698,28 @@
                 <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-flagged" ${t.is_flagged?'checked':''}><label class="form-check-label small">Flagged</label></div>
             </div>
             <div class="mb-0"><label class="form-label small">Flag Reason</label><input type="text" class="form-control form-control-sm" id="edit-flag-reason" value="${esc(t.flag_reason||'')}"></div>
+            ${proofsHtml}
         `;
         new bootstrap.Modal(document.getElementById('editModal')).show();
+    }
+
+    async function linkProofFromEdit(transId) {
+        const sel = document.getElementById('edit-proof-select');
+        if (!sel || !sel.value) return;
+        await api(`/api/transactions/${transId}/proofs`, 'POST', { document_id: parseInt(sel.value) });
+        toast('Proof linked');
+        // Refresh the edit modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('editModal'));
+        if (modal) modal.hide();
+        editTransaction(transId);
+    }
+
+    async function unlinkProof(transId, docId) {
+        await api(`/api/transactions/${transId}/proofs/${docId}`, 'DELETE');
+        toast('Proof unlinked');
+        const modal = bootstrap.Modal.getInstance(document.getElementById('editModal'));
+        if (modal) modal.hide();
+        editTransaction(transId);
     }
 
     async function saveTransaction() {
@@ -688,7 +785,7 @@
         document.getElementById('deposit-transfer-analysis').innerHTML = dtHtml;
 
         // Flagged
-        const flagged = await api('/api/transactions?is_flagged=1');
+        const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
         let flHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Cardholder</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
         flagged.forEach(t => {
             flHtml += `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
@@ -703,7 +800,7 @@
         window._flaggedTrans = flagged;
 
         // Venmo analysis
-        const venmo = await api('/api/transactions?search=VENMO');
+        const venmo = await api('/api/transactions?search=VENMO' + getViewModeParam());
         let vHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Recipient</th><th>Amount</th><th>Note/Description</th><th>Flagged</th></tr></thead><tbody>';
         let venmoTotal = 0;
         const venmoByPerson = {};
@@ -781,34 +878,132 @@
     fileInput.addEventListener('change', () => handleFiles(fileInput.files));
 
     async function handleFiles(files) {
-        const results = document.getElementById('upload-results');
+        const statusEl = document.getElementById('upload-status');
+        const previewEl = document.getElementById('upload-preview');
+        const resultsEl = document.getElementById('upload-results');
+
         for (const file of files) {
-            const elId = 'u' + Math.random().toString(36).substr(2, 6);
-            results.innerHTML += `<div class="alert alert-info small py-2" id="${elId}"><i class="fas fa-spinner fa-spin"></i> Uploading ${file.name}...</div>`;
+            statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Parsing ${esc(file.name)}...</div>`;
+            previewEl.style.display = 'none';
+
             const fd = new FormData();
             fd.append('file', file);
             fd.append('doc_type', document.getElementById('upload-doc-type').value);
             fd.append('doc_category', document.getElementById('upload-doc-category').value);
+
             try {
-                const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                const resp = await fetch('/api/upload/preview', { method: 'POST', body: fd });
                 const data = await resp.json();
-                const el = document.getElementById(elId);
-                if (data.error) { el.className = 'alert alert-danger small py-2'; el.innerHTML = `<i class="fas fa-times-circle"></i> ${file.name}: ${data.error}`; }
-                else { el.className = 'alert alert-success small py-2'; el.innerHTML = `<i class="fas fa-check-circle"></i> ${file.name}: ${data.transactions_added} transactions imported`; }
-            } catch (err) { const el = document.getElementById(elId); if (el) { el.className = 'alert alert-danger small py-2'; el.innerHTML = `<i class="fas fa-times-circle"></i> ${file.name}: ${err.message}`; } }
+
+                if (data.error) {
+                    statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(file.name)}: ${data.error}</div>`;
+                    continue;
+                }
+
+                if (data.mode === 'proof') {
+                    statusEl.innerHTML = '';
+                    resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(file.name)}: Proof document uploaded</div>`;
+                    continue;
+                }
+
+                // Show preview
+                currentPreviewId = data.preview_id;
+                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-eye"></i> ${esc(file.name)}: ${data.transaction_count} transactions found. Review below and commit.</div>`;
+
+                await ensureCategories();
+                let previewHtml = `<div class="preview-panel">
+                    <div class="preview-header">
+                        <h6 class="mb-0"><i class="fas fa-table me-1"></i> Preview: ${esc(data.filename)} (${data.transaction_count} transactions)</h6>
+                        <div>
+                            <button class="btn btn-sm btn-success me-1" onclick="commitUpload()"><i class="fas fa-check"></i> Commit</button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="cancelUpload()"><i class="fas fa-times"></i> Cancel</button>
+                        </div>
+                    </div>
+                    <div class="scrollable-table"><table class="table table-dark-custom">
+                    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Type</th><th>Cardholder</th><th>Tags</th></tr></thead><tbody>`;
+
+                (data.transactions || []).forEach((t, i) => {
+                    let tags = '';
+                    if (t.is_personal) tags += '<span class="badge badge-personal me-1">P</span>';
+                    if (t.is_business) tags += '<span class="badge badge-business me-1">B</span>';
+                    if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">T</span>';
+                    if (t.is_flagged) tags += '<span class="badge badge-flagged me-1">FLAG</span>';
+
+                    previewHtml += `<tr>
+                        <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date||''}</td>
+                        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(t.description)}">${esc(t.description)}</td>
+                        <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                        <td><select class="category-select preview-cat" data-idx="${i}">${categoryOptions(t.category)}</select></td>
+                        <td style="font-size:0.75rem;">${t.trans_type||''}</td>
+                        <td style="font-size:0.75rem;">${esc(t.cardholder_name||'')}</td>
+                        <td style="white-space:nowrap;">${tags}</td>
+                    </tr>`;
+                });
+
+                previewHtml += '</tbody></table></div></div>';
+                previewEl.innerHTML = previewHtml;
+                previewEl.style.display = 'block';
+                previewEl._transactions = data.transactions;
+
+            } catch (err) {
+                statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(file.name)}: ${err.message}</div>`;
+            }
         }
         fileInput.value = '';
+    }
+
+    async function commitUpload() {
+        if (!currentPreviewId) return;
+        const previewEl = document.getElementById('upload-preview');
+        const statusEl = document.getElementById('upload-status');
+        const resultsEl = document.getElementById('upload-results');
+
+        // Gather updated categories from preview selects
+        const transactions = previewEl._transactions || [];
+        document.querySelectorAll('.preview-cat').forEach(sel => {
+            const idx = parseInt(sel.dataset.idx);
+            if (transactions[idx]) transactions[idx].category = sel.value;
+        });
+
+        statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Committing...</div>`;
+
+        const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
+        if (data.error) {
+            statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${data.error}</div>`;
+        } else {
+            statusEl.innerHTML = '';
+            previewEl.style.display = 'none';
+            resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(data.filename)}: ${data.transactions_added} transactions imported</div>`;
+            toast(`Imported ${data.transactions_added} transactions`);
+        }
+        currentPreviewId = null;
+    }
+
+    async function cancelUpload() {
+        if (!currentPreviewId) return;
+        await api('/api/upload/cancel', 'POST', { preview_id: currentPreviewId });
+        document.getElementById('upload-preview').style.display = 'none';
+        document.getElementById('upload-status').innerHTML = '<div class="alert alert-warning small py-2"><i class="fas fa-ban"></i> Upload cancelled</div>';
+        currentPreviewId = null;
     }
 
     // ===== DOCUMENTS =====
     async function loadDocuments() {
         const docs = await api('/api/documents');
         let html = '';
-        docs.forEach(d => {
-            const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : 'fa-file text-info';
-            html += `<tr><td><i class="fas ${icon} me-1"></i>${esc(d.filename)}</td><td>${d.file_type}</td><td>${d.doc_category||''}</td><td>${d.account_name||''}</td><td>${d.statement_start_date||''} - ${d.statement_end_date||''}</td><td>${(d.upload_date||'').substring(0,16)}</td></tr>`;
-        });
-        document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="6" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
+        for (const d of docs) {
+            const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : 'fa-file text-info';
+            const linkedTrans = await api(`/api/documents/${d.id}/transactions`);
+            const linkedCount = Array.isArray(linkedTrans) ? linkedTrans.length : 0;
+            html += `<tr>
+                <td><a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
+                <td>${d.file_type}</td><td>${d.doc_category||''}</td><td>${d.account_name||''}</td>
+                <td>${d.statement_start_date||''} - ${d.statement_end_date||''}</td>
+                <td>${linkedCount > 0 ? `<span class="badge bg-info">${linkedCount} linked</span>` : '-'}</td>
+                <td>${(d.upload_date||'').substring(0,16)}</td>
+            </tr>`;
+        }
+        document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="7" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
     }
 
     // ===== CATEGORIES =====
@@ -861,6 +1056,13 @@
     function categoryOptions(selected) { return allCategories.map(c => `<option value="${c.name}" ${c.name===selected?'selected':''}>${c.name}</option>`).join(''); }
     async function recategorizeAll() { if (!confirm('Re-run auto-categorization?')) return; const r = await api('/api/recategorize', 'POST'); toast(`Updated ${r.updated} transactions`); loadDashboard(); }
     function exportCSV() { window.open('/api/export/csv', '_blank'); }
+    async function clearAllData() {
+        if (!confirm('WARNING: This will permanently delete ALL transactions, documents, accounts, and uploaded files. Categories and rules will be kept.\n\nAre you sure?')) return;
+        if (!confirm('FINAL CONFIRMATION: Delete all financial data?')) return;
+        await api('/api/clear-data', 'POST');
+        toast('All data cleared');
+        loadDashboard();
+    }
 
     async function api(url, method='GET', body=null) {
         const opts = { method, headers: {} };

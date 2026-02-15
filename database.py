@@ -113,12 +113,24 @@ def init_db():
             FOREIGN KEY (transaction_id) REFERENCES transactions(id)
         );
 
+        CREATE TABLE IF NOT EXISTS proof_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+            UNIQUE(transaction_id, document_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_trans_date ON transactions(trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_category ON transactions(category);
         CREATE INDEX IF NOT EXISTS idx_trans_cardholder ON transactions(cardholder_name);
         CREATE INDEX IF NOT EXISTS idx_trans_type ON transactions(trans_type);
         CREATE INDEX IF NOT EXISTS idx_trans_flagged ON transactions(is_flagged);
         CREATE INDEX IF NOT EXISTS idx_trans_account ON transactions(account_id);
+        CREATE INDEX IF NOT EXISTS idx_proof_links_trans ON proof_links(transaction_id);
+        CREATE INDEX IF NOT EXISTS idx_proof_links_doc ON proof_links(document_id);
     """)
 
     # Insert default categories
@@ -206,6 +218,23 @@ def init_db():
             rule
         )
 
+    conn.commit()
+    conn.close()
+
+
+# --- Data Management ---
+
+def clear_all_data():
+    """Delete all financial data while keeping categories and rules."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.executescript("""
+        DELETE FROM proof_links;
+        DELETE FROM audit_log;
+        DELETE FROM transactions;
+        DELETE FROM documents;
+        DELETE FROM accounts;
+    """)
     conn.commit()
     conn.close()
 
@@ -373,6 +402,10 @@ def get_transactions(filters=None):
         if filters.get('max_amount'):
             query += " AND ABS(t.amount) <= ?"
             params.append(float(filters['max_amount']))
+        if filters.get('view_mode') == 'personal':
+            query += " AND t.is_personal = 1"
+        elif filters.get('view_mode') == 'business':
+            query += " AND t.is_business = 1"
 
     query += " ORDER BY t.trans_date DESC, t.id DESC"
 
@@ -426,6 +459,10 @@ def get_summary_stats(filters=None):
         if filters.get('cardholder'):
             where += " AND cardholder_name LIKE ?"
             params.append(f"%{filters['cardholder']}%")
+        if filters.get('view_mode') == 'personal':
+            where += " AND is_personal = 1"
+        elif filters.get('view_mode') == 'business':
+            where += " AND is_business = 1"
 
     stats = {}
 
@@ -521,6 +558,59 @@ def get_category_rules():
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM category_rules ORDER BY priority DESC, pattern")
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+# --- Proof Document Links ---
+
+def link_proof(transaction_id, document_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO proof_links (transaction_id, document_id) VALUES (?, ?)",
+        (transaction_id, document_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def unlink_proof(transaction_id, document_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM proof_links WHERE transaction_id = ? AND document_id = ?",
+        (transaction_id, document_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_proofs_for_transaction(transaction_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT d.* FROM documents d
+        JOIN proof_links pl ON pl.document_id = d.id
+        WHERE pl.transaction_id = ?
+        ORDER BY d.upload_date DESC
+    """, (transaction_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_transactions_for_proof(document_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT t.id, t.trans_date, t.description, t.amount
+        FROM transactions t
+        JOIN proof_links pl ON pl.transaction_id = t.id
+        WHERE pl.document_id = ?
+        ORDER BY t.trans_date DESC
+    """, (document_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
