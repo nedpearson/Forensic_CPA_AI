@@ -282,6 +282,25 @@ def add_document(filename, original_path, file_type, doc_category, account_id=No
     return doc_id
 
 
+def find_duplicate_transactions(transactions):
+    """Check a list of parsed transactions against existing DB transactions.
+    Returns list of (index, existing_transaction) tuples for duplicates."""
+    conn = get_db()
+    cursor = conn.cursor()
+    duplicates = []
+    for i, t in enumerate(transactions):
+        cursor.execute("""
+            SELECT id, trans_date, description, amount FROM transactions
+            WHERE trans_date = ? AND ABS(amount - ?) < 0.01
+            AND UPPER(description) = UPPER(?)
+        """, (t.get('trans_date', ''), t.get('amount', 0), t.get('description', '')))
+        existing = cursor.fetchone()
+        if existing:
+            duplicates.append({'index': i, 'existing': dict(existing)})
+    conn.close()
+    return duplicates
+
+
 def add_transaction(doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', **kwargs):
     conn = get_db()
     cursor = conn.cursor()

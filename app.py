@@ -15,13 +15,17 @@ from database import (
     get_transactions, get_categories, get_accounts, get_documents,
     get_summary_stats, add_category_rule, get_category_rules,
     clear_all_data, link_proof, unlink_proof,
-    get_proofs_for_transaction, get_transactions_for_proof
+    get_proofs_for_transaction, get_transactions_for_proof,
+    find_duplicate_transactions
 )
 from parsers import parse_document, parse_pdf_text
 from categorizer import (
     categorize_transaction, recategorize_all,
-    detect_deposit_transfer_patterns, get_cardholder_spending_summary
+    detect_deposit_transfer_patterns, get_cardholder_spending_summary,
+    get_recipient_analysis, get_deposit_aging, get_cardholder_comparison,
+    get_audit_trail, suggest_rule_from_edit
 )
+from parsers import compute_transaction_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'forensic-auditor-local-key'
@@ -119,7 +123,13 @@ def api_update_transaction(trans_id):
     fields = {k: v for k, v in data.items() if k in allowed_fields}
     if fields:
         update_transaction(trans_id, **fields)
-    return jsonify({'status': 'ok'})
+    # If category was changed, suggest a rule
+    result = {'status': 'ok'}
+    if 'category' in fields:
+        suggestion = suggest_rule_from_edit(trans_id)
+        if suggestion:
+            result['rule_suggestion'] = suggestion
+    return jsonify(result)
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['DELETE'])
@@ -408,6 +418,12 @@ def api_upload_preview():
         trans['flag_reason'] = cat_result['flag_reason']
         trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
 
+    # Check for duplicates
+    duplicates = find_duplicate_transactions(transactions)
+    for dup in duplicates:
+        transactions[dup['index']]['_is_duplicate'] = True
+        transactions[dup['index']]['_duplicate_of'] = dup['existing']['id']
+
     # Store preview data
     preview_id = str(uuid.uuid4())[:8]
     upload_previews[preview_id] = {
@@ -427,6 +443,7 @@ def api_upload_preview():
         'transactions': transactions,
         'account_info': account_info,
         'transaction_count': len(transactions),
+        'duplicate_count': len(duplicates),
     })
 
 
@@ -573,6 +590,40 @@ def api_add_manual_transaction():
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+
+@app.route('/api/analysis/recipients', methods=['GET'])
+def api_recipient_analysis():
+    """Who Gets the Money - recipient profiling with suspicion scores."""
+    return jsonify(get_recipient_analysis())
+
+
+@app.route('/api/analysis/deposit-aging', methods=['GET'])
+def api_deposit_aging():
+    """Deposit aging - how quickly deposits leave the account."""
+    return jsonify(get_deposit_aging())
+
+
+@app.route('/api/analysis/cardholder-comparison', methods=['GET'])
+def api_cardholder_comparison():
+    """Side-by-side cardholder comparison."""
+    return jsonify(get_cardholder_comparison())
+
+
+@app.route('/api/audit-trail', methods=['GET'])
+def api_audit_trail():
+    """Audit trail log viewer."""
+    limit = request.args.get('limit', 200, type=int)
+    return jsonify(get_audit_trail(limit))
+
+
+@app.route('/api/transactions/<int:trans_id>/suggest-rule', methods=['GET'])
+def api_suggest_rule(trans_id):
+    """Suggest a categorization rule from a manually edited transaction."""
+    suggestion = suggest_rule_from_edit(trans_id)
+    if suggestion:
+        return jsonify(suggestion)
+    return jsonify({'error': 'Could not generate rule suggestion'}), 404
 
 
 @app.route('/health')

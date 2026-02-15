@@ -131,6 +131,23 @@
         .proof-section { border-top: 1px solid #30363d; padding-top: 10px; margin-top: 10px; }
         .proof-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 0.8rem; }
         .proof-item a { color: #58a6ff; }
+
+        /* Suspicion score */
+        .suspicion-bar { height: 8px; border-radius: 4px; background: #21262d; position: relative; overflow: hidden; min-width: 60px; }
+        .suspicion-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+        .suspicion-low .suspicion-fill { background: #3fb950; }
+        .suspicion-med .suspicion-fill { background: #d29922; }
+        .suspicion-high .suspicion-fill { background: #f85149; }
+        .risk-badge { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; }
+        .risk-low { background: rgba(63,185,80,0.15); color: #3fb950; }
+        .risk-medium { background: rgba(210,153,34,0.15); color: #d29922; }
+        .risk-high { background: rgba(248,81,73,0.15); color: #f85149; }
+        .duplicate-row { opacity: 0.5; background: rgba(210,153,34,0.1) !important; }
+        .duplicate-row td { text-decoration: line-through; }
+
+        /* Rule suggestion toast */
+        .rule-suggestion { background: #1c2333; border: 1px solid #58a6ff; border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.82rem; }
+        .rule-suggestion code { color: #79c0ff; }
     </style>
 </head>
 <body>
@@ -144,11 +161,14 @@
             <a class="nav-link active" href="#" data-page="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</a>
             <a class="nav-link" href="#" data-page="transactions"><i class="fas fa-list-alt"></i> All Transactions</a>
             <a class="nav-link" href="#" data-page="analysis"><i class="fas fa-magnifying-glass-chart"></i> Forensic Analysis</a>
-            <a class="nav-link" href="#" data-page="cardholders"><i class="fas fa-users"></i> Cardholders</a>
+            <a class="nav-link" href="#" data-page="recipients"><i class="fas fa-user-secret"></i> Who Gets The Money</a>
+            <a class="nav-link" href="#" data-page="deposit-aging"><i class="fas fa-clock"></i> Deposit Aging</a>
+            <a class="nav-link" href="#" data-page="cardholders"><i class="fas fa-users"></i> Cardholder Compare</a>
             <a class="nav-link" href="#" data-page="accounts"><i class="fas fa-university"></i> Accounts</a>
             <a class="nav-link" href="#" data-page="upload"><i class="fas fa-cloud-upload-alt"></i> Upload</a>
             <a class="nav-link" href="#" data-page="documents"><i class="fas fa-folder-open"></i> Documents</a>
             <a class="nav-link" href="#" data-page="categories"><i class="fas fa-tags"></i> Rules</a>
+            <a class="nav-link" href="#" data-page="audit-trail"><i class="fas fa-history"></i> Audit Trail</a>
         </nav>
         <div class="sidebar-footer">
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i class="fas fa-download"></i> Export CSV</button>
@@ -342,6 +362,60 @@
                 <div class="col-md-8"><div class="card-dark"><div class="card-header"><span>Auto-Categorization Rules</span><button class="btn btn-sm btn-info" onclick="showAddRuleModal()"><i class="fas fa-plus"></i> Add</button></div><div class="scrollable-table" id="rules-list"></div></div></div>
             </div>
         </div>
+
+        <!-- ========== RECIPIENTS (Who Gets The Money) ========== -->
+        <div class="page-section" id="page-recipients">
+            <h4 class="mb-1"><i class="fas fa-user-secret text-danger"></i> Who Gets The Money</h4>
+            <p class="text-muted small mb-3">Recipient profiling with suspicion scoring - identifies who receives outflows and flags suspicious patterns</p>
+            <div id="recipients-summary" class="row g-3 mb-3"></div>
+            <div class="card-dark">
+                <div class="card-header" style="background:rgba(248,81,73,0.1);">
+                    <span><i class="fas fa-crosshairs text-danger me-1"></i> All Recipients</span>
+                    <div>
+                        <select class="form-select form-select-sm d-inline-block" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="recipient-sort" onchange="renderRecipients()">
+                            <option value="total">Sort by Total</option>
+                            <option value="suspicion">Sort by Suspicion</option>
+                            <option value="count">Sort by Frequency</option>
+                            <option value="name">Sort by Name</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="scrollable-table" style="max-height:70vh;" id="recipients-table"></div>
+            </div>
+        </div>
+
+        <!-- ========== DEPOSIT AGING ========== -->
+        <div class="page-section" id="page-deposit-aging">
+            <h4 class="mb-1"><i class="fas fa-clock text-warning"></i> Deposit Aging Analysis</h4>
+            <p class="text-muted small mb-3">How quickly do deposits leave the account? Fast outflows after deposits suggest money diversion.</p>
+            <div id="aging-summary" class="row g-3 mb-3"></div>
+            <div class="card-dark">
+                <div class="card-header" style="background:rgba(210,153,34,0.1);">
+                    <span><i class="fas fa-hourglass-half text-warning me-1"></i> Deposit Drain Timeline</span>
+                    <div>
+                        <select class="form-select form-select-sm d-inline-block" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="aging-filter" onchange="renderDepositAging()">
+                            <option value="all">All Deposits</option>
+                            <option value="high">High Risk Only</option>
+                            <option value="medium">Medium+ Risk</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="scrollable-table" style="max-height:70vh;" id="aging-table"></div>
+            </div>
+        </div>
+
+        <!-- ========== AUDIT TRAIL ========== -->
+        <div class="page-section" id="page-audit-trail">
+            <h4 class="mb-1"><i class="fas fa-history text-info"></i> Audit Trail</h4>
+            <p class="text-muted small mb-3">Complete log of all edits, deletions, and changes made to transactions</p>
+            <div class="card-dark">
+                <div class="card-header">
+                    <span><i class="fas fa-clipboard-list me-1"></i> Recent Changes</span>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadAuditTrail()"><i class="fas fa-sync"></i> Refresh</button>
+                </div>
+                <div class="scrollable-table" style="max-height:75vh;" id="audit-trail-table"></div>
+            </div>
+        </div>
     </div>
 
     <!-- Edit Transaction Modal -->
@@ -453,10 +527,13 @@
         if (page === 'dashboard') loadDashboard();
         else if (page === 'transactions') loadTransactions(filters);
         else if (page === 'analysis') loadAnalysis();
+        else if (page === 'recipients') loadRecipients();
+        else if (page === 'deposit-aging') loadDepositAging();
         else if (page === 'cardholders') loadCardholders();
         else if (page === 'accounts') loadAccounts();
         else if (page === 'documents') loadDocuments();
         else if (page === 'categories') loadCategoriesPage();
+        else if (page === 'audit-trail') loadAuditTrail();
     }
 
     // ===== DRILL-DOWN: Navigate to transactions with pre-set filters =====
@@ -723,7 +800,7 @@
     }
 
     async function saveTransaction() {
-        await api(`/api/transactions/${editingId}`, 'PUT', {
+        const result = await api(`/api/transactions/${editingId}`, 'PUT', {
             trans_date: document.getElementById('edit-date').value,
             description: document.getElementById('edit-desc').value,
             amount: parseFloat(document.getElementById('edit-amount').value),
@@ -740,6 +817,35 @@
         });
         bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
         loadTransactions(); toast('Saved');
+
+        // Show rule suggestion if available
+        if (result && result.rule_suggestion) {
+            showRuleSuggestion(result.rule_suggestion);
+        }
+    }
+
+    function showRuleSuggestion(suggestion) {
+        const c = document.getElementById('toast-container');
+        const el = document.createElement('div');
+        el.className = 'rule-suggestion';
+        el.innerHTML = `
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <strong><i class="fas fa-lightbulb text-warning me-1"></i> Create Rule?</strong>
+                <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="this.closest('.rule-suggestion').remove()"><i class="fas fa-times fa-xs"></i></button>
+            </div>
+            <div class="mb-2">Pattern: <code>${esc(suggestion.pattern)}</code> &rarr; <strong>${esc(suggestion.category)}</strong></div>
+            <div class="small text-muted mb-2">From: "${esc(suggestion.source_description?.substring(0,60))}"</div>
+            <button class="btn btn-sm btn-info" onclick="acceptRuleSuggestion(this, '${esc(suggestion.pattern)}', '${esc(suggestion.category)}', ${suggestion.is_personal}, ${suggestion.is_business}, ${suggestion.is_transfer})"><i class="fas fa-check me-1"></i>Create Rule</button>
+            <button class="btn btn-sm btn-outline-light" onclick="this.closest('.rule-suggestion').remove()">Dismiss</button>
+        `;
+        c.appendChild(el);
+        setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);
+    }
+
+    async function acceptRuleSuggestion(btn, pattern, category, isPersonal, isBusiness, isTransfer) {
+        await api('/api/categories/rules', 'POST', { pattern, category, priority: 50, is_personal: isPersonal, is_business: isBusiness, is_transfer: isTransfer });
+        btn.closest('.rule-suggestion').remove();
+        toast('Rule created! Run Re-categorize to apply.');
     }
 
     async function deleteTransaction(id) { if (!confirm('Delete this transaction?')) return; await api(`/api/transactions/${id}`, 'DELETE'); loadTransactions(); toast('Deleted'); }
@@ -826,27 +932,7 @@
         document.getElementById('venmo-analysis').innerHTML = vSummary + vHtml;
     }
 
-    // ===== CARDHOLDERS =====
-    async function loadCardholders() {
-        const spending = await api('/api/analysis/cardholder-spending');
-        let html = '';
-        for (const [name, data] of Object.entries(spending)) {
-            html += `<div class="card-dark mb-3">
-                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({cardholder:'${esc(name)}'})">
-                    <span><i class="fas fa-user me-1"></i> ${esc(name)}</span>
-                    <span class="small">Spent: <span class="amount-negative">$${fmt(data.total_spent)}</span> | ${data.total_transactions} transactions
-                        <button class="btn btn-sm btn-outline-light ms-2 py-0" onclick="event.stopPropagation();drillToTransactions({cardholder:'${esc(name)}'})"><i class="fas fa-external-link-alt fa-xs"></i> View All</button>
-                    </span>
-                </div>
-                <div class="scrollable-table-sm"><table class="table table-dark-custom"><thead><tr><th>Category</th><th>Spent</th><th>Received</th><th>Count</th></tr></thead><tbody>`;
-            data.categories.forEach(c => {
-                html += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(name)}',category:'${esc(c.category)}'})">
-                    <td>${c.category}</td><td class="amount-negative">$${fmt(c.spent)}</td><td class="amount-positive">$${fmt(c.received)}</td><td>${c.transaction_count}</td></tr>`;
-            });
-            html += '</tbody></table></div></div>';
-        }
-        document.getElementById('cardholders-content').innerHTML = html || '<p class="text-muted">No cardholder data.</p>';
-    }
+    // Old cardholders function removed - replaced by enhanced version below
 
     // ===== ACCOUNTS =====
     async function loadAccounts() {
@@ -908,7 +994,8 @@
 
                 // Show preview
                 currentPreviewId = data.preview_id;
-                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-eye"></i> ${esc(file.name)}: ${data.transaction_count} transactions found. Review below and commit.</div>`;
+                let dupWarning = data.duplicate_count > 0 ? ` <span class="text-warning fw-bold">WARNING: ${data.duplicate_count} potential duplicate(s) detected (shown struck-through).</span>` : '';
+                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-eye"></i> ${esc(file.name)}: ${data.transaction_count} transactions found.${dupWarning} Review below and commit.</div>`;
 
                 await ensureCategories();
                 let previewHtml = `<div class="preview-panel">
@@ -928,8 +1015,9 @@
                     if (t.is_business) tags += '<span class="badge badge-business me-1">B</span>';
                     if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">T</span>';
                     if (t.is_flagged) tags += '<span class="badge badge-flagged me-1">FLAG</span>';
+                    if (t._is_duplicate) tags += '<span class="badge bg-warning text-dark me-1" title="Duplicate of existing transaction">DUP</span>';
 
-                    previewHtml += `<tr>
+                    previewHtml += `<tr class="${t._is_duplicate ? 'duplicate-row' : ''}">`;
                         <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date||''}</td>
                         <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(t.description)}">${esc(t.description)}</td>
                         <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
@@ -1025,6 +1113,187 @@
     async function addRule() {
         await api('/api/categories/rules', 'POST', { pattern: document.getElementById('rule-pattern').value, category: document.getElementById('rule-category').value, priority: parseInt(document.getElementById('rule-priority').value)||50, is_personal: document.getElementById('rule-personal').checked?1:0, is_business: document.getElementById('rule-business').checked?1:0, is_transfer: document.getElementById('rule-transfer-flag').checked?1:0 });
         bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide(); loadCategoriesPage(); toast('Rule added');
+    }
+
+    // ===== RECIPIENT ANALYSIS =====
+    let recipientData = [];
+
+    async function loadRecipients() {
+        recipientData = await api('/api/analysis/recipients');
+        renderRecipients();
+    }
+
+    function renderRecipients() {
+        const sortBy = document.getElementById('recipient-sort')?.value || 'total';
+        let sorted = [...recipientData];
+        if (sortBy === 'suspicion') sorted.sort((a,b) => b.suspicion_score - a.suspicion_score);
+        else if (sortBy === 'count') sorted.sort((a,b) => b.count - a.count);
+        else if (sortBy === 'name') sorted.sort((a,b) => a.name.localeCompare(b.name));
+        else sorted.sort((a,b) => b.total - a.total);
+
+        // Summary cards
+        const totalOut = sorted.reduce((s,r) => s + r.total, 0);
+        const highSuspicion = sorted.filter(r => r.suspicion_score >= 40).length;
+        const topRecipient = sorted[0];
+        document.getElementById('recipients-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${sorted.length}</div><div class="stat-label">Unique Recipients</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalOut)}</div><div class="stat-label">Total Outflows</div></div></div>
+            <div class="col"><div class="stat-card ${highSuspicion > 0 ? 'danger' : 'success'}"><div class="stat-value">${highSuspicion}</div><div class="stat-label">High Suspicion</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">${topRecipient ? esc(topRecipient.name).substring(0,20) : 'N/A'}</div><div class="stat-label">Top Recipient ${topRecipient ? '$'+fmt(topRecipient.total) : ''}</div></div></div>
+        `;
+
+        // Table
+        let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Recipient</th><th>Total Paid</th><th>Count</th><th>Avg</th>
+            <th>Concentration</th><th>Suspicion</th><th>Flags</th><th>Cardholders</th><th>Methods</th>
+        </tr></thead><tbody>`;
+
+        sorted.forEach(r => {
+            const scoreClass = r.suspicion_score >= 40 ? 'suspicion-high' : r.suspicion_score >= 20 ? 'suspicion-med' : 'suspicion-low';
+            const riskClass = r.suspicion_score >= 40 ? 'risk-high' : r.suspicion_score >= 20 ? 'risk-medium' : 'risk-low';
+            html += `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.name.split(' - ').pop().substring(0,15)}'})">
+                <td><strong>${esc(r.name)}</strong><br><span class="text-muted" style="font-size:0.7rem;">${r.first_date} to ${r.last_date}</span></td>
+                <td class="amount-negative fw-bold">$${fmt(r.total)}</td>
+                <td>${r.count}</td>
+                <td class="amount-negative">$${fmt(r.avg_amount)}</td>
+                <td>${r.concentration_pct}%</td>
+                <td><div class="d-flex align-items-center gap-2"><div class="suspicion-bar ${scoreClass}"><div class="suspicion-fill" style="width:${r.suspicion_score}%"></div></div><span class="risk-badge ${riskClass}">${r.suspicion_score}</span></div></td>
+                <td style="max-width:200px;font-size:0.72rem;">${r.flags.map(f => `<div class="text-warning">${esc(f)}</div>`).join('')}</td>
+                <td style="font-size:0.72rem;">${r.cardholders.join(', ')}</td>
+                <td style="font-size:0.72rem;">${r.methods.join(', ')}</td>
+            </tr>`;
+        });
+
+        if (!sorted.length) html += '<tr><td colspan="9" class="text-muted text-center py-4">No outflow data found. Upload statements to analyze.</td></tr>';
+        html += '</tbody></table>';
+        document.getElementById('recipients-table').innerHTML = html;
+    }
+
+    // ===== DEPOSIT AGING =====
+    let agingData = [];
+
+    async function loadDepositAging() {
+        agingData = await api('/api/analysis/deposit-aging');
+        renderDepositAging();
+    }
+
+    function renderDepositAging() {
+        const filter = document.getElementById('aging-filter')?.value || 'all';
+        let filtered = agingData;
+        if (filter === 'high') filtered = agingData.filter(d => d.risk === 'high');
+        else if (filter === 'medium') filtered = agingData.filter(d => d.risk === 'high' || d.risk === 'medium');
+
+        // Summary
+        const highCount = agingData.filter(d => d.risk === 'high').length;
+        const medCount = agingData.filter(d => d.risk === 'medium').length;
+        const totalDeposits = agingData.reduce((s,d) => s + d.amount, 0);
+        const avg3day = agingData.length ? agingData.reduce((s,d) => s + d.pct_3day, 0) / agingData.length : 0;
+
+        document.getElementById('aging-summary').innerHTML = `
+            <div class="col"><div class="stat-card success"><div class="stat-value">${agingData.length}</div><div class="stat-label">Total Deposits</div></div></div>
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(totalDeposits)}</div><div class="stat-label">Total Deposited</div></div></div>
+            <div class="col"><div class="stat-card ${highCount > 0 ? 'danger' : 'success'}"><div class="stat-value">${highCount}</div><div class="stat-label">High-Risk Drains</div></div></div>
+            <div class="col"><div class="stat-card ${medCount > 0 ? 'warning' : 'success'}"><div class="stat-value">${medCount}</div><div class="stat-label">Medium-Risk Drains</div></div></div>
+            <div class="col"><div class="stat-card ${avg3day > 50 ? 'danger' : 'info'}"><div class="stat-value">${avg3day.toFixed(0)}%</div><div class="stat-label">Avg 3-Day Drain</div></div></div>
+        `;
+
+        let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Deposit Date</th><th>Description</th><th>Deposit Amt</th>
+            <th>Out in 3 Days</th><th>% 3-Day</th><th>Out in 7 Days</th><th>% 7-Day</th>
+            <th>Risk</th>
+        </tr></thead><tbody>`;
+
+        filtered.forEach(d => {
+            const riskClass = d.risk === 'high' ? 'risk-high' : d.risk === 'medium' ? 'risk-medium' : 'risk-low';
+            const pct3Class = d.pct_3day > 80 ? 'text-danger fw-bold' : d.pct_3day > 50 ? 'text-warning' : '';
+            const pct7Class = d.pct_7day > 80 ? 'text-danger fw-bold' : d.pct_7day > 50 ? 'text-warning' : '';
+            html += `<tr>
+                <td style="white-space:nowrap;">${d.deposit.trans_date}</td>
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(d.deposit.description)}">${esc(d.deposit.description)}</td>
+                <td class="amount-positive fw-bold">$${fmt(d.amount)}</td>
+                <td class="amount-negative">$${fmt(d.out_3day)}</td>
+                <td class="${pct3Class}">${d.pct_3day}%</td>
+                <td class="amount-negative">$${fmt(d.out_7day)}</td>
+                <td class="${pct7Class}">${d.pct_7day}%</td>
+                <td><span class="risk-badge ${riskClass}">${d.risk}</span></td>
+            </tr>`;
+        });
+
+        if (!filtered.length) html += '<tr><td colspan="8" class="text-muted text-center py-4">No deposit data found.</td></tr>';
+        html += '</tbody></table>';
+        document.getElementById('aging-table').innerHTML = html;
+    }
+
+    // ===== CARDHOLDER COMPARISON (enhanced) =====
+    async function loadCardholders() {
+        const comparison = await api('/api/analysis/cardholder-comparison');
+        let html = '<div class="row g-3 mb-3">';
+
+        // Summary cards for each cardholder
+        comparison.forEach(ch => {
+            const suspicionPct = ch.flagged_count > 0 ? Math.min(100, Math.round(ch.flagged_count / ch.total_transactions * 100)) : 0;
+            html += `<div class="col-md-6"><div class="card-dark">
+                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})">
+                    <span><i class="fas fa-user me-1"></i> ${esc(ch.cardholder_name)}</span>
+                    <button class="btn btn-sm btn-outline-light py-0" onclick="event.stopPropagation();drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})"><i class="fas fa-external-link-alt fa-xs"></i></button>
+                </div>
+                <div class="p-3">
+                    <div class="row g-2 mb-3">
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_spent)}</div><div class="text-muted" style="font-size:0.7rem;">TOTAL SPENT</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-positive fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_received)}</div><div class="text-muted" style="font-size:0.7rem;">RECEIVED</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.transfers_out)}</div><div class="text-muted" style="font-size:0.7rem;">TRANSFERS OUT</div></div></div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-3"><div class="text-center"><div class="fw-bold">${ch.total_transactions}</div><div class="text-muted" style="font-size:0.7rem;">TRANSACTIONS</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="fw-bold">$${fmt(ch.avg_purchase)}</div><div class="text-muted" style="font-size:0.7rem;">AVG PURCHASE</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="${ch.flagged_count > 0 ? 'text-danger' : ''} fw-bold">${ch.flagged_count}</div><div class="text-muted" style="font-size:0.7rem;">FLAGGED</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="text-muted small">${ch.first_transaction || 'N/A'}<br>to ${ch.last_transaction || 'N/A'}</div></div></div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-personal">Personal</span> <span class="amount-negative">$${fmt(ch.personal_total)}</span></div></div>
+                        <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-business">Business</span> <span class="amount-negative">$${fmt(ch.business_total)}</span></div></div>
+                    </div>
+                    <div class="mt-2"><strong class="small text-muted">Top Categories:</strong></div>
+                    <table class="table table-dark-custom mt-1"><tbody>`;
+            (ch.top_categories || []).forEach(c => {
+                const barW = ch.total_spent > 0 ? Math.round(c.total / ch.total_spent * 100) : 0;
+                html += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}',category:'${esc(c.category)}'})">
+                    <td style="width:35%">${esc(c.category)}</td>
+                    <td class="amount-negative">$${fmt(c.total)}</td>
+                    <td>${c.cnt}</td>
+                    <td><div class="mini-bar" style="background:#f85149;width:${barW}%;">&nbsp;</div></td>
+                </tr>`;
+            });
+            html += `</tbody></table></div></div></div>`;
+        });
+
+        html += '</div>';
+        if (!comparison.length) html = '<p class="text-muted">No cardholder data. Upload statements to see comparisons.</p>';
+        document.getElementById('cardholders-content').innerHTML = html;
+    }
+
+    // ===== AUDIT TRAIL =====
+    async function loadAuditTrail() {
+        const trail = await api('/api/audit-trail');
+        let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Timestamp</th><th>Action</th><th>Field</th><th>Old Value</th><th>New Value</th><th>Transaction</th>
+        </tr></thead><tbody>`;
+
+        trail.forEach(entry => {
+            const actionClass = entry.action === 'DELETE' ? 'text-danger' : entry.action === 'UPDATE' ? 'text-warning' : 'text-info';
+            html += `<tr>
+                <td style="white-space:nowrap;font-size:0.75rem;">${(entry.timestamp || '').substring(0,19)}</td>
+                <td><span class="${actionClass} fw-bold">${entry.action || ''}</span></td>
+                <td style="font-size:0.8rem;">${esc(entry.field_name || '')}</td>
+                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.old_value || '')}">${esc(entry.old_value || '-')}</td>
+                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.new_value || '')}">${esc(entry.new_value || '-')}</td>
+                <td style="font-size:0.75rem;">${entry.trans_description ? esc(entry.trans_description).substring(0,30) + (entry.trans_amount ? ' ($' + fmt(Math.abs(entry.trans_amount)) + ')' : '') : '#' + (entry.transaction_id || '?')}</td>
+            </tr>`;
+        });
+
+        if (!trail.length) html += '<tr><td colspan="6" class="text-muted text-center py-4">No audit trail entries yet. Edit or delete transactions to see changes logged here.</td></tr>';
+        html += '</tbody></table>';
+        document.getElementById('audit-trail-table').innerHTML = html;
     }
 
     // ===== UTILITIES =====

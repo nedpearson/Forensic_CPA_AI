@@ -4,22 +4,61 @@ Extracts transactions from uploaded PDFs and spreadsheets.
 """
 import re
 import os
+import hashlib
 import pdfplumber
 import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook
 from docx import Document as DocxDocument
 
+# OCR configuration
+TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
+
 
 def parse_pdf_text(filepath):
-    """Extract all text from a PDF file, page by page."""
+    """Extract all text from a PDF file, page by page. Falls back to OCR for scanned/image PDFs."""
     pages = []
     with pdfplumber.open(filepath) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
-            if text:
+            if text and len(text.strip()) > 20:
                 pages.append(text)
+
+    # If pdfplumber got very little text, try OCR
+    total_chars = sum(len(p) for p in pages)
+    if total_chars < 100:
+        ocr_pages = _ocr_pdf(filepath)
+        if ocr_pages:
+            return ocr_pages
+
     return pages
+
+
+def _ocr_pdf(filepath):
+    """Use Tesseract OCR to extract text from image-based PDF pages."""
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+        images = convert_from_path(filepath, dpi=300, poppler_path=POPPLER_PATH)
+        pages = []
+        for img in images:
+            text = pytesseract.image_to_string(img)
+            if text and text.strip():
+                pages.append(text)
+        return pages
+    except Exception as e:
+        print(f"OCR failed for {filepath}: {e}")
+        return []
+
+
+def compute_transaction_hash(trans_date, description, amount):
+    """Create a hash for duplicate detection."""
+    key = f"{trans_date}|{description}|{amount:.2f}"
+    return hashlib.md5(key.encode()).hexdigest()
 
 
 def parse_pdf_tables(filepath):
@@ -35,8 +74,23 @@ def parse_pdf_tables(filepath):
 
 # --- Bank of St. Francisville Statement Parser ---
 
+MONTHS = {'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+          'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'}
+
+
+def _normalize_bank_date(date_str, year='2026'):
+    """Convert 'Jan 13' to '2026-01-13'."""
+    parts = date_str.strip().split()
+    if len(parts) == 2:
+        mon = MONTHS.get(parts[0].lower()[:3], '')
+        day = parts[1].zfill(2)
+        if mon:
+            return f"{year}-{mon}-{day}"
+    return date_str
+
+
 def parse_bank_statement(filepath):
-    """Parse Bank of St. Francisville PDF statements."""
+    """Parse Bank of St. Francisville PDF statements (handles OCR text)."""
     pages = parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
@@ -45,39 +99,60 @@ def parse_bank_statement(filepath):
         'institution': 'Bank of St. Francisville',
         'account_type': 'bank',
         'account_number': '',
+        'account_name': 'Gulf Coast Recovery of Baton Rouge, LLC',
         'statement_start': '',
         'statement_end': '',
     }
 
-    # Try to extract account number
+    # Extract account number
     acct_match = re.search(r'Account\s*(?:Number|#|No\.?)[:\s]*(\d+)', full_text, re.IGNORECASE)
     if acct_match:
         account_info['account_number'] = acct_match.group(1)
 
-    # Try to find statement date range
-    date_match = re.search(r'(\w+\s+\d{1,2},?\s+\d{4})\s*(?:through|to|-)\s*(\w+\s+\d{1,2},?\s+\d{4})', full_text, re.IGNORECASE)
-    if date_match:
-        account_info['statement_start'] = date_match.group(1)
-        account_info['statement_end'] = date_match.group(2)
+    # Extract statement dates
+    start_match = re.search(r'Statement\s+Date\s+(\d{2}/\d{2}/\d{4})', full_text)
+    end_match = re.search(r'Statement\s+Thru\s+Date\s+(\d{2}/\d{2}/\d{4})', full_text)
+    if start_match:
+        account_info['statement_start'] = start_match.group(1)
+    if end_match:
+        account_info['statement_end'] = end_match.group(1)
 
-    # Parse transaction lines - bank statements typically have date, description, amount patterns
-    # Pattern: date followed by description and amount
-    trans_pattern = re.compile(
-        r'(\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\s+'   # date
-        r'(.+?)\s+'                                      # description
-        r'(-?\$?[\d,]+\.\d{2})\s*'                       # amount
-        r'(\$?[\d,]+\.\d{2})?',                          # optional balance
-        re.MULTILINE
+    # Determine year from statement date
+    year = '2026'
+    if start_match:
+        year = start_match.group(1)[-4:]
+
+    # Also try old format
+    if not start_match:
+        date_match = re.search(r'(\w+\s+\d{1,2},?\s+\d{4})\s*(?:through|to|-)\s*(\w+\s+\d{1,2},?\s+\d{4})', full_text, re.IGNORECASE)
+        if date_match:
+            account_info['statement_start'] = date_match.group(1)
+            account_info['statement_end'] = date_match.group(2)
+
+    # Extract card last 4 from transaction descriptions
+    card_numbers = set()
+
+    # OCR format: "Jan DD <description> <amount> <balance>"
+    # Multi-line: description may wrap, amounts are at end of line
+    # Key patterns:
+    #   Jan 13 POS PURCHASE NON-PIN VENMO *DAVID 500.00 5,214.69
+    #   Jan 20 DEPOSIT 15,821.25 34,938.48
+    #   Jan 20 DEGRAW CONSULTIN/SALE GULF COAST 14,000.00 33,182.47
+
+    # Pattern: Month Day at start of line, then description, then 1-2 amounts at end
+    line_pattern = re.compile(
+        r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+'  # date
+        r'(.+?)\s+'                                                            # description
+        r'([\d,]+\.\d{2})\s+'                                                 # amount1 (deposit or withdrawal)
+        r'([\d,]+\.\d{2})\s*$',                                               # balance
+        re.IGNORECASE
     )
 
-    # Also try: Mon DD  Description  Amount  Balance
-    alt_pattern = re.compile(
-        r'(\w{3}\s+\d{1,2})\s+'                          # date like "Aug 01"
-        r'(.+?)\s+'                                       # description
-        r'(-?\$?[\d,]+\.\d{2})\s*'                        # amount
-        r'(\$?[\d,]+\.\d{2})?',                           # optional balance
-        re.MULTILINE
-    )
+    # Deposit pattern has amount in deposit column (before withdrawal column)
+    # We'll determine deposit vs withdrawal by comparing to previous balance
+
+    prev_balance = None
+    in_transactions = False
 
     for page_text in pages:
         lines = page_text.split('\n')
@@ -86,46 +161,93 @@ def parse_bank_statement(filepath):
             if not line:
                 continue
 
-            # Skip header/footer lines
-            if any(skip in line.upper() for skip in ['PAGE ', 'ACCOUNT SUMMARY', 'PREVIOUS BALANCE', 'NEW BALANCE', 'PAYMENT DUE', 'BILLING CYCLE']):
+            # Detect transaction section
+            if 'ACCOUNT TRANSACTIONS' in line.upper():
+                in_transactions = True
                 continue
 
-            # Try primary pattern
-            match = trans_pattern.search(line)
-            if not match:
-                match = alt_pattern.search(line)
+            # Skip headers and footers
+            skip_words = ['PAGE ', 'ACCOUNT SUMMARY', 'STATEMENT DATE', 'ACCOUNT NUMBER',
+                          'DATE DESCRIPTION DEPOSITS', 'BEGINNING BALANCE', 'ENDING BALANCE',
+                          'IN CASE OF ERRORS', 'MEMBER FDIC', 'BANK OF', 'ST. FRANCISVILL',
+                          'SERVICE CHARGE', 'TOTAL SERVICE', 'CUSTOMER SERVICE',
+                          'IF YOU THINK', 'DIRECT ALL', 'CHECK/ITEMS']
+            if any(skip in line.upper() for skip in skip_words):
+                continue
 
+            # Skip OCR noise (very short lines, all caps headers, page markers)
+            if len(line) < 10 or re.match(r'^[A-Z0-9\s]{5,20}$', line):
+                continue
+
+            match = line_pattern.match(line)
             if match:
-                date_str = match.group(1)
-                desc = match.group(2).strip()
-                amount_str = match.group(3).replace('$', '').replace(',', '')
+                month_str = match.group(1)
+                day = match.group(2)
+                desc = match.group(3).strip()
+                amount1 = float(match.group(4).replace(',', ''))
+                balance = float(match.group(5).replace(',', ''))
 
-                # Skip if description looks like a header
-                if desc.upper() in ['DESCRIPTION', 'TRANS DATE', 'POST DATE']:
-                    continue
+                date_str = _normalize_bank_date(f"{month_str} {day}", year)
 
-                try:
-                    amount = float(amount_str)
-                except ValueError:
-                    continue
+                # Extract card number from description (e.g., *****3992, *****8279)
+                card_match = re.search(r'\*{3,5}(\d{4})', desc)
+                card_last_four = card_match.group(1) if card_match else ''
+                if card_last_four:
+                    card_numbers.add(card_last_four)
 
-                # Determine if debit or credit based on context
-                trans_type = 'debit' if amount < 0 or 'DEBIT' in line.upper() else 'credit'
+                # Clean description: remove trailing date/time and card number
+                clean_desc = re.sub(r'\s+\d{2}/\d{2}\s+\d{2}:\d{2}\s*$', '', desc)
+                clean_desc = re.sub(r'\s+\*{3,5}\d{4}\s*', ' ', clean_desc).strip()
+                clean_desc = re.sub(r'\s+', ' ', clean_desc)
+
+                # Determine if deposit or withdrawal by balance change
+                is_deposit = False
                 if 'DEPOSIT' in desc.upper():
+                    is_deposit = True
+                elif prev_balance is not None:
+                    # If balance went up, it's a deposit
+                    is_deposit = balance > prev_balance
+                else:
+                    # No previous balance to compare - check column position heuristic
+                    is_deposit = 'DEPOSIT' in desc.upper() or 'CREDIT' in desc.upper()
+
+                if is_deposit:
                     trans_type = 'deposit'
-                    if amount < 0:
-                        amount = abs(amount)
+                    amount = amount1
+                else:
+                    trans_type = 'debit'
+                    amount = -amount1
+
+                # Determine cardholder from card number
+                cardholder = ''
+                if card_last_four == '3992':
+                    cardholder = 'JAMES HENDRICK'
+                elif card_last_four == '8279':
+                    cardholder = 'GERALD PEARSON'
+
+                # Determine payment method
+                payment_method = 'debit'
+                if 'VENMO' in desc.upper():
+                    payment_method = 'venmo'
+                elif 'CHECK' in desc.upper():
+                    payment_method = 'check'
+                elif 'WIRE' in desc.upper() or 'ACH' in desc.upper():
+                    payment_method = 'transfer'
+                elif 'MOBILE' in desc.upper():
+                    payment_method = 'mobile'
 
                 transactions.append({
                     'trans_date': date_str,
                     'post_date': date_str,
-                    'description': desc,
+                    'description': clean_desc,
                     'amount': amount,
                     'trans_type': trans_type,
-                    'cardholder_name': '',
-                    'card_last_four': '',
-                    'payment_method': 'debit',
+                    'cardholder_name': cardholder,
+                    'card_last_four': card_last_four,
+                    'payment_method': payment_method,
                 })
+
+                prev_balance = balance
 
     return transactions, account_info
 
