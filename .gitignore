@@ -3,5 +3,7 @@ __pycache__/
 data/*.db
 uploads/*
 !uploads/.gitkeep
+reports/*
+!reports/.gitkeep
 .claude/
 *.zip

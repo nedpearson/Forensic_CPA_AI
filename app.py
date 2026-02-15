@@ -7,6 +7,7 @@ import json
 import shutil
 import uuid
 import glob as glob_mod
+import threading
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
 from werkzeug.utils import secure_filename
 from database import (
@@ -16,7 +17,10 @@ from database import (
     get_summary_stats, add_category_rule, get_category_rules,
     clear_all_data, link_proof, unlink_proof,
     get_proofs_for_transaction, get_transactions_for_proof,
-    find_duplicate_transactions
+    find_duplicate_transactions,
+    get_case_notes, add_case_note, update_case_note, delete_case_note,
+    get_saved_filters, add_saved_filter, delete_saved_filter,
+    get_account_running_balance, get_alerts
 )
 from parsers import parse_document, parse_pdf_text
 from categorizer import (
@@ -24,7 +28,8 @@ from categorizer import (
     detect_deposit_transfer_patterns, get_cardholder_spending_summary,
     get_recipient_analysis, get_deposit_aging, get_cardholder_comparison,
     get_audit_trail, suggest_rule_from_edit,
-    get_executive_summary, get_money_flow, get_timeline_data
+    get_executive_summary, get_money_flow, get_timeline_data,
+    get_recurring_transactions
 )
 from parsers import compute_transaction_hash
 
@@ -37,6 +42,7 @@ ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc'}
 
 # In-memory storage for upload previews (preview_id -> parsed data)
 upload_previews = {}
+_preview_lock = threading.Lock()
 
 
 def allowed_file(filename):
@@ -110,20 +116,53 @@ def api_transactions():
     }
     filters = {k: v for k, v in filters.items() if v}
     transactions = get_transactions(filters if filters else None)
+
+    # Pagination support (opt-in: pass page= to enable)
+    page = request.args.get('page')
+    try:
+        per_page = max(1, min(500, int(request.args.get('per_page', 100))))
+    except (ValueError, TypeError):
+        per_page = 100
+    if page is not None:
+        try:
+            page = max(1, int(page))
+        except (ValueError, TypeError):
+            page = 1
+        total = len(transactions)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        start = (page - 1) * per_page
+        end = start + per_page
+        return jsonify({
+            'transactions': transactions[start:end],
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'total_pages': total_pages,
+        })
     return jsonify(transactions)
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['PUT'])
 def api_update_transaction(trans_id):
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
     allowed_fields = [
         'category', 'subcategory', 'is_personal', 'is_business', 'is_transfer',
         'is_flagged', 'flag_reason', 'user_notes', 'cardholder_name', 'card_last_four',
         'payment_method', 'trans_type', 'description', 'amount', 'trans_date'
     ]
     fields = {k: v for k, v in data.items() if k in allowed_fields}
-    if fields:
-        update_transaction(trans_id, **fields)
+    if 'amount' in fields:
+        try:
+            fields['amount'] = float(fields['amount'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid amount value'}), 400
+    try:
+        if fields:
+            update_transaction(trans_id, **fields)
+    except Exception as e:
+        return jsonify({'error': f'Update failed: {str(e)}'}), 500
     # If category was changed, suggest a rule
     result = {'status': 'ok'}
     if 'category' in fields:
@@ -427,14 +466,15 @@ def api_upload_preview():
 
     # Store preview data
     preview_id = str(uuid.uuid4())[:8]
-    upload_previews[preview_id] = {
-        'transactions': transactions,
-        'account_info': account_info,
-        'filename': filename,
-        'filepath': filepath,
-        'ext': ext,
-        'doc_category': doc_category,
-    }
+    with _preview_lock:
+        upload_previews[preview_id] = {
+            'transactions': transactions,
+            'account_info': account_info,
+            'filename': filename,
+            'filepath': filepath,
+            'ext': ext,
+            'doc_category': doc_category,
+        }
 
     return jsonify({
         'status': 'ok',
@@ -454,10 +494,10 @@ def api_upload_commit():
     data = request.get_json()
     preview_id = data.get('preview_id')
 
-    if preview_id not in upload_previews:
-        return jsonify({'error': 'Preview not found or expired'}), 404
-
-    preview = upload_previews.pop(preview_id)
+    with _preview_lock:
+        if preview_id not in upload_previews:
+            return jsonify({'error': 'Preview not found or expired'}), 404
+        preview = upload_previews.pop(preview_id)
     transactions = data.get('transactions', preview['transactions'])
     account_info = preview['account_info']
     filename = preview['filename']
@@ -526,8 +566,9 @@ def api_upload_cancel():
     data = request.get_json()
     preview_id = data.get('preview_id')
 
-    if preview_id in upload_previews:
-        preview = upload_previews.pop(preview_id)
+    with _preview_lock:
+        preview = upload_previews.pop(preview_id, None)
+    if preview:
         filepath = preview['filepath']
         if os.path.exists(filepath):
             os.remove(filepath)
@@ -567,24 +608,36 @@ def api_doc_transactions(doc_id):
 def api_add_manual_transaction():
     """Manually add a transaction."""
     data = request.get_json()
-    trans_id = add_transaction(
-        doc_id=None,
-        account_id=data.get('account_id'),
-        trans_date=data['trans_date'],
-        post_date=data.get('post_date', data['trans_date']),
-        description=data['description'],
-        amount=float(data['amount']),
-        trans_type=data.get('trans_type', 'debit'),
-        category=data.get('category', 'Uncategorized'),
-        cardholder_name=data.get('cardholder_name', ''),
-        card_last_four=data.get('card_last_four', ''),
-        payment_method=data.get('payment_method', ''),
-        is_transfer=data.get('is_transfer', 0),
-        is_personal=data.get('is_personal', 0),
-        is_business=data.get('is_business', 0),
-        auto_categorized=0,
-        manually_edited=1,
-    )
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    for field in ('trans_date', 'description', 'amount'):
+        if field not in data or not data[field]:
+            return jsonify({'error': f'Missing required field: {field}'}), 400
+    try:
+        amount = float(data['amount'])
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid amount value'}), 400
+    try:
+        trans_id = add_transaction(
+            doc_id=None,
+            account_id=data.get('account_id'),
+            trans_date=data['trans_date'],
+            post_date=data.get('post_date', data['trans_date']),
+            description=data['description'],
+            amount=amount,
+            trans_type=data.get('trans_type', 'debit'),
+            category=data.get('category', 'Uncategorized'),
+            cardholder_name=data.get('cardholder_name', ''),
+            card_last_four=data.get('card_last_four', ''),
+            payment_method=data.get('payment_method', ''),
+            is_transfer=data.get('is_transfer', 0),
+            is_personal=data.get('is_personal', 0),
+            is_business=data.get('is_business', 0),
+            auto_categorized=0,
+            manually_edited=1,
+        )
+    except Exception as e:
+        return jsonify({'error': f'Failed to add transaction: {str(e)}'}), 500
     return jsonify({'status': 'ok', 'id': trans_id})
 
 
@@ -643,6 +696,132 @@ def api_suggest_rule(trans_id):
     if suggestion:
         return jsonify(suggestion)
     return jsonify({'error': 'Could not generate rule suggestion'}), 404
+
+
+@app.route('/api/case-notes', methods=['GET'])
+def api_get_notes():
+    return jsonify(get_case_notes())
+
+
+@app.route('/api/case-notes', methods=['POST'])
+def api_add_note():
+    data = request.get_json()
+    note_id = add_case_note(
+        title=data['title'], content=data['content'],
+        note_type=data.get('note_type', 'general'),
+        severity=data.get('severity', 'info'),
+        linked_transaction_ids=data.get('linked_transaction_ids')
+    )
+    return jsonify({'status': 'ok', 'id': note_id})
+
+
+@app.route('/api/case-notes/<int:note_id>', methods=['PUT'])
+def api_update_note(note_id):
+    data = request.get_json()
+    update_case_note(note_id, **data)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/case-notes/<int:note_id>', methods=['DELETE'])
+def api_delete_note(note_id):
+    delete_case_note(note_id)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/saved-filters', methods=['GET'])
+def api_get_filters():
+    return jsonify(get_saved_filters())
+
+
+@app.route('/api/saved-filters', methods=['POST'])
+def api_add_filter():
+    data = request.get_json()
+    fid = add_saved_filter(data['name'], data['filters'])
+    return jsonify({'status': 'ok', 'id': fid})
+
+
+@app.route('/api/saved-filters/<int:filter_id>', methods=['DELETE'])
+def api_delete_filter(filter_id):
+    delete_saved_filter(filter_id)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/accounts/<int:account_id>/balance', methods=['GET'])
+def api_account_balance(account_id):
+    return jsonify(get_account_running_balance(account_id))
+
+
+@app.route('/api/alerts', methods=['GET'])
+def api_alerts():
+    return jsonify(get_alerts())
+
+
+@app.route('/api/search/global', methods=['GET'])
+def api_global_search():
+    """Search across transactions, case notes, and documents."""
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify({'transactions': [], 'notes': [], 'documents': []})
+    conn = get_db()
+    cursor = conn.cursor()
+    like = f'%{q}%'
+    cursor.execute("SELECT id, trans_date, description, amount, category, cardholder_name FROM transactions WHERE description LIKE ? OR user_notes LIKE ? OR category LIKE ? LIMIT 20", (like, like, like))
+    transactions = [dict(r) for r in cursor.fetchall()]
+    cursor.execute("SELECT id, title, content, note_type, severity FROM case_notes WHERE title LIKE ? OR content LIKE ? LIMIT 10", (like, like))
+    notes = [dict(r) for r in cursor.fetchall()]
+    cursor.execute("SELECT id, filename, doc_category, notes FROM documents WHERE filename LIKE ? OR notes LIKE ? LIMIT 10", (like, like))
+    documents = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({'transactions': transactions, 'notes': notes, 'documents': documents})
+
+
+@app.route('/api/analysis/recurring')
+def api_recurring():
+    """Detect recurring/scheduled transactions."""
+    return jsonify(get_recurring_transactions())
+
+
+@app.route('/api/analysis/cardholder-timeline')
+def api_cardholder_timeline():
+    """Get timeline data per cardholder for overlay comparison."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cardholder_name,
+            strftime('%Y-%m', trans_date) as month,
+            COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as spent,
+            COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as received,
+            COUNT(*) as cnt,
+            COALESCE(SUM(CASE WHEN is_personal = 1 THEN ABS(amount) ELSE 0 END), 0) as personal,
+            COALESCE(SUM(CASE WHEN is_transfer = 1 AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) as transfers
+        FROM transactions
+        WHERE cardholder_name IS NOT NULL AND cardholder_name != ''
+        GROUP BY cardholder_name, strftime('%Y-%m', trans_date)
+        ORDER BY cardholder_name, month
+    """)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    # Group by cardholder
+    result = {}
+    for r in rows:
+        name = r['cardholder_name']
+        if name not in result:
+            result[name] = []
+        result[name].append(r)
+    return jsonify(result)
+
+
+@app.route('/api/export/report')
+def api_export_report():
+    """Generate and download a PDF forensic report."""
+    try:
+        from report_generator import generate_forensic_report
+        filepath, filename = generate_forensic_report()
+        directory = os.path.dirname(filepath)
+        return send_from_directory(directory, filename, as_attachment=True, download_name=filename)
+    except Exception as e:
+        return jsonify({'error': f'Report generation failed: {str(e)}'}), 500
 
 
 @app.route('/health')

@@ -626,6 +626,228 @@ def parse_word_document(filepath):
     return content
 
 
+# --- CSV Bank Statement Parsers ---
+
+def parse_csv_transactions(filepath):
+    """Parse CSV bank statements. Auto-detects common bank formats."""
+    try:
+        df = pd.read_csv(filepath)
+    except Exception:
+        # Try with different encodings
+        try:
+            df = pd.read_csv(filepath, encoding='latin-1')
+        except Exception:
+            return [], {}
+
+    if df.empty:
+        return [], {}
+
+    cols = [c.lower().strip() for c in df.columns]
+
+    # Detect bank format by column patterns
+    if any('posted date' in c or 'posting date' in c for c in cols):
+        return _parse_chase_csv(df)
+    elif any('posted' in c and 'date' in c for c in cols) and any('payee' in c for c in cols):
+        return _parse_wells_fargo_csv(df)
+    elif any('transaction date' in c for c in cols) and any('debit' in c for c in cols):
+        return _parse_bofa_csv(df)
+    elif any('date' in c for c in cols) and any('reference' in c for c in cols):
+        return _parse_citi_csv(df)
+    else:
+        return _parse_generic_csv(df)
+
+
+def _parse_chase_csv(df):
+    """Parse Chase bank CSV exports."""
+    transactions = []
+    col_map = {c.lower().strip(): c for c in df.columns}
+
+    date_col = next((col_map[c] for c in col_map if 'posting' in c or 'posted' in c or 'trans' in c and 'date' in c), None)
+    desc_col = next((col_map[c] for c in col_map if 'desc' in c or 'memo' in c), None)
+    amount_col = next((col_map[c] for c in col_map if 'amount' in c), None)
+    type_col = next((col_map[c] for c in col_map if 'type' in c), None)
+
+    if not date_col or not amount_col:
+        return _parse_generic_csv(df)
+
+    for _, row in df.iterrows():
+        try:
+            amount = float(str(row[amount_col]).replace('$', '').replace(',', ''))
+            desc = str(row.get(desc_col, 'Unknown')) if desc_col and pd.notna(row.get(desc_col)) else 'Unknown'
+            date_str = str(row[date_col])
+
+            transactions.append({
+                'trans_date': date_str,
+                'post_date': date_str,
+                'description': desc,
+                'amount': amount,
+                'trans_type': str(row.get(type_col, 'debit' if amount < 0 else 'credit')) if type_col else ('debit' if amount < 0 else 'credit'),
+                'cardholder_name': '',
+                'card_last_four': '',
+                'payment_method': '',
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return transactions, {'institution': 'Chase', 'account_type': 'bank', 'account_number': ''}
+
+
+def _parse_wells_fargo_csv(df):
+    """Parse Wells Fargo CSV exports."""
+    transactions = []
+    for _, row in df.iterrows():
+        try:
+            date_str = ''
+            desc = 'Unknown'
+            amount = 0
+
+            for col in df.columns:
+                cl = col.lower()
+                if 'date' in cl:
+                    date_str = str(row[col])
+                elif 'payee' in cl or 'desc' in cl:
+                    if pd.notna(row[col]):
+                        desc = str(row[col])
+                elif 'amount' in cl:
+                    amount = float(str(row[col]).replace('$', '').replace(',', ''))
+
+            transactions.append({
+                'trans_date': date_str, 'post_date': date_str, 'description': desc,
+                'amount': amount, 'trans_type': 'debit' if amount < 0 else 'credit',
+                'cardholder_name': '', 'card_last_four': '', 'payment_method': '',
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return transactions, {'institution': 'Wells Fargo', 'account_type': 'bank', 'account_number': ''}
+
+
+def _parse_bofa_csv(df):
+    """Parse Bank of America CSV exports (separate debit/credit columns)."""
+    transactions = []
+    for _, row in df.iterrows():
+        try:
+            date_str = ''
+            desc = 'Unknown'
+            debit = 0
+            credit = 0
+
+            for col in df.columns:
+                cl = col.lower()
+                if 'date' in cl:
+                    date_str = str(row[col])
+                elif 'desc' in cl or 'payee' in cl:
+                    if pd.notna(row[col]):
+                        desc = str(row[col])
+                elif 'debit' in cl:
+                    if pd.notna(row[col]):
+                        debit = float(str(row[col]).replace('$', '').replace(',', '').replace('(', '').replace(')', ''))
+                elif 'credit' in cl:
+                    if pd.notna(row[col]):
+                        credit = float(str(row[col]).replace('$', '').replace(',', ''))
+
+            amount = credit - debit if credit else -debit
+
+            transactions.append({
+                'trans_date': date_str, 'post_date': date_str, 'description': desc,
+                'amount': amount, 'trans_type': 'debit' if amount < 0 else 'credit',
+                'cardholder_name': '', 'card_last_four': '', 'payment_method': '',
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return transactions, {'institution': 'Bank of America', 'account_type': 'bank', 'account_number': ''}
+
+
+def _parse_citi_csv(df):
+    """Parse Citibank CSV exports."""
+    transactions = []
+    for _, row in df.iterrows():
+        try:
+            date_str = ''
+            desc = 'Unknown'
+            amount = 0
+
+            for col in df.columns:
+                cl = col.lower()
+                if 'date' in cl and 'status' not in cl:
+                    date_str = str(row[col])
+                elif 'desc' in cl or 'memo' in cl:
+                    if pd.notna(row[col]):
+                        desc = str(row[col])
+                elif 'amount' in cl or 'debit' in cl or 'credit' in cl:
+                    if pd.notna(row[col]):
+                        val = str(row[col]).replace('$', '').replace(',', '')
+                        if val:
+                            amount = float(val)
+
+            transactions.append({
+                'trans_date': date_str, 'post_date': date_str, 'description': desc,
+                'amount': amount, 'trans_type': 'debit' if amount < 0 else 'credit',
+                'cardholder_name': '', 'card_last_four': '', 'payment_method': '',
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return transactions, {'institution': 'Citibank', 'account_type': 'bank', 'account_number': ''}
+
+
+def _parse_generic_csv(df):
+    """Parse any CSV with auto-detected columns (fallback)."""
+    transactions = []
+    col_map = {}
+
+    for col in df.columns:
+        cl = str(col).lower()
+        if 'date' in cl and 'date' not in col_map:
+            col_map['date'] = col
+        elif 'desc' in cl or 'memo' in cl or 'payee' in cl or 'narrative' in cl:
+            col_map['desc'] = col
+        elif 'amount' in cl or 'total' in cl:
+            col_map['amount'] = col
+        elif 'debit' in cl:
+            col_map['debit'] = col
+        elif 'credit' in cl:
+            col_map['credit'] = col
+        elif 'card' in cl or 'holder' in cl:
+            col_map['cardholder'] = col
+        elif 'type' in cl or 'category' in cl:
+            col_map['type'] = col
+
+    for _, row in df.iterrows():
+        try:
+            # Amount
+            if 'amount' in col_map:
+                val = str(row[col_map['amount']]).replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
+                if not val or val == 'nan':
+                    continue
+                amount = float(val)
+            elif 'debit' in col_map or 'credit' in col_map:
+                debit = float(str(row.get(col_map.get('debit', ''), 0) or 0).replace('$', '').replace(',', '')) if 'debit' in col_map and pd.notna(row.get(col_map['debit'])) else 0
+                credit = float(str(row.get(col_map.get('credit', ''), 0) or 0).replace('$', '').replace(',', '')) if 'credit' in col_map and pd.notna(row.get(col_map['credit'])) else 0
+                amount = credit - debit if credit else -debit
+            else:
+                continue
+
+            desc = str(row.get(col_map.get('desc', ''), 'Unknown'))
+            if desc == 'nan':
+                desc = 'Unknown'
+            date_str = str(row.get(col_map.get('date', ''), ''))
+            cardholder = str(row.get(col_map.get('cardholder', ''), '')) if 'cardholder' in col_map else ''
+            if cardholder == 'nan':
+                cardholder = ''
+
+            transactions.append({
+                'trans_date': date_str, 'post_date': date_str, 'description': desc,
+                'amount': amount, 'trans_type': 'debit' if amount < 0 else 'credit',
+                'cardholder_name': cardholder, 'card_last_four': '', 'payment_method': '',
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return transactions, {'institution': 'Unknown', 'account_type': 'bank', 'account_number': ''}
+
+
 # --- Master parser dispatcher ---
 
 def parse_document(filepath, doc_type='auto'):
@@ -639,7 +861,12 @@ def parse_document(filepath, doc_type='auto'):
 
     if doc_type == 'auto':
         # Auto-detect based on filename and content
-        if ext in ('.xlsx', '.xls', '.csv'):
+        if ext == '.csv':
+            if 'venmo' in filename.lower():
+                doc_type = 'venmo'
+            else:
+                doc_type = 'csv'
+        elif ext in ('.xlsx', '.xls'):
             if 'venmo' in filename.lower():
                 doc_type = 'venmo'
             else:
@@ -668,6 +895,8 @@ def parse_document(filepath, doc_type='auto'):
         return parse_capital_one_statement(filepath)
     elif doc_type == 'venmo':
         return parse_venmo_statement(filepath)
+    elif doc_type == 'csv':
+        return parse_csv_transactions(filepath)
     elif doc_type == 'excel':
         return parse_excel_transactions(filepath)
     elif doc_type in ('word', 'proof'):

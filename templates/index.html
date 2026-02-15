@@ -6,6 +6,7 @@
     <title>Forensic CPA AI - Your Financial Private Investigator</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         :root { --sidebar-width: 250px; }
         * { box-sizing: border-box; }
@@ -175,6 +176,72 @@
         .date-picks { display: flex; gap: 4px; margin-bottom: 10px; }
         .date-picks .btn { font-size: 0.7rem; padding: 2px 8px; }
 
+        /* Global search */
+        .global-search-wrap { position: relative; }
+        .global-search { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; padding: 6px 12px 6px 30px; font-size: 0.8rem; width: 100%; }
+        .global-search:focus { border-color: #58a6ff; outline: none; box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
+        .global-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #8b949e; font-size: 0.75rem; }
+        .global-results { position: absolute; top: 100%; left: 0; right: 0; background: #161b22; border: 1px solid #30363d; border-radius: 0 0 8px 8px; max-height: 400px; overflow-y: auto; z-index: 200; display: none; }
+        .global-results.show { display: block; }
+        .global-result-item { padding: 8px 12px; border-bottom: 1px solid #21262d; cursor: pointer; font-size: 0.78rem; }
+        .global-result-item:hover { background: #1c2333; }
+        .global-result-section { padding: 4px 12px; font-size: 0.7rem; color: #8b949e; background: #0d1117; text-transform: uppercase; font-weight: 700; }
+
+        /* Case notes */
+        .note-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; margin-bottom: 10px; border-left: 4px solid #30363d; }
+        .note-card.finding { border-left-color: #d29922; }
+        .note-card.evidence { border-left-color: #f85149; }
+        .note-card.timeline { border-left-color: #58a6ff; }
+        .note-card .note-title { font-weight: 700; font-size: 0.9rem; }
+        .note-card .note-body { font-size: 0.82rem; color: #8b949e; margin-top: 6px; white-space: pre-wrap; }
+        .note-card .note-meta { font-size: 0.7rem; color: #484f58; margin-top: 6px; }
+
+        /* Alerts */
+        .alert-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #21262d; cursor: pointer; }
+        .alert-item:hover { background: #1c2333; }
+        .alert-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; flex-shrink: 0; }
+        .alert-icon.danger { background: rgba(248,81,73,0.15); color: #f85149; }
+        .alert-icon.warning { background: rgba(210,153,34,0.15); color: #d29922; }
+        .alert-icon.info { background: rgba(88,166,255,0.15); color: #58a6ff; }
+        .alert-count { font-size: 1.2rem; font-weight: 700; min-width: 30px; text-align: center; }
+
+        /* Pagination */
+        .pagination-controls { display: flex; align-items: center; gap: 4px; }
+        .pagination-controls .btn { padding: 2px 8px; font-size: 0.75rem; }
+        .pagination-controls .btn:disabled { opacity: 0.3; pointer-events: none; }
+
+        /* Saved filters */
+        .saved-filter-chip { display: inline-flex; align-items: center; gap: 4px; background: #1c2333; border: 1px solid #30363d; border-radius: 16px; padding: 3px 10px; font-size: 0.72rem; cursor: pointer; margin: 2px; }
+        .saved-filter-chip:hover { border-color: #58a6ff; }
+        .saved-filter-chip .del { color: #8b949e; margin-left: 4px; }
+        .saved-filter-chip .del:hover { color: #f85149; }
+
+        /* Quick comment */
+        .quick-comment { font-size: 0.72rem; color: #8b949e; font-style: italic; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .quick-comment-input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px; padding: 2px 6px; font-size: 0.72rem; width: 140px; }
+
+        /* Mobile hamburger */
+        .mobile-header { display: none; position: fixed; top: 0; left: 0; right: 0; height: 48px; background: #161b22; border-bottom: 1px solid #30363d; z-index: 150; padding: 0 12px; align-items: center; gap: 10px; }
+        .mobile-header .hamburger { background: none; border: none; color: #c9d1d9; font-size: 1.3rem; cursor: pointer; padding: 4px 8px; }
+        .mobile-header .brand-text { color: #58a6ff; font-weight: 700; font-size: 0.9rem; }
+        .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; }
+
+        /* Charts */
+        .chart-container { position: relative; height: 220px; }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); transition: transform 0.3s ease; z-index: 200; }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-overlay.open { display: block; }
+            .mobile-header { display: flex; }
+            .main-content { margin-left: 0 !important; padding: 60px 12px 12px !important; }
+            .row.g-3 > .col, .row.g-3 > [class*="col-md-"] { flex: 0 0 100%; max-width: 100%; }
+            .stat-card .stat-value { font-size: 1.1rem; }
+            .filter-bar .row { flex-direction: column; }
+            .filter-bar .row .col { width: 100%; }
+        }
+
         /* Print styles */
         @media print {
             .sidebar, .view-toggle-bar, .sidebar-footer, .filter-bar, .btn, button,
@@ -198,14 +265,30 @@
     </style>
 </head>
 <body>
+    <!-- Mobile Header -->
+    <div class="mobile-header">
+        <button class="hamburger" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+        <span class="brand-text"><i class="fas fa-search-dollar"></i> Forensic CPA AI</span>
+    </div>
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="brand">
             <h5><i class="fas fa-search-dollar"></i> Forensic CPA AI</h5>
             <small>Your Financial Private Investigator</small>
         </div>
-        <nav class="nav flex-column mt-2">
+        <!-- Global Search -->
+        <div class="p-2">
+            <div class="global-search-wrap">
+                <i class="fas fa-search global-search-icon"></i>
+                <input type="text" class="global-search" id="global-search" placeholder="Search everything..." oninput="globalSearch(this.value)">
+                <div class="global-results" id="global-results"></div>
+            </div>
+        </div>
+        <nav class="nav flex-column">
             <a class="nav-link active" href="#" data-page="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</a>
+            <a class="nav-link" href="#" data-page="alerts"><i class="fas fa-bell"></i> Alerts <span class="badge bg-danger ms-auto" id="alert-badge" style="display:none;"></span></a>
             <a class="nav-link" href="#" data-page="transactions"><i class="fas fa-list-alt"></i> All Transactions</a>
             <a class="nav-link" href="#" data-page="analysis"><i class="fas fa-magnifying-glass-chart"></i> Forensic Analysis</a>
             <a class="nav-link" href="#" data-page="recipients"><i class="fas fa-user-secret"></i> Who Gets The Money</a>
@@ -213,6 +296,9 @@
             <a class="nav-link" href="#" data-page="cardholders"><i class="fas fa-users"></i> Cardholder Compare</a>
             <a class="nav-link" href="#" data-page="money-flow"><i class="fas fa-project-diagram"></i> Money Flow</a>
             <a class="nav-link" href="#" data-page="timeline"><i class="fas fa-chart-line"></i> Timeline</a>
+            <a class="nav-link" href="#" data-page="recurring"><i class="fas fa-redo"></i> Recurring Payments</a>
+            <a class="nav-link" href="#" data-page="cardholder-timeline"><i class="fas fa-chart-area"></i> Cardholder Timeline</a>
+            <a class="nav-link" href="#" data-page="case-notes"><i class="fas fa-sticky-note"></i> Case Notes</a>
             <a class="nav-link" href="#" data-page="accounts"><i class="fas fa-university"></i> Accounts</a>
             <a class="nav-link" href="#" data-page="upload"><i class="fas fa-cloud-upload-alt"></i> Upload</a>
             <a class="nav-link" href="#" data-page="documents"><i class="fas fa-folder-open"></i> Documents</a>
@@ -221,6 +307,7 @@
         </nav>
         <div class="sidebar-footer">
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i class="fas fa-download"></i> Export CSV</button>
+            <button class="btn btn-info btn-sm w-100 mb-2" onclick="exportPDFReport()"><i class="fas fa-file-pdf"></i> Export PDF Report</button>
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="printReport()"><i class="fas fa-print"></i> Print Report</button>
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="recategorizeAll()"><i class="fas fa-sync"></i> Re-categorize</button>
             <button class="btn btn-outline-danger btn-sm w-100" onclick="clearAllData()"><i class="fas fa-trash-alt"></i> Clear All Data</button>
@@ -288,10 +375,26 @@
                 </div>
             </div>
 
+            <!-- Monthly Chart -->
+            <div class="row g-3 mb-3">
+                <div class="col-md-8">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-chart-bar me-1"></i> Monthly Cash Flow</div>
+                        <div class="p-2"><div class="chart-container"><canvas id="monthly-chart"></canvas></div></div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-chart-doughnut me-1"></i> Spending by Category</div>
+                        <div class="p-2"><div class="chart-container"><canvas id="category-chart"></canvas></div></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="row g-3">
                 <div class="col-12">
                     <div class="card-dark">
-                        <div class="card-header"><i class="fas fa-chart-bar me-1"></i> Monthly Cash Flow (click month to drill down)</div>
+                        <div class="card-header"><i class="fas fa-table me-1"></i> Monthly Detail (click month to drill down)</div>
                         <div class="scrollable-table-sm" id="dash-monthly"></div>
                     </div>
                 </div>
@@ -324,20 +427,35 @@
                     <div class="col"><input type="number" class="form-control form-control-sm" id="filter-min-amt" placeholder="Min $"></div>
                     <div class="col-auto"><button class="btn btn-sm btn-info" onclick="loadTransactions()"><i class="fas fa-filter"></i> Filter</button></div>
                     <div class="col-auto"><button class="btn btn-sm btn-outline-light" onclick="clearFilters()"><i class="fas fa-times"></i></button></div>
+                    <div class="col-auto"><button class="btn btn-sm btn-outline-light" onclick="saveCurrentFilter()" title="Save this filter"><i class="fas fa-bookmark"></i></button></div>
                 </div>
+                <div id="saved-filters-bar" class="mt-2" style="display:none;"></div>
             </div>
             <div class="card-dark">
                 <div class="scrollable-table">
                     <table class="table table-dark-custom">
                         <thead><tr>
                             <th class="checkbox-cell"><input type="checkbox" id="select-all"></th>
-                            <th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Cardholder</th><th>Card</th><th>Method</th><th>Tags</th><th>Actions</th>
+                            <th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Cardholder</th><th>Card</th><th>Method</th><th>Tags</th><th>Notes</th><th>Actions</th>
                         </tr></thead>
                         <tbody id="transactions-tbody"></tbody>
                     </table>
                 </div>
                 <div class="d-flex justify-content-between align-items-center p-2" style="border-top:1px solid #30363d;">
                     <span id="trans-count" class="text-muted small"></span>
+                    <div class="pagination-controls" id="pagination-controls" style="display:none;">
+                        <button class="btn btn-sm btn-outline-light" onclick="goToPage(1)" id="page-first"><i class="fas fa-angle-double-left"></i></button>
+                        <button class="btn btn-sm btn-outline-light" onclick="goToPage(currentPage-1)" id="page-prev"><i class="fas fa-angle-left"></i></button>
+                        <span class="text-muted small mx-2" id="page-info"></span>
+                        <button class="btn btn-sm btn-outline-light" onclick="goToPage(currentPage+1)" id="page-next"><i class="fas fa-angle-right"></i></button>
+                        <button class="btn btn-sm btn-outline-light" onclick="goToPage(totalPages)" id="page-last"><i class="fas fa-angle-double-right"></i></button>
+                        <select class="form-select form-select-sm d-inline-block ms-2" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="per-page-select" onchange="changePerPage(this.value)">
+                            <option value="50">50/page</option>
+                            <option value="100" selected>100/page</option>
+                            <option value="250">250/page</option>
+                            <option value="0">Show All</option>
+                        </select>
+                    </div>
                     <span id="trans-total" class="text-muted small fw-bold"></span>
                 </div>
             </div>
@@ -402,7 +520,7 @@
                         <div class="card-body">
                             <div class="mb-3"><label class="form-label small">Document Type</label>
                                 <select class="form-select form-select-sm" id="upload-doc-type">
-                                    <option value="auto">Auto-Detect</option><option value="bank_statement">Bank Statement</option><option value="credit_card">Credit Card</option><option value="venmo">Venmo</option><option value="excel">Excel</option><option value="proof">Proof Document</option>
+                                    <option value="auto">Auto-Detect</option><option value="bank_statement">Bank Statement</option><option value="credit_card">Credit Card</option><option value="venmo">Venmo</option><option value="csv">CSV</option><option value="excel">Excel</option><option value="proof">Proof Document</option>
                                 </select>
                             </div>
                             <div class="mb-3"><label class="form-label small">Category</label>
@@ -517,6 +635,103 @@
             </div>
         </div>
 
+        <!-- ========== RECURRING TRANSACTIONS ========== -->
+        <div class="page-section" id="page-recurring">
+            <h4 class="mb-1"><i class="fas fa-redo text-warning"></i> Recurring Transactions</h4>
+            <p class="text-muted small mb-3">Detect payments that occur at regular intervals - subscriptions, recurring charges, and potential unauthorized automatic payments</p>
+            <div id="recurring-summary" class="row g-3 mb-3"></div>
+            <div class="card-dark">
+                <div class="card-header">
+                    <span><i class="fas fa-sync-alt me-1"></i> Detected Patterns</span>
+                    <div>
+                        <select class="form-select form-select-sm d-inline-block" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="recurring-filter" onchange="renderRecurring()">
+                            <option value="all">All Frequencies</option>
+                            <option value="Weekly">Weekly</option>
+                            <option value="Biweekly">Biweekly</option>
+                            <option value="Monthly">Monthly</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="scrollable-table" style="max-height:70vh;" id="recurring-table"></div>
+            </div>
+        </div>
+
+        <!-- ========== CARDHOLDER TIMELINE ========== -->
+        <div class="page-section" id="page-cardholder-timeline">
+            <h4 class="mb-1"><i class="fas fa-chart-area text-info"></i> Cardholder Timeline Comparison</h4>
+            <p class="text-muted small mb-3">Overlay spending patterns to compare cardholder activity over time and spot correlation patterns</p>
+            <div class="card-dark mb-3">
+                <div class="card-header"><i class="fas fa-users me-1"></i> Monthly Spending Overlay</div>
+                <div class="p-2"><div class="chart-container" style="height:350px;"><canvas id="cardholder-timeline-chart"></canvas></div></div>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-chart-bar me-1"></i> Personal vs Business by Cardholder</div>
+                        <div class="p-2"><div class="chart-container"><canvas id="personal-business-chart"></canvas></div></div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card-dark">
+                        <div class="card-header"><i class="fas fa-table me-1"></i> Monthly Detail</div>
+                        <div class="scrollable-table" style="max-height:350px;" id="cardholder-timeline-table"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== ALERTS ========== -->
+        <div class="page-section" id="page-alerts">
+            <h4 class="mb-1"><i class="fas fa-bell text-warning"></i> Alerts</h4>
+            <p class="text-muted small mb-3">Items needing your attention - click any alert to jump to the relevant transactions</p>
+            <div id="alerts-summary" class="row g-3 mb-3"></div>
+            <div class="card-dark">
+                <div class="card-header"><i class="fas fa-exclamation-circle me-1"></i> Active Alerts</div>
+                <div id="alerts-list" class="p-0"></div>
+            </div>
+        </div>
+
+        <!-- ========== CASE NOTES ========== -->
+        <div class="page-section" id="page-case-notes">
+            <h4 class="mb-1"><i class="fas fa-sticky-note text-info"></i> Case Notes</h4>
+            <p class="text-muted small mb-3">Investigation journal - document findings, evidence, and timeline observations</p>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <select class="form-select form-select-sm d-inline-block" style="width:auto;background:#0d1117;border-color:#30363d;color:#c9d1d9;" id="note-filter" onchange="renderCaseNotes()">
+                        <option value="all">All Notes</option>
+                        <option value="finding">Findings</option>
+                        <option value="evidence">Evidence</option>
+                        <option value="timeline">Timeline</option>
+                        <option value="general">General</option>
+                    </select>
+                </div>
+                <button class="btn btn-sm btn-info" onclick="showAddNoteModal()"><i class="fas fa-plus me-1"></i>Add Note</button>
+            </div>
+            <div id="case-notes-list"></div>
+        </div>
+
+        <!-- Case Note Modal -->
+        <div class="modal fade" id="noteModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+            <div class="modal-header"><h6 class="modal-title" id="noteModalTitle"><i class="fas fa-sticky-note"></i> Add Note</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="mb-2"><label class="form-label small">Title</label><input type="text" class="form-control form-control-sm" id="note-title"></div>
+                <div class="mb-2"><label class="form-label small">Content</label><textarea class="form-control form-control-sm" id="note-content" rows="5"></textarea></div>
+                <div class="row g-2">
+                    <div class="col-6"><label class="form-label small">Type</label>
+                        <select class="form-select form-select-sm" id="note-type">
+                            <option value="general">General</option><option value="finding">Finding</option><option value="evidence">Evidence</option><option value="timeline">Timeline</option>
+                        </select>
+                    </div>
+                    <div class="col-6"><label class="form-label small">Severity</label>
+                        <select class="form-select form-select-sm" id="note-severity">
+                            <option value="info">Info</option><option value="warning">Warning</option><option value="danger">Critical</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button><button class="btn btn-sm btn-info" id="note-save-btn" onclick="saveNote()">Save</button></div>
+        </div></div></div>
+
         <!-- ========== AUDIT TRAIL ========== -->
         <div class="page-section" id="page-audit-trail">
             <h4 class="mb-1"><i class="fas fa-history text-info"></i> Audit Trail</h4>
@@ -596,6 +811,12 @@
     let dashStats = null;
     let currentPreviewId = null;
     let viewMode = sessionStorage.getItem('viewMode') || 'all';
+    let currentPage = 1;
+    let totalPages = 1;
+    let perPage = 100;
+    let recurringData = [];
+    let cardholderTimelineChart = null;
+    let personalBusinessChart = null;
 
     // ===== VIEW MODE TOGGLE =====
     function setViewMode(mode) {
@@ -645,10 +866,16 @@
         else if (page === 'cardholders') loadCardholders();
         else if (page === 'money-flow') loadMoneyFlow();
         else if (page === 'timeline') loadTimeline();
+        else if (page === 'recurring') loadRecurring();
+        else if (page === 'cardholder-timeline') loadCardholderTimeline();
+        else if (page === 'alerts') loadAlerts();
+        else if (page === 'case-notes') loadCaseNotes();
         else if (page === 'accounts') loadAccounts();
         else if (page === 'documents') loadDocuments();
         else if (page === 'categories') loadCategoriesPage();
         else if (page === 'audit-trail') loadAuditTrail();
+        // Close sidebar on mobile after navigation
+        if (window.innerWidth <= 768) toggleSidebar(false);
     }
 
     // ===== DRILL-DOWN: Navigate to transactions with pre-set filters =====
@@ -769,6 +996,9 @@
         });
         mHtml += '</tbody></table>';
         document.getElementById('dash-monthly').innerHTML = mHtml;
+
+        // Render Chart.js charts
+        renderDashboardCharts(s);
     }
 
     function drillToMonth(month) {
@@ -809,7 +1039,19 @@
         if (fl === 'transfer') params.set('is_transfer', '1');
         if (viewMode !== 'all') params.set('view_mode', viewMode);
 
-        allTransactions = await api('/api/transactions?' + params.toString());
+        // Pagination support
+        if (perPage > 0) {
+            params.set('page', currentPage);
+            params.set('per_page', perPage);
+            const result = await api('/api/transactions?' + params.toString());
+            allTransactions = result.transactions || result;
+            totalPages = result.total_pages || 1;
+            currentPage = result.page || 1;
+            updatePagination(result.total || allTransactions.length);
+        } else {
+            allTransactions = await api('/api/transactions?' + params.toString());
+            document.getElementById('pagination-controls').style.display = 'none';
+        }
         selectedIds.clear();
         populateCardholderFilter();
         renderTransactions();
@@ -846,6 +1088,7 @@
                 <td style="font-size:0.75rem;">${t.card_last_four ? '#'+t.card_last_four : ''}</td>
                 <td style="font-size:0.75rem;">${t.payment_method||''}</td>
                 <td style="white-space:nowrap;">${tags}</td>
+                <td><span class="quick-comment" ondblclick="inlineEditNote(this, ${t.id})" title="Double-click to add note">${t.user_notes ? esc(t.user_notes) : '<span style="color:#484f58;">+ note</span>'}</span></td>
                 <td style="white-space:nowrap;">
                     <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
                     <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
@@ -854,7 +1097,7 @@
             </tr>`;
         });
 
-        tbody.innerHTML = html || '<tr><td colspan="10" class="text-center text-muted py-4">No transactions found.</td></tr>';
+        tbody.innerHTML = html || '<tr><td colspan="11" class="text-center text-muted py-4">No transactions found.</td></tr>';
         document.getElementById('trans-count').textContent = `${allTransactions.length} transactions`;
         document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
 
@@ -873,6 +1116,30 @@
     function updateBulkButtons() { const show = selectedIds.size > 0; document.getElementById('bulk-delete-btn').style.display = show?'':'none'; document.getElementById('bulk-edit-btn').style.display = show?'':'none'; }
 
     async function quickCategory(id, cat) { await api(`/api/transactions/${id}`, 'PUT', { category: cat }); toast('Updated'); }
+
+    function inlineEditNote(el, id) {
+        const current = allTransactions.find(t => t.id === id)?.user_notes || '';
+        const input = document.createElement('input');
+        input.className = 'quick-comment-input';
+        input.value = current;
+        input.placeholder = 'Add note...';
+        el.replaceWith(input);
+        input.focus();
+        input.select();
+        const save = async () => {
+            await api(`/api/transactions/${id}`, 'PUT', { user_notes: input.value });
+            const t = allTransactions.find(x => x.id === id);
+            if (t) t.user_notes = input.value;
+            const span = document.createElement('span');
+            span.className = 'quick-comment';
+            span.setAttribute('ondblclick', `inlineEditNote(this, ${id})`);
+            span.title = 'Double-click to edit';
+            span.innerHTML = input.value ? esc(input.value) : '<span style="color:#484f58;">+ note</span>';
+            input.replaceWith(span);
+        };
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = current; input.blur(); } });
+    }
     async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged?0:1 }); loadTransactions(); toast(t.is_flagged?'Unflagged':'Flagged'); }
 
     async function editTransaction(id) {
@@ -982,21 +1249,28 @@
         el.innerHTML = `
             <div class="d-flex justify-content-between align-items-start mb-2">
                 <strong><i class="fas fa-lightbulb text-warning me-1"></i> Create Rule?</strong>
-                <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="this.closest('.rule-suggestion').remove()"><i class="fas fa-times fa-xs"></i></button>
+                <button class="btn btn-sm btn-outline-light py-0 px-1 rule-dismiss"><i class="fas fa-times fa-xs"></i></button>
             </div>
             <div class="mb-2">Pattern: <code>${esc(suggestion.pattern)}</code> &rarr; <strong>${esc(suggestion.category)}</strong></div>
             <div class="small text-muted mb-2">From: "${esc(suggestion.source_description?.substring(0,60))}"</div>
-            <button class="btn btn-sm btn-info" onclick="acceptRuleSuggestion(this, '${esc(suggestion.pattern)}', '${esc(suggestion.category)}', ${suggestion.is_personal}, ${suggestion.is_business}, ${suggestion.is_transfer})"><i class="fas fa-check me-1"></i>Create Rule</button>
-            <button class="btn btn-sm btn-outline-light" onclick="this.closest('.rule-suggestion').remove()">Dismiss</button>
+            <button class="btn btn-sm btn-info rule-accept"><i class="fas fa-check me-1"></i>Create Rule</button>
+            <button class="btn btn-sm btn-outline-light rule-dismiss">Dismiss</button>
         `;
+        el.querySelectorAll('.rule-dismiss').forEach(b => b.addEventListener('click', () => el.remove()));
+        el.querySelector('.rule-accept').addEventListener('click', async function() {
+            await api('/api/categories/rules', 'POST', {
+                pattern: suggestion.pattern,
+                category: suggestion.category,
+                priority: 50,
+                is_personal: suggestion.is_personal,
+                is_business: suggestion.is_business,
+                is_transfer: suggestion.is_transfer
+            });
+            el.remove();
+            toast('Rule created! Run Re-categorize to apply.');
+        });
         c.appendChild(el);
         setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);
-    }
-
-    async function acceptRuleSuggestion(btn, pattern, category, isPersonal, isBusiness, isTransfer) {
-        await api('/api/categories/rules', 'POST', { pattern, category, priority: 50, is_personal: isPersonal, is_business: isBusiness, is_transfer: isTransfer });
-        btn.closest('.rule-suggestion').remove();
-        toast('Rule created! Run Re-categorize to apply.');
     }
 
     async function deleteTransaction(id) { if (!confirm('Delete this transaction?')) return; await api(`/api/transactions/${id}`, 'DELETE'); loadTransactions(); toast('Deleted'); }
@@ -1048,7 +1322,7 @@
             flHtml += `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
                 <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
                 <td>${esc(t.cardholder_name||'')}</td><td class="text-warning small">${esc(t.flag_reason||'')}</td>
-                <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=flagged;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`;
+                <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`;
         });
         if (!flagged.length) flHtml += '<tr><td colspan="6" class="text-muted text-center py-3">No flagged transactions</td></tr>';
         flHtml += '</tbody></table>';
@@ -1097,7 +1371,8 @@
                     <h6><i class="fas fa-${icon} me-1"></i> ${esc(acct.account_name)}</h6>
                     <div class="small text-muted">${esc(acct.institution||'')} | #${esc(acct.account_number||'')}</div>
                     <div class="small text-muted">Type: ${acct.account_type} ${acct.cardholder_name ? '| '+esc(acct.cardholder_name) : ''}</div>
-                    <button class="btn btn-sm btn-outline-light mt-2" onclick="drillToTransactions({account_id:'${acct.id}'})"><i class="fas fa-list"></i> View Transactions</button>
+                    <button class="btn btn-sm btn-outline-light mt-2 me-1" onclick="drillToTransactions({account_id:'${acct.id}'})"><i class="fas fa-list"></i> Transactions</button>
+                    <button class="btn btn-sm btn-outline-info mt-2" onclick="showRunningBalance(${acct.id}, '${esc(acct.account_name)}')"><i class="fas fa-chart-area"></i> Balance</button>
                 </div>
             </div></div>`;
         }
@@ -1168,7 +1443,7 @@
                     if (t.is_flagged) tags += '<span class="badge badge-flagged me-1">FLAG</span>';
                     if (t._is_duplicate) tags += '<span class="badge bg-warning text-dark me-1" title="Duplicate of existing transaction">DUP</span>';
 
-                    previewHtml += `<tr class="${t._is_duplicate ? 'duplicate-row' : ''}">`;
+                    previewHtml += `<tr class="${t._is_duplicate ? 'duplicate-row' : ''}">
                         <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date||''}</td>
                         <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(t.description)}">${esc(t.description)}</td>
                         <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
@@ -1208,7 +1483,7 @@
 
         const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
         if (data.error) {
-            statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${data.error}</div>`;
+            statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(data.error)}</div>`;
         } else {
             statusEl.innerHTML = '';
             previewEl.style.display = 'none';
@@ -1435,7 +1710,7 @@
             html += `<tr>
                 <td style="white-space:nowrap;font-size:0.75rem;">${(entry.timestamp || '').substring(0,19)}</td>
                 <td><span class="${actionClass} fw-bold">${entry.action || ''}</span></td>
-                <td style="font-size:0.8rem;">${esc(entry.field_name || '')}</td>
+                <td style="font-size:0.8rem;">${esc(entry.field_changed || '')}</td>
                 <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.old_value || '')}">${esc(entry.old_value || '-')}</td>
                 <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.new_value || '')}">${esc(entry.new_value || '-')}</td>
                 <td style="font-size:0.75rem;">${entry.trans_description ? esc(entry.trans_description).substring(0,30) + (entry.trans_amount ? ' ($' + fmt(Math.abs(entry.trans_amount)) + ')' : '') : '#' + (entry.transaction_id || '?')}</td>
@@ -1664,10 +1939,525 @@
 
     function fmt(n) { return (n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
     function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function toast(msg) { const c = document.getElementById('toast-container'); const el = document.createElement('div'); el.className = 'alert alert-info small py-2 px-3 mb-2'; el.style.cssText = 'min-width:200px;'; el.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${msg}`; c.appendChild(el); setTimeout(() => el.remove(), 3000); }
+    function toast(msg) { const c = document.getElementById('toast-container'); const el = document.createElement('div'); el.className = 'alert alert-info small py-2 px-3 mb-2'; el.style.cssText = 'min-width:200px;'; el.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${esc(msg)}`; c.appendChild(el); setTimeout(() => el.remove(), 3000); }
+
+    // ===== MOBILE SIDEBAR TOGGLE =====
+    function toggleSidebar(forceState) {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        const isOpen = sidebar.classList.contains('open');
+        const shouldOpen = forceState !== undefined ? forceState : !isOpen;
+        sidebar.classList.toggle('open', shouldOpen);
+        overlay.classList.toggle('open', shouldOpen);
+    }
+
+    // ===== GLOBAL SEARCH =====
+    let globalSearchTimer = null;
+    async function globalSearch(query) {
+        const resultsEl = document.getElementById('global-results');
+        clearTimeout(globalSearchTimer);
+        if (!query || query.length < 2) { resultsEl.classList.remove('show'); return; }
+        globalSearchTimer = setTimeout(async () => {
+            const data = await api('/api/search/global?q=' + encodeURIComponent(query));
+            let html = '';
+            if (data.transactions && data.transactions.length) {
+                html += '<div class="global-result-section">Transactions</div>';
+                data.transactions.forEach(t => {
+                    html += `<div class="global-result-item" onclick="navigateTo('transactions',{search:'${esc(query)}'});document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(t.description)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${t.trans_date} | $${fmt(Math.abs(t.amount))} | ${t.category}</div>
+                    </div>`;
+                });
+            }
+            if (data.notes && data.notes.length) {
+                html += '<div class="global-result-section">Case Notes</div>';
+                data.notes.forEach(n => {
+                    html += `<div class="global-result-item" onclick="navigateTo('case-notes');document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(n.title)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${n.note_type} | ${n.severity}</div>
+                    </div>`;
+                });
+            }
+            if (data.documents && data.documents.length) {
+                html += '<div class="global-result-section">Documents</div>';
+                data.documents.forEach(d => {
+                    html += `<div class="global-result-item" onclick="navigateTo('documents');document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(d.filename)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${d.doc_category || ''}</div>
+                    </div>`;
+                });
+            }
+            if (!html) html = '<div class="global-result-item text-muted">No results found</div>';
+            resultsEl.innerHTML = html;
+            resultsEl.classList.add('show');
+        }, 300);
+    }
+    // Close global search on outside click
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.global-search-wrap')) {
+            document.getElementById('global-results').classList.remove('show');
+        }
+    });
+
+    // ===== ALERTS =====
+    async function loadAlerts() {
+        const alerts = await api('/api/alerts');
+        updateAlertBadge(alerts);
+
+        const totalItems = alerts.reduce((s, a) => s + a.count, 0);
+        const dangerCount = alerts.filter(a => a.severity === 'danger').length;
+        document.getElementById('alerts-summary').innerHTML = `
+            <div class="col"><div class="stat-card ${dangerCount > 0 ? 'danger' : 'info'}"><div class="stat-value">${alerts.length}</div><div class="stat-label">Active Alerts</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">${totalItems}</div><div class="stat-label">Items Needing Attention</div></div></div>
+            <div class="col"><div class="stat-card ${dangerCount > 0 ? 'danger' : 'success'}"><div class="stat-value">${dangerCount}</div><div class="stat-label">Critical Alerts</div></div></div>
+        `;
+
+        if (!alerts.length) {
+            document.getElementById('alerts-list').innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-check-circle fa-2x mb-2 text-success"></i><br>All clear! No items need attention.</div>';
+            return;
+        }
+
+        let html = '';
+        alerts.forEach(a => {
+            const icon = a.type === 'uncategorized' ? 'question-circle' : a.type === 'flagged_unreviewed' ? 'flag' : a.type === 'no_cardholder' ? 'user-slash' : a.type === 'unclassified' ? 'tags' : 'dollar-sign';
+            html += `<div class="alert-item" onclick="navigateTo('${a.action}', ${JSON.stringify(a.filters).replace(/"/g,'&quot;')})">
+                <div class="alert-icon ${a.severity}"><i class="fas fa-${icon}"></i></div>
+                <div class="flex-grow-1">
+                    <div class="fw-bold" style="font-size:0.85rem;">${esc(a.title)}</div>
+                    <div class="text-muted" style="font-size:0.75rem;">${esc(a.detail)}</div>
+                </div>
+                <div class="alert-count ${a.severity === 'danger' ? 'text-danger' : a.severity === 'warning' ? 'text-warning' : 'text-info'}">${a.count}</div>
+                <i class="fas fa-chevron-right text-muted"></i>
+            </div>`;
+        });
+        document.getElementById('alerts-list').innerHTML = html;
+    }
+
+    function updateAlertBadge(alerts) {
+        const badge = document.getElementById('alert-badge');
+        if (!alerts) { api('/api/alerts').then(a => updateAlertBadge(a)); return; }
+        const total = alerts.reduce((s, a) => s + a.count, 0);
+        if (total > 0) { badge.textContent = total; badge.style.display = ''; }
+        else { badge.style.display = 'none'; }
+    }
+
+    // ===== CASE NOTES =====
+    let caseNotesData = [];
+    let editingNoteId = null;
+
+    async function loadCaseNotes() {
+        caseNotesData = await api('/api/case-notes');
+        renderCaseNotes();
+    }
+
+    function renderCaseNotes() {
+        const filter = document.getElementById('note-filter')?.value || 'all';
+        let filtered = caseNotesData;
+        if (filter !== 'all') filtered = caseNotesData.filter(n => n.note_type === filter);
+
+        if (!filtered.length) {
+            document.getElementById('case-notes-list').innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-sticky-note fa-2x mb-2"></i><br>No case notes yet. Click "Add Note" to start documenting your investigation.</div>';
+            return;
+        }
+
+        let html = '';
+        filtered.forEach(n => {
+            const sevIcon = n.severity === 'danger' ? 'exclamation-triangle text-danger' : n.severity === 'warning' ? 'exclamation-circle text-warning' : 'info-circle text-info';
+            const typeLabel = n.note_type.charAt(0).toUpperCase() + n.note_type.slice(1);
+            html += `<div class="note-card ${n.note_type}">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div class="note-title"><i class="fas fa-${sevIcon} me-1"></i> ${esc(n.title)}</div>
+                    <div>
+                        <span class="badge bg-secondary me-1">${typeLabel}</span>
+                        <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editNote(${n.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
+                        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteNote(${n.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+                    </div>
+                </div>
+                <div class="note-body">${esc(n.content)}</div>
+                <div class="note-meta"><i class="fas fa-clock me-1"></i> Created: ${(n.created_at||'').substring(0,16)} | Updated: ${(n.updated_at||'').substring(0,16)}</div>
+            </div>`;
+        });
+        document.getElementById('case-notes-list').innerHTML = html;
+    }
+
+    function showAddNoteModal() {
+        editingNoteId = null;
+        document.getElementById('noteModalTitle').innerHTML = '<i class="fas fa-sticky-note"></i> Add Note';
+        document.getElementById('note-title').value = '';
+        document.getElementById('note-content').value = '';
+        document.getElementById('note-type').value = 'general';
+        document.getElementById('note-severity').value = 'info';
+        new bootstrap.Modal(document.getElementById('noteModal')).show();
+    }
+
+    function editNote(id) {
+        const note = caseNotesData.find(n => n.id === id);
+        if (!note) return;
+        editingNoteId = id;
+        document.getElementById('noteModalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit Note';
+        document.getElementById('note-title').value = note.title;
+        document.getElementById('note-content').value = note.content;
+        document.getElementById('note-type').value = note.note_type || 'general';
+        document.getElementById('note-severity').value = note.severity || 'info';
+        new bootstrap.Modal(document.getElementById('noteModal')).show();
+    }
+
+    async function saveNote() {
+        const data = {
+            title: document.getElementById('note-title').value,
+            content: document.getElementById('note-content').value,
+            note_type: document.getElementById('note-type').value,
+            severity: document.getElementById('note-severity').value,
+        };
+        if (!data.title || !data.content) { toast('Title and content required'); return; }
+        if (editingNoteId) {
+            await api(`/api/case-notes/${editingNoteId}`, 'PUT', data);
+            toast('Note updated');
+        } else {
+            await api('/api/case-notes', 'POST', data);
+            toast('Note added');
+        }
+        bootstrap.Modal.getInstance(document.getElementById('noteModal')).hide();
+        loadCaseNotes();
+    }
+
+    async function deleteNote(id) {
+        if (!confirm('Delete this note?')) return;
+        await api(`/api/case-notes/${id}`, 'DELETE');
+        toast('Note deleted');
+        loadCaseNotes();
+    }
+
+    // ===== SAVED FILTERS =====
+    async function saveCurrentFilter() {
+        const name = prompt('Name this filter:');
+        if (!name) return;
+        const filters = {};
+        const fv = (id) => document.getElementById(id)?.value || '';
+        if (fv('filter-search')) filters.search = fv('filter-search');
+        if (fv('filter-category')) filters.category = fv('filter-category');
+        if (fv('filter-cardholder')) filters.cardholder = fv('filter-cardholder');
+        if (fv('filter-type')) filters.trans_type = fv('filter-type');
+        if (fv('filter-date-from')) filters.date_from = fv('filter-date-from');
+        if (fv('filter-date-to')) filters.date_to = fv('filter-date-to');
+        if (fv('filter-flags')) filters.flags = fv('filter-flags');
+        if (fv('filter-min-amt')) filters.min_amount = fv('filter-min-amt');
+        await api('/api/saved-filters', 'POST', { name, filters });
+        toast('Filter saved');
+        loadSavedFilters();
+    }
+
+    async function loadSavedFilters() {
+        const filters = await api('/api/saved-filters');
+        const bar = document.getElementById('saved-filters-bar');
+        if (!filters.length) { bar.style.display = 'none'; return; }
+        bar.style.display = 'block';
+        let html = '<span class="text-muted small me-2"><i class="fas fa-bookmark me-1"></i>Saved:</span>';
+        filters.forEach(f => {
+            html += `<span class="saved-filter-chip" onclick="applySavedFilter(${f.id})">
+                ${esc(f.name)}
+                <span class="del" onclick="event.stopPropagation();deleteSavedFilter(${f.id})">&times;</span>
+            </span>`;
+        });
+        bar.innerHTML = html;
+    }
+
+    async function applySavedFilter(id) {
+        const filters = await api('/api/saved-filters');
+        const f = filters.find(x => x.id === id);
+        if (!f) return;
+        const parsed = typeof f.filters === 'string' ? JSON.parse(f.filters) : f.filters;
+        clearFilters();
+        if (parsed.search) document.getElementById('filter-search').value = parsed.search;
+        if (parsed.category) document.getElementById('filter-category').value = parsed.category;
+        if (parsed.cardholder) document.getElementById('filter-cardholder').value = parsed.cardholder;
+        if (parsed.trans_type) document.getElementById('filter-type').value = parsed.trans_type;
+        if (parsed.date_from) document.getElementById('filter-date-from').value = parsed.date_from;
+        if (parsed.date_to) document.getElementById('filter-date-to').value = parsed.date_to;
+        if (parsed.flags) document.getElementById('filter-flags').value = parsed.flags;
+        if (parsed.min_amount) document.getElementById('filter-min-amt').value = parsed.min_amount;
+        loadTransactions();
+    }
+
+    async function deleteSavedFilter(id) {
+        await api(`/api/saved-filters/${id}`, 'DELETE');
+        toast('Filter deleted');
+        loadSavedFilters();
+    }
+
+    // ===== PAGINATION =====
+    function updatePagination(total) {
+        const controls = document.getElementById('pagination-controls');
+        if (total <= perPage) {
+            controls.style.display = 'none';
+            return;
+        }
+        controls.style.display = '';
+        document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages} (${total} total)`;
+        document.getElementById('page-first').disabled = currentPage <= 1;
+        document.getElementById('page-prev').disabled = currentPage <= 1;
+        document.getElementById('page-next').disabled = currentPage >= totalPages;
+        document.getElementById('page-last').disabled = currentPage >= totalPages;
+    }
+
+    function goToPage(page) {
+        if (page < 1) page = 1;
+        if (page > totalPages) page = totalPages;
+        currentPage = page;
+        loadTransactions();
+    }
+
+    function changePerPage(val) {
+        perPage = parseInt(val);
+        currentPage = 1;
+        loadTransactions();
+    }
+
+    // ===== EXPORT PDF REPORT =====
+    function exportPDFReport() {
+        toast('Generating PDF report...');
+        window.open('/api/export/report', '_blank');
+    }
+
+    // ===== RECURRING TRANSACTIONS =====
+    async function loadRecurring() {
+        recurringData = await api('/api/analysis/recurring');
+        renderRecurring();
+    }
+
+    function renderRecurring() {
+        const filter = document.getElementById('recurring-filter')?.value || 'all';
+        let filtered = recurringData;
+        if (filter !== 'all') filtered = recurringData.filter(r => r.frequency === filter);
+
+        // Summary
+        const totalRecurring = recurringData.reduce((s, r) => s + r.total_amount, 0);
+        const withFlags = recurringData.filter(r => r.flags.length > 0).length;
+        document.getElementById('recurring-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${recurringData.length}</div><div class="stat-label">Recurring Patterns</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalRecurring)}</div><div class="stat-label">Total Recurring Spend</div></div></div>
+            <div class="col"><div class="stat-card ${withFlags > 0 ? 'warning' : 'success'}"><div class="stat-value">${withFlags}</div><div class="stat-label">Patterns with Flags</div></div></div>
+        `;
+
+        if (!filtered.length) {
+            document.getElementById('recurring-table').innerHTML = '<div class="text-center text-muted py-4">No recurring patterns detected.</div>';
+            return;
+        }
+
+        let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Description</th><th>Frequency</th><th>Count</th><th>Avg Amount</th><th>Total</th>
+            <th>Amount Consistent</th><th>Period</th><th>Flags</th>
+        </tr></thead><tbody>`;
+
+        filtered.forEach(r => {
+            const flagHtml = r.flags.map(f => `<div class="text-warning" style="font-size:0.7rem;">${esc(f)}</div>`).join('');
+            html += `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.description.substring(0,20))}'})">
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.description)}">${esc(r.description)}</td>
+                <td><span class="badge bg-secondary">${r.frequency}</span></td>
+                <td>${r.count}</td>
+                <td class="amount-negative">$${fmt(r.avg_amount)}</td>
+                <td class="amount-negative fw-bold">$${fmt(r.total_amount)}</td>
+                <td>${r.amount_consistent ? '<i class="fas fa-check text-success"></i> Yes' : '<i class="fas fa-times text-muted"></i> Varies'}</td>
+                <td style="font-size:0.72rem;">${r.first_date} to ${r.last_date}</td>
+                <td>${flagHtml || '<span class="text-muted">-</span>'}</td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        document.getElementById('recurring-table').innerHTML = html;
+    }
+
+    // ===== CARDHOLDER TIMELINE COMPARISON =====
+    async function loadCardholderTimeline() {
+        const data = await api('/api/analysis/cardholder-timeline');
+        renderCardholderTimeline(data);
+    }
+
+    function renderCardholderTimeline(data) {
+        const cardholders = Object.keys(data);
+        if (!cardholders.length) {
+            document.getElementById('cardholder-timeline-table').innerHTML = '<div class="text-center text-muted py-4">No cardholder data available.</div>';
+            return;
+        }
+
+        // Collect all unique months
+        const allMonths = new Set();
+        cardholders.forEach(ch => data[ch].forEach(d => allMonths.add(d.month)));
+        const months = [...allMonths].sort();
+
+        // Chart colors
+        const chartColors = ['#f85149', '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#fd7e14'];
+
+        // Spending overlay chart
+        const ctx1 = document.getElementById('cardholder-timeline-chart');
+        if (cardholderTimelineChart) cardholderTimelineChart.destroy();
+        cardholderTimelineChart = new Chart(ctx1, {
+            type: 'line',
+            data: {
+                labels: months,
+                datasets: cardholders.map((ch, i) => {
+                    const monthMap = {};
+                    data[ch].forEach(d => { monthMap[d.month] = d.spent; });
+                    return {
+                        label: ch,
+                        data: months.map(m => monthMap[m] || 0),
+                        borderColor: chartColors[i % chartColors.length],
+                        backgroundColor: chartColors[i % chartColors.length] + '20',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 3,
+                    };
+                })
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#8b949e' } } },
+                scales: {
+                    x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e', callback: v => '$' + (v/1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                },
+                interaction: { mode: 'index', intersect: false }
+            }
+        });
+
+        // Personal vs Business stacked bar
+        const ctx2 = document.getElementById('personal-business-chart');
+        if (personalBusinessChart) personalBusinessChart.destroy();
+        personalBusinessChart = new Chart(ctx2, {
+            type: 'bar',
+            data: {
+                labels: cardholders,
+                datasets: [
+                    {
+                        label: 'Personal',
+                        data: cardholders.map(ch => data[ch].reduce((s, d) => s + d.personal, 0)),
+                        backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3
+                    },
+                    {
+                        label: 'Business',
+                        data: cardholders.map(ch => data[ch].reduce((s, d) => s + (d.spent - d.personal), 0)),
+                        backgroundColor: 'rgba(88,166,255,0.7)', borderRadius: 3
+                    },
+                    {
+                        label: 'Transfers',
+                        data: cardholders.map(ch => data[ch].reduce((s, d) => s + d.transfers, 0)),
+                        backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3
+                    }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#8b949e', font: { size: 10 } } } },
+                scales: {
+                    x: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+                    y: { stacked: true, ticks: { color: '#8b949e', callback: v => '$' + (v/1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                }
+            }
+        });
+
+        // Detail table
+        let tHtml = '<table class="table table-dark-custom"><thead><tr><th>Month</th>';
+        cardholders.forEach(ch => { tHtml += `<th>${esc(ch)}</th>`; });
+        tHtml += '</tr></thead><tbody>';
+        months.forEach(m => {
+            tHtml += `<tr><td class="fw-bold">${m}</td>`;
+            cardholders.forEach(ch => {
+                const d = data[ch].find(x => x.month === m);
+                tHtml += `<td class="amount-negative">$${fmt(d ? d.spent : 0)}</td>`;
+            });
+            tHtml += '</tr>';
+        });
+        // Totals row
+        tHtml += '<tr class="fw-bold" style="border-top:2px solid #58a6ff;"><td>TOTAL</td>';
+        cardholders.forEach(ch => {
+            const total = data[ch].reduce((s, d) => s + d.spent, 0);
+            tHtml += `<td class="amount-negative">$${fmt(total)}</td>`;
+        });
+        tHtml += '</tr></tbody></table>';
+        document.getElementById('cardholder-timeline-table').innerHTML = tHtml;
+    }
+
+    // ===== CHART.JS RENDERING =====
+    let monthlyChart = null;
+    let categoryChart = null;
+
+    function renderDashboardCharts(stats) {
+        const monthly = stats.monthly_trend || [];
+        const categories = stats.by_category || [];
+
+        // Monthly Cash Flow Bar Chart
+        const mCtx = document.getElementById('monthly-chart');
+        if (monthlyChart) monthlyChart.destroy();
+        monthlyChart = new Chart(mCtx, {
+            type: 'bar',
+            data: {
+                labels: monthly.map(m => m.month),
+                datasets: [
+                    { label: 'Deposits', data: monthly.map(m => m.deposits), backgroundColor: 'rgba(63,185,80,0.7)', borderRadius: 3 },
+                    { label: 'Withdrawals', data: monthly.map(m => m.withdrawals), backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3 },
+                    { label: 'Transfers Out', data: monthly.map(m => m.transfers_out), backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3 },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+                scales: {
+                    x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + (v/1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                }
+            }
+        });
+
+        // Category Doughnut Chart
+        const cCtx = document.getElementById('category-chart');
+        if (categoryChart) categoryChart.destroy();
+        const topCats = categories.filter(c => c.spent > 0).slice(0, 8);
+        const colors = ['#f85149','#d29922','#58a6ff','#3fb950','#bc8cff','#fd7e14','#3d95ce','#8b949e'];
+        categoryChart = new Chart(cCtx, {
+            type: 'doughnut',
+            data: {
+                labels: topCats.map(c => c.category),
+                datasets: [{ data: topCats.map(c => c.spent), backgroundColor: colors.slice(0, topCats.length), borderWidth: 0 }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 12, padding: 6 } },
+                    tooltip: { callbacks: { label: (ctx) => `${ctx.label}: $${fmt(ctx.raw)}` } }
+                }
+            }
+        });
+    }
+
+    // ===== RUNNING BALANCE PER ACCOUNT =====
+    async function showRunningBalance(accountId, accountName) {
+        const data = await api(`/api/accounts/${accountId}/balance`);
+        let html = `<div class="card-dark mt-3 mb-3">
+            <div class="card-header"><i class="fas fa-chart-area me-1"></i> Running Balance: ${esc(accountName)}
+                <button class="btn btn-sm btn-outline-light py-0 px-1 float-end" onclick="this.closest('.card-dark').remove()"><i class="fas fa-times fa-xs"></i></button>
+            </div>
+            <div class="scrollable-table"><table class="table table-dark-custom"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Balance</th></tr></thead><tbody>`;
+        data.forEach(t => {
+            html += `<tr>
+                <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date}</td>
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td class="${t.amount<0?'amount-negative':'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                <td>${t.category}</td>
+                <td class="${t.running_balance<0?'amount-negative':'amount-positive'} fw-bold">$${fmt(Math.abs(t.running_balance))}</td>
+            </tr>`;
+        });
+        if (!data.length) html += '<tr><td colspan="5" class="text-muted text-center py-3">No transactions for this account.</td></tr>';
+        html += '</tbody></table></div></div>';
+        document.getElementById('accounts-content').insertAdjacentHTML('beforeend', html);
+    }
 
     // ===== INIT =====
-    (async () => { allCategories = await api('/api/categories'); loadDashboard(); })();
+    (async () => {
+        allCategories = await api('/api/categories');
+        loadDashboard();
+        updateAlertBadge();
+        loadSavedFilters();
+    })();
     </script>
 </body>
 </html>

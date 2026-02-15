@@ -774,6 +774,110 @@ def get_timeline_data():
     return days
 
 
+def get_recurring_transactions():
+    """Detect transactions that recur at regular intervals (weekly, biweekly, monthly).
+    Flags potential unauthorized recurring payments."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Get all outflow transactions grouped by cleaned description
+    cursor.execute("""
+        SELECT id, trans_date, description, amount, cardholder_name, is_personal, is_business, category
+        FROM transactions
+        WHERE amount < 0
+        ORDER BY description, trans_date
+    """)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    # Group by normalized description (first 20 chars uppercase, stripped of numbers/dates)
+    groups = defaultdict(list)
+    for r in rows:
+        key = re.sub(r'\d{2}/\d{2}', '', r['description'].upper()[:25])
+        key = re.sub(r'\s+', ' ', key).strip()
+        if len(key) >= 4:
+            groups[key].append(r)
+
+    recurring = []
+    for key, txns in groups.items():
+        if len(txns) < 3:
+            continue
+
+        # Sort by date
+        txns.sort(key=lambda x: x['trans_date'])
+
+        # Calculate intervals between consecutive transactions
+        dates = []
+        for t in txns:
+            try:
+                dates.append(datetime.strptime(t['trans_date'], '%Y-%m-%d'))
+            except (ValueError, TypeError):
+                pass
+
+        if len(dates) < 3:
+            continue
+
+        intervals = [(dates[i+1] - dates[i]).days for i in range(len(dates)-1)]
+        avg_interval = sum(intervals) / len(intervals)
+        std_dev = (sum((x - avg_interval)**2 for x in intervals) / len(intervals)) ** 0.5
+
+        # Determine if it's recurring (consistent interval with low deviation)
+        if std_dev > avg_interval * 0.5:
+            continue  # Too irregular
+
+        # Classify the frequency
+        if 5 <= avg_interval <= 9:
+            frequency = 'Weekly'
+        elif 12 <= avg_interval <= 16:
+            frequency = 'Biweekly'
+        elif 25 <= avg_interval <= 35:
+            frequency = 'Monthly'
+        elif 55 <= avg_interval <= 65:
+            frequency = 'Bimonthly'
+        elif 85 <= avg_interval <= 100:
+            frequency = 'Quarterly'
+        else:
+            frequency = f'Every ~{int(avg_interval)} days'
+
+        amounts = [abs(t['amount']) for t in txns]
+        avg_amount = sum(amounts) / len(amounts)
+        amount_consistent = max(amounts) - min(amounts) < avg_amount * 0.15
+
+        # Risk flags
+        flags = []
+        if not any(t['is_personal'] or t['is_business'] for t in txns):
+            flags.append('Unclassified - not marked personal or business')
+        if any(t['category'] == 'Uncategorized' for t in txns):
+            flags.append('Uncategorized transactions')
+        if amount_consistent and avg_amount > 200:
+            flags.append(f'Consistent amount ~${avg_amount:,.2f}')
+        cardholders = list(set(t['cardholder_name'] for t in txns if t['cardholder_name']))
+        if len(cardholders) > 1:
+            flags.append(f'Multiple cardholders: {", ".join(cardholders)}')
+
+        recurring.append({
+            'description': txns[0]['description'],
+            'normalized': key,
+            'frequency': frequency,
+            'avg_interval_days': round(avg_interval, 1),
+            'std_dev_days': round(std_dev, 1),
+            'count': len(txns),
+            'avg_amount': round(avg_amount, 2),
+            'total_amount': round(sum(amounts), 2),
+            'amount_consistent': amount_consistent,
+            'first_date': txns[0]['trans_date'],
+            'last_date': txns[-1]['trans_date'],
+            'cardholders': cardholders,
+            'category': txns[0]['category'],
+            'flags': flags,
+            'transaction_ids': [t['id'] for t in txns],
+        })
+
+    # Sort by total amount descending
+    recurring.sort(key=lambda x: x['total_amount'], reverse=True)
+    return recurring
+
+
 def suggest_rule_from_edit(transaction_id):
     """Suggest a categorization rule based on a manually edited transaction."""
     conn = get_db()

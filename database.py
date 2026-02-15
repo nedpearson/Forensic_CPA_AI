@@ -4,6 +4,7 @@ Uses SQLite for local, portable storage of all transaction data.
 """
 import sqlite3
 import os
+import json
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'forensic_audit.db')
@@ -123,6 +124,24 @@ def init_db():
             UNIQUE(transaction_id, document_id)
         );
 
+        CREATE TABLE IF NOT EXISTS case_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            note_type TEXT DEFAULT 'general',  -- 'general', 'finding', 'evidence', 'timeline'
+            severity TEXT DEFAULT 'info',  -- 'info', 'warning', 'danger'
+            linked_transaction_ids TEXT,  -- JSON array of transaction IDs
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS saved_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            filters TEXT NOT NULL,  -- JSON object of filter params
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_trans_date ON transactions(trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_category ON transactions(category);
         CREATE INDEX IF NOT EXISTS idx_trans_cardholder ON transactions(cardholder_name);
@@ -131,6 +150,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_trans_account ON transactions(account_id);
         CREATE INDEX IF NOT EXISTS idx_proof_links_trans ON proof_links(transaction_id);
         CREATE INDEX IF NOT EXISTS idx_proof_links_doc ON proof_links(document_id);
+        CREATE INDEX IF NOT EXISTS idx_trans_personal_date ON transactions(is_personal, trans_date);
+        CREATE INDEX IF NOT EXISTS idx_trans_business_date ON transactions(is_business, trans_date);
+        CREATE INDEX IF NOT EXISTS idx_trans_flagged_date ON transactions(is_flagged, trans_date);
+        CREATE INDEX IF NOT EXISTS idx_trans_amount ON transactions(amount);
     """)
 
     # Insert default categories
@@ -234,6 +257,8 @@ def clear_all_data():
         DELETE FROM transactions;
         DELETE FROM documents;
         DELETE FROM accounts;
+        DELETE FROM case_notes;
+        DELETE FROM saved_filters;
     """)
     conn.commit()
     conn.close()
@@ -308,8 +333,8 @@ def add_transaction(doc_id, account_id, trans_date, post_date, description, amou
         INSERT INTO transactions (document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
             subcategory, cardholder_name, card_last_four, payment_method, check_number,
             is_transfer, transfer_to_account, transfer_from_account,
-            is_personal, is_business, is_flagged, flag_reason, auto_categorized)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
         kwargs.get('subcategory'), kwargs.get('cardholder_name'), kwargs.get('card_last_four'),
@@ -317,7 +342,7 @@ def add_transaction(doc_id, account_id, trans_date, post_date, description, amou
         kwargs.get('is_transfer', 0), kwargs.get('transfer_to_account'), kwargs.get('transfer_from_account'),
         kwargs.get('is_personal', 0), kwargs.get('is_business', 0),
         kwargs.get('is_flagged', 0), kwargs.get('flag_reason'),
-        kwargs.get('auto_categorized', 1)
+        kwargs.get('auto_categorized', 1), kwargs.get('manually_edited', 0)
     ))
     trans_id = cursor.lastrowid
     conn.commit()
@@ -633,3 +658,152 @@ def get_transactions_for_proof(document_id):
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
+
+
+# --- Case Notes ---
+
+def get_case_notes():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM case_notes ORDER BY updated_at DESC")
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def add_case_note(title, content, note_type='general', severity='info', linked_transaction_ids=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO case_notes (title, content, note_type, severity, linked_transaction_ids) VALUES (?, ?, ?, ?, ?)",
+        (title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
+    )
+    note_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return note_id
+
+
+def update_case_note(note_id, **fields):
+    conn = get_db()
+    cursor = conn.cursor()
+    set_clauses = []
+    values = []
+    for field, value in fields.items():
+        if field in ('title', 'content', 'note_type', 'severity', 'linked_transaction_ids'):
+            set_clauses.append(f"{field} = ?")
+            values.append(value if field != 'linked_transaction_ids' else json.dumps(value or []))
+    set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(note_id)
+    cursor.execute(f"UPDATE case_notes SET {', '.join(set_clauses)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+def delete_case_note(note_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM case_notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+
+
+# --- Saved Filters ---
+
+def get_saved_filters():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM saved_filters ORDER BY name")
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def add_saved_filter(name, filters):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO saved_filters (name, filters) VALUES (?, ?)", (name, json.dumps(filters)))
+    fid = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return fid
+
+
+def delete_saved_filter(filter_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM saved_filters WHERE id = ?", (filter_id,))
+    conn.commit()
+    conn.close()
+
+
+# --- Running Balance Per Account ---
+
+def get_account_running_balance(account_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, trans_date, description, amount, category,
+            SUM(amount) OVER (ORDER BY trans_date, id) as running_balance
+        FROM transactions
+        WHERE account_id = ?
+        ORDER BY trans_date, id
+    """, (account_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+# --- Alerts ---
+
+def get_alerts():
+    conn = get_db()
+    cursor = conn.cursor()
+    alerts = []
+
+    # Uncategorized transactions
+    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'")
+    r = dict(cursor.fetchone())
+    if r['cnt'] > 0:
+        alerts.append({'type': 'uncategorized', 'severity': 'warning', 'count': r['cnt'],
+            'title': f"{r['cnt']} uncategorized transactions", 'detail': f"${r['total']:,.2f} needs review",
+            'action': 'transactions', 'filters': {'category': 'Uncategorized'}})
+
+    # Flagged needing review
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_flagged = 1 AND (user_notes IS NULL OR user_notes = '')")
+    r = cursor.fetchone()
+    if r['cnt'] > 0:
+        alerts.append({'type': 'flagged_unreviewed', 'severity': 'danger', 'count': r['cnt'],
+            'title': f"{r['cnt']} flagged transactions without notes",
+            'detail': 'Flagged items should be reviewed and noted',
+            'action': 'transactions', 'filters': {'is_flagged': '1'}})
+
+    # Transactions with no cardholder
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE (cardholder_name IS NULL OR cardholder_name = '') AND amount < 0")
+    r = cursor.fetchone()
+    if r['cnt'] > 0:
+        alerts.append({'type': 'no_cardholder', 'severity': 'info', 'count': r['cnt'],
+            'title': f"{r['cnt']} transactions without cardholder",
+            'detail': 'Assign cardholders for better analysis',
+            'action': 'transactions', 'filters': {}})
+
+    # Not classified as personal or business
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_personal = 0 AND is_business = 0 AND amount < 0")
+    r = cursor.fetchone()
+    if r['cnt'] > 0:
+        alerts.append({'type': 'unclassified', 'severity': 'warning', 'count': r['cnt'],
+            'title': f"{r['cnt']} not marked personal or business",
+            'detail': 'Mark spending as personal or business for separation',
+            'action': 'transactions', 'filters': {}})
+
+    # Large single transactions
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE ABS(amount) > 5000 AND (user_notes IS NULL OR user_notes = '')")
+    r = cursor.fetchone()
+    if r['cnt'] > 0:
+        alerts.append({'type': 'large_unnoted', 'severity': 'info', 'count': r['cnt'],
+            'title': f"{r['cnt']} large transactions without notes",
+            'detail': 'Transactions over $5,000 should be documented',
+            'action': 'transactions', 'filters': {'min_amount': '5000'}})
+
+    conn.close()
+    return alerts
