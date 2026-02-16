@@ -46,7 +46,7 @@ def main():
         logger.info("")
 
         # Run the application
-        app.run(debug=False, host='127.0.0.1', port=port, use_reloader=False)
+        app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)
 
     except Exception as e:
         logger.error(f"Failed to start application: {e}", exc_info=True)

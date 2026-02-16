@@ -8,12 +8,12 @@
     "dependencies": [],
     "config_paths": [],
     "port": null,
-    "local_url": "http://127.0.0.1:{PORT}",
-    "healthcheck_url": "http://127.0.0.1:{PORT}/health",
-    "working_directory": "C:/Users/nedpe/Desktop/James Financial (Gulf Coast)/Bank of St. Francisville/forensic_auditor",
-    "start_command": "C:/Users/nedpe/AppData/Local/Programs/Python/Python312/python.exe app.py --port={PORT}",
-    "stop_command": "",
-    "restart_command": "",
+    "local_url": "http://localhost:{PORT}",
+    "healthcheck_url": "http://localhost:{PORT}/health",
+    "working_directory": ".",
+    "start_command": "python3 app.py --port={PORT}",
+    "stop_command": "kill $(ps aux | grep -E 'python.*(app|run).py' | grep -v grep | awk '{print $2}') 2>/dev/null || true",
+    "restart_command": "kill $(ps aux | grep -E 'python.*(app|run).py' | grep -v grep | awk '{print $2}') 2>/dev/null; sleep 2; python3 app.py --port={PORT}",
     "env_overrides": {
       "PORT": "{PORT}"
     },

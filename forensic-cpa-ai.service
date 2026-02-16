@@ -9,6 +9,7 @@ WorkingDirectory=/home/user/Forensic_CPA_AI
 Environment="PORT=5000"
 Environment="FLASK_ENV=production"
 ExecStart=/usr/bin/python3 /home/user/Forensic_CPA_AI/app.py
+Environment="FLASK_HOST=0.0.0.0"
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

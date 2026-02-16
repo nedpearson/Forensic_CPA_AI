@@ -850,4 +850,4 @@ if __name__ == '__main__':
     print(f"  Open in your browser: http://localhost:{port}")
     print(f"  Upload folder: {app.config['UPLOAD_FOLDER']}")
     print("=" * 60 + "\n")
-    app.run(debug=False, host='127.0.0.1', port=port)
+    app.run(debug=False, host='0.0.0.0', port=port)

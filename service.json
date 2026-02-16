@@ -2,14 +2,16 @@
   "name": "Forensic_CPA_AI",
   "displayName": "Forensic CPA AI",
   "description": "Your Financial Private Investigator - Web-based forensic auditing tool",
-  "command": "./start.sh",
+  "command": "python3 app.py",
   "workingDirectory": "/home/user/Forensic_CPA_AI",
   "port": 5000,
+  "host": "0.0.0.0",
   "healthCheck": "/health",
-  "autoStart": false,
+  "autoStart": true,
   "env": {
     "PORT": "5000",
-    "FLASK_ENV": "production"
+    "FLASK_ENV": "production",
+    "FLASK_HOST": "0.0.0.0"
   },
   "dependencies": [
     "flask==3.1.0",
