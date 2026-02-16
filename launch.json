@@ -1,0 +1,50 @@
+{
+  "name": "Forensic_CPA_AI",
+  "displayName": "Forensic CPA AI",
+  "description": "Your Financial Private Investigator - Forensic auditing tool for bank/credit card/Venmo statements",
+  "version": "1.0.0",
+  "type": "python",
+  "main": "app.py",
+  "scripts": {
+    "start": "python app.py",
+    "start:unix": "./start.sh",
+    "start:windows": "start.bat",
+    "start:dev": "python app.py --port=5000",
+    "test": "pytest",
+    "lint": "flake8 *.py"
+  },
+  "runtime": {
+    "language": "python",
+    "version": "3.11+",
+    "interpreter": "python3"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "protocol": "http",
+    "endpoint": "http://localhost:5000"
+  },
+  "environment": {
+    "PORT": "5000",
+    "FLASK_ENV": "production",
+    "FLASK_DEBUG": "0"
+  },
+  "dependencies": {
+    "file": "requirements.txt",
+    "manager": "pip"
+  },
+  "directories": {
+    "uploads": "./uploads",
+    "data": "./data",
+    "reports": "./reports",
+    "templates": "./templates"
+  },
+  "ports": {
+    "default": 5000,
+    "alternatives": [5001, 5002, 5003]
+  },
+  "health": {
+    "endpoint": "/",
+    "timeout": 5000
+  }
+}
