@@ -1,0 +1,9 @@
+run = "python app.py"
+entrypoint = "app.py"
+
+[deployment]
+run = ["python", "app.py"]
+
+[[ports]]
+localPort = 5000
+externalPort = 80
