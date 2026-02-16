@@ -4,6 +4,7 @@ Extracts transactions from uploaded PDFs and spreadsheets.
 """
 import re
 import os
+import sys
 import hashlib
 import pdfplumber
 import pandas as pd
@@ -11,9 +12,14 @@ from datetime import datetime
 from openpyxl import load_workbook
 from docx import Document as DocxDocument
 
-# OCR configuration
-TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
+# OCR configuration - platform-aware paths
+if sys.platform == 'win32':
+    TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
+else:
+    # On Linux, tesseract and poppler tools should be in PATH
+    TESSERACT_CMD = 'tesseract'  # Will use system tesseract if available
+    POPPLER_PATH = None  # pdf2image will find poppler in PATH
 
 
 def parse_pdf_text(filepath):
@@ -43,7 +49,12 @@ def _ocr_pdf(filepath):
 
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
-        images = convert_from_path(filepath, dpi=300, poppler_path=POPPLER_PATH)
+        # Pass poppler_path only if specified (Windows), otherwise use system PATH
+        if POPPLER_PATH:
+            images = convert_from_path(filepath, dpi=300, poppler_path=POPPLER_PATH)
+        else:
+            images = convert_from_path(filepath, dpi=300)
+
         pages = []
         for img in images:
             text = pytesseract.image_to_string(img)
