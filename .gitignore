@@ -5,5 +5,9 @@ uploads/*
 !uploads/.gitkeep
 reports/*
 !reports/.gitkeep
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/session-start.sh
 *.zip
