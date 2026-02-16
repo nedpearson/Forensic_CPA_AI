@@ -1,0 +1,26 @@
+{
+  "name": "Forensic_CPA_AI",
+  "displayName": "Forensic CPA AI",
+  "description": "Your Financial Private Investigator - Web-based forensic auditing tool",
+  "command": "./start.sh",
+  "workingDirectory": "/home/user/Forensic_CPA_AI",
+  "port": 5000,
+  "healthCheck": "/health",
+  "autoStart": false,
+  "env": {
+    "PORT": "5000",
+    "FLASK_ENV": "production"
+  },
+  "dependencies": [
+    "flask==3.1.0",
+    "pdfplumber==0.11.4",
+    "pandas==2.2.3",
+    "openpyxl==3.1.5",
+    "python-docx==1.1.2",
+    "werkzeug>=3.1.5",
+    "pytesseract>=0.3.10",
+    "pdf2image>=1.17.0",
+    "Pillow>=12.1.1",
+    "fpdf2>=2.7.0"
+  ]
+}
