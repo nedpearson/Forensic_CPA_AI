@@ -4,17 +4,55 @@ A powerful web-based forensic auditing tool for analyzing bank statements, credi
 
 ## Quick Start
 
+### Windows Quick Start (Controller-Compatible)
+
+**Prerequisites:**
+- Python 3.11+ installed and in PATH ([Download here](https://www.python.org/downloads/))
+- PowerShell 5.1+ (included with Windows 10/11)
+
+**Start the server:**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
+```
+
+**Check status:**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\status.ps1
+```
+
+**Stop the server:**
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\stop.ps1
+```
+
+**What the start script does:**
+1. ✅ Creates Python virtual environment (`.venv`) if needed
+2. ✅ Installs/updates all dependencies from `requirements.txt`
+3. ✅ Frees port 5000 if already occupied
+4. ✅ Starts server using Waitress (production WSGI server)
+5. ✅ Performs health check at `http://127.0.0.1:5000/health`
+6. ✅ Logs to `.\logs\forensic_cpa_ai.log`
+7. ✅ Writes PID to `.forensic_cpa_ai.pid` for clean shutdown
+
+**Access the application:** Open your browser to **http://127.0.0.1:5000**
+
+**Verify it's working:**
+```powershell
+# Test network connection
+Test-NetConnection 127.0.0.1 -Port 5000
+
+# Test health endpoint
+Invoke-WebRequest http://127.0.0.1:5000/health
+```
+
 ### Linux/Mac
 ```bash
 ./start.sh
+./status.sh
+./stop.sh
 ```
 
-### Windows
-```batch
-start.bat
-```
-
-### Direct Python
+### Direct Python (Development Only)
 ```bash
 python app.py
 ```
@@ -55,10 +93,24 @@ python app.py
 
 ## Service Configuration
 
-For LocalProgramControlCenter or similar service managers, use:
+For **Local Nexus Controller** or similar service managers:
+
+**Windows:**
 - **Service Config**: `service.json`
-- **Startup Script**: `start.sh` (Linux/Mac) or `start.bat` (Windows)
-- **Health Check**: `http://localhost:5000/health`
+- **Start Command**: `powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1`
+- **Stop Command**: `powershell -NoProfile -ExecutionPolicy Bypass -File .\stop.ps1`
+- **Status Command**: `powershell -NoProfile -ExecutionPolicy Bypass -File .\status.ps1`
+- **Health Check URL**: `http://127.0.0.1:5000/health`
+- **Launch URL**: `http://127.0.0.1:5000`
+- **Default Port**: 5000
+
+**Linux/Mac:**
+- **Service Config**: `service.json`
+- **Start Command**: `./start.sh`
+- **Stop Command**: `./stop.sh`
+- **Status Command**: `./status.sh`
+- **Health Check URL**: `http://localhost:5000/health`
+- **Launch URL**: `http://localhost:5000`
 - **Default Port**: 5000
 
 ## Directory Structure
@@ -66,15 +118,26 @@ For LocalProgramControlCenter or similar service managers, use:
 ```
 Forensic_CPA_AI/
 ├── app.py                  # Main Flask application
+├── wsgi.py                 # WSGI entry point for production servers
 ├── database.py             # Database operations
 ├── parsers.py              # Document parsing logic
 ├── categorizer.py          # Transaction categorization
 ├── report_generator.py     # PDF report generation
+├── requirements.txt        # Python dependencies
+├── service.json            # Service manager configuration
+├── start.ps1               # Windows start script (PowerShell)
+├── stop.ps1                # Windows stop script (PowerShell)
+├── status.ps1              # Windows status script (PowerShell)
+├── start.sh                # Linux/Mac start script
+├── stop.sh                 # Linux/Mac stop script
+├── status.sh               # Linux/Mac status script
 ├── templates/              # HTML templates
 │   └── index.html
 ├── uploads/                # Uploaded documents
 ├── data/                   # SQLite database
 │   └── forensic_audit.db
+├── logs/                   # Application logs
+│   └── forensic_cpa_ai.log
 └── reports/                # Generated reports
 ```
 

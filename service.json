@@ -2,16 +2,25 @@
   "name": "Forensic_CPA_AI",
   "displayName": "Forensic CPA AI",
   "description": "Your Financial Private Investigator - Web-based forensic auditing tool",
-  "command": "python3 app.py",
-  "workingDirectory": "/home/user/Forensic_CPA_AI",
+  "platform": {
+    "windows": {
+      "startCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\start.ps1",
+      "stopCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\stop.ps1",
+      "statusCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\status.ps1"
+    },
+    "linux": {
+      "startCommand": "./start.sh",
+      "stopCommand": "./stop.sh",
+      "statusCommand": "./status.sh"
+    }
+  },
   "port": 5000,
-  "host": "0.0.0.0",
-  "healthCheck": "/health",
-  "autoStart": true,
+  "healthCheckUrl": "http://127.0.0.1:5000/health",
+  "launchUrl": "http://127.0.0.1:5000",
+  "autoStart": false,
   "env": {
     "PORT": "5000",
-    "FLASK_ENV": "production",
-    "FLASK_HOST": "0.0.0.0"
+    "FLASK_ENV": "production"
   },
   "dependencies": [
     "flask==3.1.0",
@@ -23,6 +32,7 @@
     "pytesseract>=0.3.10",
     "pdf2image>=1.17.0",
     "Pillow>=12.1.1",
-    "fpdf2>=2.7.0"
+    "fpdf2>=2.7.0",
+    "waitress>=3.0.1"
   ]
 }
