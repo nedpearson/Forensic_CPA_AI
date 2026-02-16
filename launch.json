@@ -19,7 +19,7 @@
     "interpreter": "python3"
   },
   "server": {
-    "host": "127.0.0.1",
+    "host": "0.0.0.0",
     "port": 3004,
     "protocol": "http",
     "endpoint": "http://localhost:3004"

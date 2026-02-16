@@ -169,7 +169,7 @@ When running multiple services, ensure these ports are not conflicting:
 
 ## Additional Notes
 
-- The application runs on `127.0.0.1` (localhost) by default for security
+- The application binds to `0.0.0.0` (all interfaces) by default for cloud/network access
 - Maximum upload size is 50MB
 - Supported file formats: PDF, XLSX, XLS, CSV, DOCX, DOC
 - Session data is stored in-memory by default
