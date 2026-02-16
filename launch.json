@@ -9,7 +9,7 @@
     "start": "python app.py",
     "start:unix": "./start.sh",
     "start:windows": "start.bat",
-    "start:dev": "python app.py --port=5000",
+    "start:dev": "python app.py --port=3004",
     "test": "pytest",
     "lint": "flake8 *.py"
   },
@@ -20,12 +20,12 @@
   },
   "server": {
     "host": "127.0.0.1",
-    "port": 5000,
+    "port": 3004,
     "protocol": "http",
-    "endpoint": "http://localhost:5000"
+    "endpoint": "http://localhost:3004"
   },
   "environment": {
-    "PORT": "5000",
+    "PORT": "3004",
     "FLASK_ENV": "production",
     "FLASK_DEBUG": "0"
   },
@@ -40,8 +40,8 @@
     "templates": "./templates"
   },
   "ports": {
-    "default": 5000,
-    "alternatives": [5001, 5002, 5003]
+    "default": 3004,
+    "alternatives": [3005, 3006, 3007]
   },
   "health": {
     "endpoint": "/",

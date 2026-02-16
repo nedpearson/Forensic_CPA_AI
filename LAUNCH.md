@@ -23,53 +23,53 @@ python app.py
 ## Port Configuration
 
 ### Default Port
-The application runs on **port 5000** by default.
+The application runs on **port 3004** by default.
 
 ### Custom Port Options
 
 #### Option 1: Environment Variable
 ```bash
 # Linux/Mac
-export PORT=5000
+export PORT=3004
 python app.py
 
 # Windows
-set PORT=5000
+set PORT=3004
 python app.py
 ```
 
 #### Option 2: Command Line Argument
 ```bash
 # Using --port flag
-python app.py --port=5000
-./start.sh --port=5000
+python app.py --port=3004
+./start.sh --port=3004
 
 # Or direct port number
-python app.py 5000
-./start.sh 5000
+python app.py 3004
+./start.sh 3004
 ```
 
 ## Port Conflict Resolution
 
-If port 5000 is already in use, you can use alternative ports:
-- Primary: 5000
-- Alternative 1: 5001
-- Alternative 2: 5002
-- Alternative 3: 5003
+If port 3004 is already in use, you can use alternative ports:
+- Primary: 3004
+- Alternative 1: 3005
+- Alternative 2: 3006
+- Alternative 3: 3007
 
 ### Check if Port is in Use
 
 #### Linux/Mac
 ```bash
-# Check if port 5000 is in use
-lsof -i :5000
+# Check if port 3004 is in use
+lsof -i :3004
 # or
-netstat -an | grep 5000
+netstat -an | grep 3004
 ```
 
 #### Windows
 ```cmd
-netstat -ano | findstr :5000
+netstat -ano | findstr :3004
 ```
 
 ## Integration with Local Nexus Controller
@@ -88,7 +88,7 @@ The `launch.json` file contains all the metadata needed for service managers:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| PORT | 5000 | Server port |
+| PORT | 3004 | Server port |
 | FLASK_ENV | production | Flask environment |
 | FLASK_DEBUG | 0 | Debug mode (0=off, 1=on) |
 
@@ -118,7 +118,7 @@ pip install -r requirements.txt
 ## Health Check
 
 The application provides a health check endpoint at the root URL:
-- Endpoint: `http://localhost:5000/`
+- Endpoint: `http://localhost:3004/`
 - Timeout: 5000ms
 - Expected: HTTP 200 response
 
@@ -127,7 +127,7 @@ The application provides a health check endpoint at the root URL:
 ### Port Already in Use
 If you see "Address already in use" error:
 1. Stop the existing service on that port
-2. Use a different port with `PORT=5001 python app.py`
+2. Use a different port with `PORT=3005 python app.py`
 3. Check for orphaned processes: `ps aux | grep python`
 
 ### Dependencies Not Found
@@ -163,7 +163,7 @@ When running multiple services, ensure these ports are not conflicting:
 - pearson-nexus-ai-monorepo: 3030
 - rest-express: 3012
 - retail-commission-tracker: 3050
-- Forensic_CPA_AI: 5000 (this application)
+- Forensic_CPA_AI: 3004 (this application)
 - Pearson_Nexus_AI_NEW-main: 3040
 - prototype: 3003
 

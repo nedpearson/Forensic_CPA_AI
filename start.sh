@@ -12,7 +12,7 @@ echo ""
 echo "Starting server..."
 
 # Default port
-PORT=${PORT:-5000}
+PORT=${PORT:-3004}
 
 # Check if port is provided as command line argument
 if [ $# -gt 0 ]; then

@@ -7,15 +7,15 @@
     "tech_stack": ["python", "flask", "sqlite", "pdfplumber"],
     "dependencies": [],
     "config_paths": [],
-    "port": null,
-    "local_url": "http://127.0.0.1:{PORT}",
-    "healthcheck_url": "http://127.0.0.1:{PORT}/health",
-    "working_directory": "C:/Users/nedpe/Desktop/James Financial (Gulf Coast)/Bank of St. Francisville/forensic_auditor",
-    "start_command": "C:/Users/nedpe/AppData/Local/Programs/Python/Python312/python.exe app.py --port={PORT}",
+    "port": 3004,
+    "local_url": "http://127.0.0.1:3004",
+    "healthcheck_url": "http://127.0.0.1:3004/health",
+    "working_directory": ".",
+    "start_command": "python app.py --port=3004",
     "stop_command": "",
     "restart_command": "",
     "env_overrides": {
-      "PORT": "{PORT}"
+      "PORT": "3004"
     },
     "database_id": null,
     "database_connection_string": "sqlite:///data/forensic_audit.db",
@@ -32,8 +32,8 @@
     "schema_overview": "Tables: accounts, documents, transactions, categories(25), category_rules(31), audit_log, proof_links"
   },
   "keys": [],
-  "requested_port": null,
-  "auto_assign_port": true,
+  "requested_port": 3004,
+  "auto_assign_port": false,
   "auto_create_db": false,
   "meta": {}
 }
