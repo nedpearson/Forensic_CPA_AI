@@ -20,12 +20,12 @@
   },
   "server": {
     "host": "0.0.0.0",
-    "port": 3004,
+    "port": 3000,
     "protocol": "http",
-    "endpoint": "http://localhost:3004"
+    "endpoint": "http://localhost:3000"
   },
   "environment": {
-    "PORT": "3004",
+    "PORT": "3000",
     "FLASK_ENV": "production",
     "FLASK_DEBUG": "0"
   },
@@ -40,8 +40,8 @@
     "templates": "./templates"
   },
   "ports": {
-    "default": 3004,
-    "alternatives": [3005, 3006, 3007]
+    "default": 3000,
+    "alternatives": [3001, 3002, 3003]
   },
   "health": {
     "endpoint": "/",

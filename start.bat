@@ -7,7 +7,7 @@ echo Starting server...
 if defined PORT (
     echo Open your browser to: http://localhost:%PORT%
 ) else (
-    echo Open your browser to: http://localhost:3004
+    echo Open your browser to: http://localhost:3000
 )
 echo.
 echo Press Ctrl+C to stop the server.

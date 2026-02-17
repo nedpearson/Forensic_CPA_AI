@@ -496,7 +496,7 @@ def main():
     print(f"IMPORT COMPLETE: {total} total transactions loaded")
     print(f"{'=' * 60}")
     print(f"\nRun the app: python app.py")
-    print(f"Then open: http://localhost:5000")
+    print(f"Then open: http://localhost:3000")
 
 
 if __name__ == '__main__':

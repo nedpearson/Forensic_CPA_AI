@@ -23,36 +23,36 @@ python app.py
 ## Port Configuration
 
 ### Default Port
-The application runs on **port 3004** by default.
+The application runs on **port 3000** by default.
 
 ### Custom Port Options
 
 #### Option 1: Environment Variable
 ```bash
 # Linux/Mac
-export PORT=3004
+export PORT=3000
 python app.py
 
 # Windows
-set PORT=3004
+set PORT=3000
 python app.py
 ```
 
 #### Option 2: Command Line Argument
 ```bash
 # Using --port flag
-python app.py --port=3004
-./start.sh --port=3004
+python app.py --port=3000
+./start.sh --port=3000
 
 # Or direct port number
-python app.py 3004
-./start.sh 3004
+python app.py 3000
+./start.sh 3000
 ```
 
 ## Port Conflict Resolution
 
-If port 3004 is already in use, you can use alternative ports:
-- Primary: 3004
+If port 3000 is already in use, you can use alternative ports:
+- Primary: 3000
 - Alternative 1: 3005
 - Alternative 2: 3006
 - Alternative 3: 3007
@@ -61,15 +61,15 @@ If port 3004 is already in use, you can use alternative ports:
 
 #### Linux/Mac
 ```bash
-# Check if port 3004 is in use
-lsof -i :3004
+# Check if port 3000 is in use
+lsof -i :3000
 # or
-netstat -an | grep 3004
+netstat -an | grep 3000
 ```
 
 #### Windows
 ```cmd
-netstat -ano | findstr :3004
+netstat -ano | findstr :3000
 ```
 
 ## Integration with Local Nexus Controller
@@ -88,7 +88,7 @@ The `launch.json` file contains all the metadata needed for service managers:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| PORT | 3004 | Server port |
+| PORT | 3000 | Server port |
 | FLASK_ENV | production | Flask environment |
 | FLASK_DEBUG | 0 | Debug mode (0=off, 1=on) |
 
@@ -118,7 +118,7 @@ pip install -r requirements.txt
 ## Health Check
 
 The application provides a health check endpoint at the root URL:
-- Endpoint: `http://localhost:3004/`
+- Endpoint: `http://localhost:3000/`
 - Timeout: 5000ms
 - Expected: HTTP 200 response
 
@@ -163,7 +163,7 @@ When running multiple services, ensure these ports are not conflicting:
 - pearson-nexus-ai-monorepo: 3030
 - rest-express: 3012
 - retail-commission-tracker: 3050
-- Forensic_CPA_AI: 3004 (this application)
+- Forensic_CPA_AI: 3000 (this application)
 - Pearson_Nexus_AI_NEW-main: 3040
 - prototype: 3003
 
