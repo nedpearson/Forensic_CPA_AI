@@ -837,7 +837,7 @@ if __name__ == '__main__':
     init_db()
 
     # Support PORT from environment (LocalProgramControlCenter) or command-line arg
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 3004))
     for arg in sys.argv[1:]:
         if arg.startswith('--port='):
             port = int(arg.split('=')[1])
@@ -850,4 +850,5 @@ if __name__ == '__main__':
     print(f"  Open in your browser: http://localhost:{port}")
     print(f"  Upload folder: {app.config['UPLOAD_FOLDER']}")
     print("=" * 60 + "\n")
-    app.run(debug=False, host='127.0.0.1', port=port)
+    host = os.environ.get('HOST', '0.0.0.0')
+    app.run(debug=False, host=host, port=port)
