@@ -6,9 +6,11 @@ import os
 import json
 import shutil
 import uuid
+import time
+import logging
 import glob as glob_mod
 import threading
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g
 from werkzeug.utils import secure_filename
 from database import (
     init_db, get_db, add_account, get_or_create_account, add_document,
@@ -17,11 +19,13 @@ from database import (
     get_summary_stats, add_category_rule, get_category_rules,
     clear_all_data, link_proof, unlink_proof,
     get_proofs_for_transaction, get_transactions_for_proof,
-    find_duplicate_transactions,
-    get_case_notes, add_case_note, update_case_note, delete_case_note,
-    get_saved_filters, add_saved_filter, delete_saved_filter,
-    get_account_running_balance, get_alerts
+    get_account_running_balance, get_alerts, build_filter_clause,
+    add_document_extraction, update_document_extraction, get_document_extraction,
+    add_document_categorization, get_document_categorization, get_taxonomy_config
 )
+from query_builder import QueryBuilder
+from document_analyzer import AzureDocumentIntelligenceAdapter
+from auto_categorizer import AutoCategorizer
 from parsers import parse_document, parse_pdf_text
 from categorizer import (
     categorize_transaction, recategorize_all,
@@ -38,6 +42,77 @@ app.config['SECRET_KEY'] = 'forensic-auditor-local-key'
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
+# --- Structured Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] [req_id:%(request_id)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('forensic_cpa_ai')
+
+# Custom filter to inject request_id
+class RequestIdFilter(logging.Filter):
+    def filter(self, record):
+        record.request_id = getattr(g, 'request_id', 'system')
+        return True
+
+logger.addFilter(RequestIdFilter())
+
+@app.before_request
+def start_timer():
+    g.start = time.time()
+    g.request_id = request.headers.get('X-Request-Id', str(uuid.uuid4()))
+
+@app.after_request
+def log_request(response):
+    if request.path.startswith('/static') or request.path.startswith('/uploads'):
+        return response
+    
+    now = time.time()
+    latency = round((now - getattr(g, 'start', now)) * 1000, 2)
+    logger.info(f"{request.method} {request.path} - Status: {response.status_code} - Latency: {latency}ms")
+    return response
+
+# --- Health & Observability Endpoints ---
+@app.route('/api/health')
+def health_check():
+    """Basic alive check for load balancers."""
+    return jsonify({"status": "healthy", "timestamp": time.time()}), 200
+
+@app.route('/api/smoke')
+def smoke_test():
+    """Deep health check validating DB connection and critical env vars."""
+    results = {"status": "pass", "checks": {}}
+    
+    # 1. DB Connectivity & Basic Query
+    try:
+        conn = get_db()
+        count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        results["checks"]["database"] = {"status": "ok", "row_count": count}
+        conn.close()
+    except Exception as e:
+        results["checks"]["database"] = {"status": "error", "message": str(e)}
+        results["status"] = "fail"
+        
+    # 2. Azure Config
+    az_endpoint = os.environ.get("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
+    az_key = os.environ.get("AZURE_DOCUMENT_INTELLIGENCE_KEY")
+    if az_endpoint and az_key:
+         results["checks"]["azure_di"] = {"status": "configured"}
+    else:
+         results["checks"]["azure_di"] = {"status": "missing_credentials", "warning": True}
+         
+    # 3. LLM Config
+    llm_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if llm_key:
+         results["checks"]["llm_provider"] = {"status": "configured", "provider": os.environ.get("LLM_PROVIDER", "openai")}
+    else:
+         results["checks"]["llm_provider"] = {"status": "missing_credentials", "warning": True}
+
+    status_code = 200 if results["status"] == "pass" else 503
+    return jsonify(results), status_code
+
+
 ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc'}
 
 # In-memory storage for upload previews (preview_id -> parsed data)
@@ -48,6 +123,19 @@ _preview_lock = threading.Lock()
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# --- Security & Auth ---
+from functools import wraps
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_token = os.getenv("UPLOAD_AUTH_TOKEN")
+        if auth_token:
+            provided = request.headers.get("Authorization")
+            if not provided or provided != f"Bearer {auth_token}":
+                return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 # --- Page Routes ---
 
@@ -59,6 +147,11 @@ def dashboard():
 @app.route('/transactions')
 def transactions_page():
     return render_template('index.html', page='transactions')
+
+
+@app.route('/shared/<path:filename>')
+def serve_shared(filename):
+    return send_from_directory('shared', filename)
 
 
 @app.route('/upload')
@@ -83,38 +176,223 @@ def documents_page():
 
 # --- API Routes ---
 
-@app.route('/api/stats', methods=['GET'])
-def api_stats():
+def get_request_filters():
     filters = {
         'date_from': request.args.get('date_from'),
         'date_to': request.args.get('date_to'),
         'cardholder': request.args.get('cardholder'),
+        'account_id': request.args.get('account_id'),
+        'category': request.args.get('category'),
+        'trans_type': request.args.get('trans_type'),
+        'payment_method': request.args.get('payment_method'),
+        'is_flagged': request.args.get('is_flagged'),
+        'is_personal': request.args.get('is_personal'),
+        'is_business': request.args.get('is_business'),
+        'is_transfer': request.args.get('is_transfer'),
+        'search': request.args.get('search'),
+        'min_amount': request.args.get('min_amount'),
+        'max_amount': request.args.get('max_amount'),
         'view_mode': request.args.get('view_mode'),
     }
-    filters = {k: v for k, v in filters.items() if v}
+    return {k: v for k, v in filters.items() if v}
+
+# --- Analytics Endpoints (Phase 10) ---
+
+@app.route('/api/analytics/overview', methods=['GET'])
+def api_analytics_overview():
+    """Provides high-level grouping and time series for Dashboard views."""
+    filters = get_request_filters()
+    qb = QueryBuilder(filters)
+    conn = get_db()
+    try:
+        data = {
+            'facets': qb.get_faceted_counts(conn),
+            'timeline': qb.get_time_series(conn, interval='month'),
+            'top_entities': qb.get_top_entities(conn, limit=10)
+        }
+        return jsonify(data)
+    finally:
+        conn.close()
+
+@app.route('/api/analytics/tab/<tab_id>', methods=['GET'])
+def api_analytics_tab(tab_id):
+    """Provides specific sliced analytics for specialized tabs."""
+    filters = get_request_filters()
+    
+    # Inject forced constraints per tab context
+    if tab_id == 'money-flow':
+        filters['is_transfer'] = 1
+        
+    qb = QueryBuilder(filters)
+    conn = get_db()
+    try:
+        # Re-use builder dynamically based on what the tab needs
+        data = {
+            'facets': qb.get_faceted_counts(conn),
+            'top_entities': qb.get_top_entities(conn, limit=50)
+        }
+        return jsonify(data)
+    finally:
+        conn.close()
+
+@app.route('/api/analytics/drilldown', methods=['GET'])
+def api_analytics_drilldown():
+    """Returns telemetry of drilldown events mapping to targets."""
+    limit = min(500, int(request.args.get('limit', 100)))
+    conn = get_db()
+    try:
+        cursor = conn.execute('''
+            SELECT * FROM drilldown_logs 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        ''', (limit,))
+        return jsonify([dict(r) for r in cursor.fetchall()])
+    finally:
+        conn.close()
+
+# --- Document Upload & Extraction Endpoints ---
+
+@app.route('/api/docs/upload', methods=['POST'])
+@require_auth
+def api_docs_upload():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    if file and allowed_file(file.filename):
+        # 1. Save file uniquely
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(filepath)
+        
+        # 2. Persist to DB
+        doc_id = add_document(file.filename, filepath, ext, 'unknown', None)
+        ext_id = add_document_extraction(doc_id, status='pending')
+        
+        # 3. Trigger extraction asynchronously 
+        def extract_task(document_id, extraction_id, path):
+            try:
+                analyzer = AzureDocumentIntelligenceAdapter()
+                result = analyzer.analyze_document(path)
+                update_document_extraction(
+                    extraction_id, 
+                    extraction_data=result, 
+                    status='completed'
+                )
+            except Exception as e:
+                update_document_extraction(
+                    extraction_id, 
+                    status='failed', 
+                    error_message=str(e)
+                )
+
+        thread = threading.Thread(target=extract_task, args=(doc_id, ext_id, filepath))
+        thread.start()
+        
+        return jsonify({
+            'status': 'accepted', 
+            'document_id': doc_id, 
+            'extraction_id': ext_id
+        }), 202
+
+    return jsonify({'error': 'File type not allowed'}), 400
+
+@app.route('/api/docs/<int:doc_id>', methods=['GET'])
+def api_docs_get(doc_id):
+    docs = get_documents()
+    doc = next((d for d in docs if d['id'] == doc_id), None)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+    return jsonify(doc)
+
+@app.route('/api/docs/<int:doc_id>/extraction', methods=['GET'])
+def api_docs_get_extraction(doc_id):
+    ext = get_document_extraction(doc_id)
+    if not ext:
+        return jsonify({'error': 'Extraction not found'}), 404
+        
+    # Attempt to parse JSON string if present
+    if ext.get('extraction_data') and isinstance(ext['extraction_data'], str):
+        try:
+            ext['extraction_data'] = json.loads(ext['extraction_data'])
+        except Exception:
+            pass
+            
+    return jsonify(ext)
+
+# --- Categorization Endpoints (Phase 12) ---
+
+@app.route('/api/docs/<int:doc_id>/categorize', methods=['POST'])
+@require_auth
+def api_docs_categorize(doc_id):
+    """Manually trigger or rerun LLM Categorization for a document."""
+    ext = get_document_extraction(doc_id)
+    if not ext or ext.get('status') != 'completed':
+        return jsonify({'error': 'Document must have a completed extraction to categorize.'}), 400
+        
+    ext_data_str = ext.get('extraction_data', '')
+    if not ext_data_str:
+        return jsonify({'error': 'Extraction data is empty.'}), 400
+        
+    # Trigger background thread for categorization
+    def categorize_task(document_id, extraction_id, text_content):
+        try:
+            categorizer = AutoCategorizer()
+            taxonomy = get_taxonomy_config()
+            result_json = categorizer.run_categorization(text_content, taxonomy)
+            
+            add_document_categorization(
+                document_id, 
+                extraction_id, 
+                categorization_data=result_json,
+                provider=categorizer.provider.__class__.__name__,
+                model=getattr(categorizer.provider, 'model', 'unknown')
+            )
+        except Exception as e:
+            add_document_categorization(
+                document_id,
+                extraction_id,
+                categorization_data="{}",
+                provider="unknown",
+                model="unknown",
+                status="failed",
+                error_message=str(e)
+            )
+
+    thread = threading.Thread(target=categorize_task, args=(doc_id, ext['id'], str(ext_data_str)))
+    thread.start()
+    
+    return jsonify({'status': 'accepted', 'document_id': doc_id}), 202
+
+@app.route('/api/docs/<int:doc_id>/categorization', methods=['GET'])
+def api_docs_get_categorization(doc_id):
+    """Retrieve the latest categorization results."""
+    cat = get_document_categorization(doc_id)
+    if not cat:
+        return jsonify({'error': 'Categorization not found'}), 404
+        
+    if cat.get('categorization_data') and isinstance(cat['categorization_data'], str):
+        try:
+            cat['categorization_data'] = json.loads(cat['categorization_data'])
+        except Exception:
+            pass
+            
+    return jsonify(cat)
+
+@app.route('/api/stats', methods=['GET'])
+def api_stats():
+    filters = get_request_filters()
     stats = get_summary_stats(filters if filters else None)
     return jsonify(stats)
 
 
 @app.route('/api/transactions', methods=['GET'])
 def api_transactions():
-    filters = {
-        'category': request.args.get('category'),
-        'cardholder': request.args.get('cardholder'),
-        'trans_type': request.args.get('trans_type'),
-        'date_from': request.args.get('date_from'),
-        'date_to': request.args.get('date_to'),
-        'is_flagged': request.args.get('is_flagged'),
-        'is_personal': request.args.get('is_personal'),
-        'is_business': request.args.get('is_business'),
-        'is_transfer': request.args.get('is_transfer'),
-        'search': request.args.get('search'),
-        'account_id': request.args.get('account_id'),
-        'min_amount': request.args.get('min_amount'),
-        'max_amount': request.args.get('max_amount'),
-        'view_mode': request.args.get('view_mode'),
-    }
-    filters = {k: v for k, v in filters.items() if v}
+    filters = get_request_filters()
     transactions = get_transactions(filters if filters else None)
 
     # Pagination support (opt-in: pass page= to enable)
@@ -194,6 +472,15 @@ def api_bulk_update():
             update_transaction(tid, **fields)
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
+
+@app.route('/api/drilldowns', methods=['POST'])
+def handle_drilldown_log():
+    data = request.json
+    try:
+        database.log_drilldown(data)
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
@@ -344,13 +631,13 @@ def api_documents():
 
 @app.route('/api/analysis/deposit-transfers', methods=['GET'])
 def api_deposit_transfers():
-    patterns = detect_deposit_transfer_patterns()
+    patterns = detect_deposit_transfer_patterns(get_request_filters())
     return jsonify(patterns)
 
 
 @app.route('/api/analysis/cardholder-spending', methods=['GET'])
 def api_cardholder_spending():
-    summary = get_cardholder_spending_summary()
+    summary = get_cardholder_spending_summary(get_request_filters())
     return jsonify(summary)
 
 
@@ -649,37 +936,37 @@ def uploaded_file(filename):
 @app.route('/api/analysis/summary', methods=['GET'])
 def api_executive_summary():
     """Executive summary with auto-generated key findings."""
-    return jsonify(get_executive_summary())
+    return jsonify(get_executive_summary(get_request_filters()))
 
 
 @app.route('/api/analysis/money-flow', methods=['GET'])
 def api_money_flow():
     """Cross-account money flow tracking."""
-    return jsonify(get_money_flow())
+    return jsonify(get_money_flow(get_request_filters()))
 
 
 @app.route('/api/analysis/timeline', methods=['GET'])
 def api_timeline():
     """Daily timeline data for visualization."""
-    return jsonify(get_timeline_data())
+    return jsonify(get_timeline_data(get_request_filters()))
 
 
 @app.route('/api/analysis/recipients', methods=['GET'])
 def api_recipient_analysis():
     """Who Gets the Money - recipient profiling with suspicion scores."""
-    return jsonify(get_recipient_analysis())
+    return jsonify(get_recipient_analysis(get_request_filters()))
 
 
 @app.route('/api/analysis/deposit-aging', methods=['GET'])
 def api_deposit_aging():
     """Deposit aging - how quickly deposits leave the account."""
-    return jsonify(get_deposit_aging())
+    return jsonify(get_deposit_aging(get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-comparison', methods=['GET'])
 def api_cardholder_comparison():
     """Side-by-side cardholder comparison."""
-    return jsonify(get_cardholder_comparison())
+    return jsonify(get_cardholder_comparison(get_request_filters()))
 
 
 @app.route('/api/audit-trail', methods=['GET'])
@@ -778,7 +1065,7 @@ def api_global_search():
 @app.route('/api/analysis/recurring')
 def api_recurring():
     """Detect recurring/scheduled transactions."""
-    return jsonify(get_recurring_transactions())
+    return jsonify(get_recurring_transactions(get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-timeline')
@@ -786,7 +1073,9 @@ def api_cardholder_timeline():
     """Get timeline data per cardholder for overlay comparison."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
+    where, params = build_filter_clause(get_request_filters())
+    
+    cursor.execute(f"""
         SELECT cardholder_name,
             strftime('%Y-%m', trans_date) as month,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as spent,
@@ -795,10 +1084,10 @@ def api_cardholder_timeline():
             COALESCE(SUM(CASE WHEN is_personal = 1 THEN ABS(amount) ELSE 0 END), 0) as personal,
             COALESCE(SUM(CASE WHEN is_transfer = 1 AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) as transfers
         FROM transactions
-        WHERE cardholder_name IS NOT NULL AND cardholder_name != ''
+        {where} AND cardholder_name IS NOT NULL AND cardholder_name != ''
         GROUP BY cardholder_name, strftime('%Y-%m', trans_date)
         ORDER BY cardholder_name, month
-    """)
+    """, params)
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
 

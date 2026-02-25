@@ -1,0 +1,35 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\dev\github\business\Forensic_CPA_AI
+plugins: anyio-4.12.1, mock-3.15.1
+collected 8 items
+
+tests\test_analytics.py .F.                                              [ 37%]
+tests\test_categorization.py ..                                          [ 62%]
+tests\test_docs.py ...                                                   [100%]
+
+================================== FAILURES ===================================
+______________________ test_query_builder_faceted_counts ______________________
+
+setup_database = None
+
+    def test_query_builder_faceted_counts(setup_database):
+        qb = QueryBuilder({'view_mode': 'business'})
+        conn = get_db()
+        counts = qb.get_faceted_counts(conn)
+        conn.close()
+    
+        # Check we only see business categories and cardholders
+        categories = {c['label']: c['count'] for c in counts['categories']}
+        assert 'Business - Supplies' in categories
+        assert 'Business - Services' in categories
+        assert 'Personal - Dining' not in categories
+    
+        cardholders = {c['label']: c['count'] for c in counts['cardholders']}
+>       assert cardholders['Alice'] == 1
+E       assert 4 == 1
+
+tests\test_analytics.py:63: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_analytics.py::test_query_builder_faceted_counts - assert 4 ...
+========================= 1 failed, 7 passed in 2.18s =========================

@@ -1,0 +1,7 @@
+{
+    "terminal.integrated.tabs.defaultIcon": "terminal-powershell",
+    "terminal.integrated.tabs.title": "${task}",
+    "window.title": "Forensic CPA AI - Workspace",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.terminal.activateEnvironment": true
+}

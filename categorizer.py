@@ -5,7 +5,7 @@ Applies rule-based matching to classify transactions.
 import re
 from datetime import datetime, timedelta
 from collections import defaultdict
-from database import get_db, get_category_rules
+from database import get_db, get_category_rules, build_filter_clause
 
 
 def categorize_transaction(description, amount, trans_type='', payment_method=''):
@@ -150,28 +150,29 @@ def recategorize_all():
     return updated
 
 
-def detect_deposit_transfer_patterns():
+def detect_deposit_transfer_patterns(filters=None):
     """
     Forensic analysis: Detect patterns where deposits are quickly followed by transfers out.
     This identifies potential money diversion.
     """
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
     # Get all deposits ordered by date
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT * FROM transactions
-        WHERE (trans_type = 'deposit' OR amount > 0)
+        {where} AND (trans_type = 'deposit' OR amount > 0)
         ORDER BY trans_date
-    """)
+    """, params)
     deposits = [dict(r) for r in cursor.fetchall()]
 
     # Get all transfers out ordered by date
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT * FROM transactions
-        WHERE is_transfer = 1 AND amount < 0
+        {where} AND is_transfer = 1 AND amount < 0
         ORDER BY trans_date
-    """)
+    """, params)
     transfers = [dict(r) for r in cursor.fetchall()]
 
     patterns = []
@@ -220,12 +221,13 @@ def _days_between(date1, date2):
         return 999
 
 
-def get_cardholder_spending_summary():
+def get_cardholder_spending_summary(filters=None):
     """Get detailed spending breakdown by cardholder."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT
             cardholder_name,
             category,
@@ -233,10 +235,10 @@ def get_cardholder_spending_summary():
             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as received,
             COUNT(*) as transaction_count
         FROM transactions
-        WHERE cardholder_name IS NOT NULL AND cardholder_name != ''
+        {where} AND cardholder_name IS NOT NULL AND cardholder_name != ''
         GROUP BY cardholder_name, category
         ORDER BY cardholder_name, spent DESC
-    """)
+    """, params)
     rows = [dict(r) for r in cursor.fetchall()]
 
     # Organize by cardholder
@@ -256,17 +258,18 @@ def get_cardholder_spending_summary():
 
 # =============== NEW FORENSIC ANALYSIS FUNCTIONS ===============
 
-def get_recipient_analysis():
+def get_recipient_analysis(filters=None):
     """Analyze money recipients - who gets the money, how much, how often."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT description, amount, trans_date, cardholder_name, category,
                is_personal, is_business, is_transfer, payment_method
-        FROM transactions WHERE amount < 0
+        FROM transactions {where} AND amount < 0
         ORDER BY trans_date
-    """)
+    """, params)
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
 
@@ -418,21 +421,22 @@ def _extract_recipient(description):
     return None
 
 
-def get_deposit_aging():
+def get_deposit_aging(filters=None):
     """Analyze how quickly deposits are followed by withdrawals/transfers."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT id, trans_date, description, amount, cardholder_name
-        FROM transactions WHERE amount > 0 ORDER BY trans_date
-    """)
+        FROM transactions {where} AND amount > 0 ORDER BY trans_date
+    """, params)
     deposits = [dict(r) for r in cursor.fetchall()]
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT id, trans_date, description, amount, cardholder_name, is_transfer
-        FROM transactions WHERE amount < 0 ORDER BY trans_date
-    """)
+        FROM transactions {where} AND amount < 0 ORDER BY trans_date
+    """, params)
     withdrawals = [dict(r) for r in cursor.fetchall()]
     conn.close()
 
@@ -476,12 +480,13 @@ def get_deposit_aging():
     return results
 
 
-def get_cardholder_comparison():
+def get_cardholder_comparison(filters=None):
     """Side-by-side comparison of all cardholders."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT
             cardholder_name,
             COUNT(*) as total_transactions,
@@ -495,20 +500,20 @@ def get_cardholder_comparison():
             MAX(trans_date) as last_transaction,
             COALESCE(AVG(CASE WHEN amount < 0 THEN ABS(amount) ELSE NULL END), 0) as avg_purchase
         FROM transactions
-        WHERE cardholder_name IS NOT NULL AND cardholder_name != ''
+        {where} AND cardholder_name IS NOT NULL AND cardholder_name != ''
         GROUP BY cardholder_name
         ORDER BY total_spent DESC
-    """)
+    """, params)
     rows = [dict(r) for r in cursor.fetchall()]
 
     # Get top categories per cardholder
     for row in rows:
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT category, COALESCE(SUM(ABS(amount)), 0) as total, COUNT(*) as cnt
             FROM transactions
-            WHERE cardholder_name = ? AND amount < 0
+            {where} AND cardholder_name = ? AND amount < 0
             GROUP BY category ORDER BY total DESC LIMIT 5
-        """, (row['cardholder_name'],))
+        """, params + [row['cardholder_name']])
         row['top_categories'] = [dict(r) for r in cursor.fetchall()]
 
     conn.close()
@@ -532,15 +537,16 @@ def get_audit_trail(limit=200):
     return rows
 
 
-def get_executive_summary():
+def get_executive_summary(filters=None):
     """Generate an executive summary of key forensic findings."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
     summary = {'findings': [], 'risk_score': 0, 'total_analyzed': 0}
 
     # Total transactions
-    cursor.execute("SELECT COUNT(*) as cnt, MIN(trans_date) as first_date, MAX(trans_date) as last_date FROM transactions")
+    cursor.execute(f"SELECT COUNT(*) as cnt, MIN(trans_date) as first_date, MAX(trans_date) as last_date FROM transactions {where}", params)
     row = dict(cursor.fetchone())
     summary['total_analyzed'] = row['cnt']
     summary['date_range'] = f"{row['first_date'] or 'N/A'} to {row['last_date'] or 'N/A'}"
@@ -551,7 +557,7 @@ def get_executive_summary():
         return summary
 
     # Total money flow
-    cursor.execute("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) as total_in, COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END),0) as total_out FROM transactions")
+    cursor.execute(f"SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) as total_in, COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END),0) as total_out FROM transactions {where}", params)
     flow = dict(cursor.fetchone())
     summary['total_in'] = flow['total_in']
     summary['total_out'] = flow['total_out']
@@ -566,7 +572,7 @@ def get_executive_summary():
         summary['risk_score'] += 10
 
     # Finding: Flagged transactions
-    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE is_flagged = 1")
+    cursor.execute(f"SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions {where} AND is_flagged = 1", params)
     flagged = dict(cursor.fetchone())
     if flagged['cnt'] > 0:
         summary['findings'].append({
@@ -576,7 +582,7 @@ def get_executive_summary():
         summary['risk_score'] += min(30, flagged['cnt'] * 3)
 
     # Finding: Personal spending on business account
-    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE is_personal = 1")
+    cursor.execute(f"SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions {where} AND is_personal = 1", params)
     personal = dict(cursor.fetchone())
     if personal['cnt'] > 0:
         pct = (personal['total'] / flow['total_out'] * 100) if flow['total_out'] > 0 else 0
@@ -589,7 +595,7 @@ def get_executive_summary():
             summary['risk_score'] += 10
 
     # Finding: Transfer concentration
-    cursor.execute("SELECT COALESCE(SUM(ABS(amount)),0) as total, COUNT(*) as cnt FROM transactions WHERE is_transfer = 1 AND amount < 0")
+    cursor.execute(f"SELECT COALESCE(SUM(ABS(amount)),0) as total, COUNT(*) as cnt FROM transactions {where} AND is_transfer = 1 AND amount < 0", params)
     transfers = dict(cursor.fetchone())
     if transfers['cnt'] > 0:
         xfer_pct = (transfers['total'] / flow['total_out'] * 100) if flow['total_out'] > 0 else 0
@@ -601,18 +607,19 @@ def get_executive_summary():
             summary['risk_score'] += 15
 
     # Finding: Rapid deposit drain
-    cursor.execute("""
+    where_d, params_d = build_filter_clause(filters, 'd')
+    cursor.execute(f"""
         SELECT COUNT(*) as cnt FROM (
             SELECT d.id, d.amount as dep_amt,
                 COALESCE(SUM(CASE WHEN w.trans_date BETWEEN d.trans_date AND date(d.trans_date, '+3 days')
                     THEN ABS(w.amount) ELSE 0 END), 0) as out_3day
             FROM transactions d
             LEFT JOIN transactions w ON w.amount < 0 AND w.trans_date >= d.trans_date
-            WHERE d.amount > 0
+            {where_d} AND d.amount > 0
             GROUP BY d.id
             HAVING out_3day > dep_amt * 0.8
         )
-    """)
+    """, params_d)
     rapid = cursor.fetchone()['cnt']
     if rapid > 0:
         summary['findings'].append({
@@ -622,7 +629,7 @@ def get_executive_summary():
         summary['risk_score'] += min(20, rapid * 5)
 
     # Finding: Round-number transactions
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE amount < 0 AND ABS(amount) >= 500 AND CAST(ABS(amount) AS INTEGER) % 500 = 0")
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM transactions {where} AND amount < 0 AND ABS(amount) >= 500 AND CAST(ABS(amount) AS INTEGER) % 500 = 0", params)
     round_nums = cursor.fetchone()['cnt']
     if round_nums >= 5:
         summary['findings'].append({
@@ -632,7 +639,7 @@ def get_executive_summary():
         summary['risk_score'] += 10
 
     # Finding: Uncategorized transactions
-    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'")
+    cursor.execute(f"SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions {where} AND category = 'Uncategorized'", params)
     uncat = dict(cursor.fetchone())
     if uncat['cnt'] > 10:
         summary['findings'].append({
@@ -641,12 +648,12 @@ def get_executive_summary():
         })
 
     # Finding: Top recipient concentration
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT description, COALESCE(SUM(ABS(amount)),0) as total, COUNT(*) as cnt
-        FROM transactions WHERE amount < 0
+        FROM transactions {where} AND amount < 0
         GROUP BY UPPER(SUBSTR(description, 1, 20))
         ORDER BY total DESC LIMIT 1
-    """)
+    """, params)
     top_recip = cursor.fetchone()
     if top_recip and flow['total_out'] > 0:
         top = dict(top_recip)
@@ -663,31 +670,34 @@ def get_executive_summary():
     return summary
 
 
-def get_money_flow():
+def get_money_flow(filters=None):
     """Track money flow between accounts - where money enters and exits."""
     conn = get_db()
     cursor = conn.cursor()
+    where_t, params_t = build_filter_clause(filters, 't')
+    where, params = build_filter_clause(filters)
 
     # Get flow by account
-    cursor.execute("""
-        SELECT a.account_name, a.account_type, a.institution,
+    cursor.execute(f"""
+        SELECT t.account_id, a.account_name, a.account_type, a.institution,
             COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as inflow,
             COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as outflow,
             COUNT(*) as trans_count
         FROM transactions t
         LEFT JOIN accounts a ON t.account_id = a.id
+        {where_t}
         GROUP BY t.account_id
         ORDER BY outflow DESC
-    """)
+    """, params_t)
     accounts = [dict(r) for r in cursor.fetchall()]
 
     # Detect cross-account transfers
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT description, amount, trans_date, cardholder_name, account_id
         FROM transactions
-        WHERE is_transfer = 1
+        {where} AND is_transfer = 1
         ORDER BY trans_date
-    """)
+    """, params)
     transfers = [dict(r) for r in cursor.fetchall()]
 
     # Group transfers to detect flows between accounts
@@ -725,27 +735,28 @@ def get_money_flow():
     flows.sort(key=lambda x: x['total'], reverse=True)
 
     # Payment method breakdown
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT payment_method,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as total,
             COUNT(*) as cnt
         FROM transactions
-        WHERE payment_method IS NOT NULL AND payment_method != ''
+        {where} AND payment_method IS NOT NULL AND payment_method != ''
         GROUP BY payment_method
         ORDER BY total DESC
-    """)
+    """, params)
     methods = [dict(r) for r in cursor.fetchall()]
 
     conn.close()
     return {'accounts': accounts, 'flows': flows, 'methods': methods}
 
 
-def get_timeline_data():
+def get_timeline_data(filters=None):
     """Get transaction data organized for timeline visualization."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT trans_date,
             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as day_in,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as day_out,
@@ -759,9 +770,10 @@ def get_timeline_data():
                 ' | '
             ) as notable
         FROM transactions
+        {where}
         GROUP BY trans_date
         ORDER BY trans_date
-    """)
+    """, params)
     days = [dict(r) for r in cursor.fetchall()]
 
     # Running balance
@@ -774,19 +786,20 @@ def get_timeline_data():
     return days
 
 
-def get_recurring_transactions():
+def get_recurring_transactions(filters=None):
     """Detect transactions that recur at regular intervals (weekly, biweekly, monthly).
     Flags potential unauthorized recurring payments."""
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(filters)
 
     # Get all outflow transactions grouped by cleaned description
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT id, trans_date, description, amount, cardholder_name, is_personal, is_business, category
         FROM transactions
-        WHERE amount < 0
+        {where} AND amount < 0
         ORDER BY description, trans_date
-    """)
+    """, params)
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
 

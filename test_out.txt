@@ -1,0 +1,54 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\dev\github\business\Forensic_CPA_AI
+collected 3 items
+
+tests\test_analytics.py .EE                                              [100%]
+
+=================================== ERRORS ====================================
+_____________ ERROR at setup of test_query_builder_faceted_counts _____________
+
+    @pytest.fixture(scope="module")
+    def setup_database():
+        # Use a test db to not pollute the real db
+        os.environ['TESTING'] = 'true'
+        init_db()
+        conn = get_db()
+    
+        # Insert some dummy transactions
+>       conn.execute('''
+            INSERT INTO transactions (trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer)
+            VALUES
+            ('2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0),
+            ('2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0),
+            ('2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0),
+            ('2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0)
+        ''')
+E       sqlite3.IntegrityError: NOT NULL constraint failed: transactions.trans_type
+
+tests\test_analytics.py:17: IntegrityError
+________________ ERROR at setup of test_api_analytics_overview ________________
+
+    @pytest.fixture(scope="module")
+    def setup_database():
+        # Use a test db to not pollute the real db
+        os.environ['TESTING'] = 'true'
+        init_db()
+        conn = get_db()
+    
+        # Insert some dummy transactions
+>       conn.execute('''
+            INSERT INTO transactions (trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer)
+            VALUES
+            ('2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0),
+            ('2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0),
+            ('2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0),
+            ('2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0)
+        ''')
+E       sqlite3.IntegrityError: NOT NULL constraint failed: transactions.trans_type
+
+tests\test_analytics.py:17: IntegrityError
+=========================== short test summary info ===========================
+ERROR tests/test_analytics.py::test_query_builder_faceted_counts - sqlite3.In...
+ERROR tests/test_analytics.py::test_api_analytics_overview - sqlite3.Integrit...
+========================= 1 passed, 2 errors in 0.68s =========================

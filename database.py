@@ -7,7 +7,10 @@ import os
 import json
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'forensic_audit.db')
+if os.environ.get('TESTING') == 'true':
+    DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'test_audit.db')
+else:
+    DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'data', 'forensic_audit.db'))
 
 
 def get_db():
@@ -135,6 +138,52 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS drilldown_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_tab TEXT NOT NULL,
+            widget_id TEXT NOT NULL,
+            target TEXT NOT NULL,
+            filters_applied TEXT NOT NULL,
+            metadata TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE TABLE IF NOT EXISTS document_extractions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            extraction_data TEXT,  -- JSON string of the extracted fields/layout
+            status TEXT DEFAULT 'pending',  -- 'pending', 'completed', 'failed'
+            error_message TEXT,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS taxonomy_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT NOT NULL,
+            category_type TEXT NOT NULL, -- 'risk', 'entity', 'topic'
+            severity TEXT DEFAULT 'low',  -- for risks
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS document_categorizations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            extraction_id INTEGER,
+            categorization_data TEXT, -- JSON containing RiskCategories, entities, topics, summary
+            provider TEXT,
+            model TEXT,
+            version INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'completed',
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS saved_filters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -154,6 +203,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_trans_business_date ON transactions(is_business, trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_flagged_date ON transactions(is_flagged, trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_amount ON transactions(amount);
+        
+        -- High performance indices for Analytics Drilldowns
+        CREATE INDEX IF NOT EXISTS idx_trans_composite_view ON transactions(is_personal, is_business, trans_date);
+        CREATE INDEX IF NOT EXISTS idx_trans_amount_date ON transactions(amount, trans_date);
+        CREATE INDEX IF NOT EXISTS idx_drilldown_logs_target ON drilldown_logs(target, timestamp);
     """)
 
     # Insert default categories
@@ -486,27 +540,67 @@ def get_documents():
     return rows
 
 
+def build_filter_clause(filters=None, table_alias=''):
+    """Build a SQL WHERE clause and parameter list from a filters dictionary."""
+    prefix = f"{table_alias}." if table_alias else ""
+    where = "WHERE 1=1"
+    params = []
+    
+    if not filters:
+        return where, params
+
+    if filters.get('date_from'):
+        where += f" AND {prefix}trans_date >= ?"
+        params.append(filters['date_from'])
+    if filters.get('date_to'):
+        where += f" AND {prefix}trans_date <= ?"
+        params.append(filters['date_to'])
+    if filters.get('cardholder'):
+        where += f" AND {prefix}cardholder_name LIKE ?"
+        params.append(f"%{filters['cardholder']}%")
+    if filters.get('account_id'):
+        where += f" AND {prefix}account_id = ?"
+        params.append(filters['account_id'])
+    if filters.get('category'):
+        where += f" AND {prefix}category = ?"
+        params.append(filters['category'])
+    if filters.get('trans_type'):
+        where += f" AND {prefix}trans_type = ?"
+        params.append(filters['trans_type'])
+    if filters.get('payment_method'):
+        where += f" AND {prefix}payment_method = ?"
+        params.append(filters['payment_method'])
+    if str(filters.get('is_flagged')) == '1':
+        where += f" AND {prefix}is_flagged = 1"
+    if str(filters.get('is_transfer')) == '1':
+        where += f" AND {prefix}is_transfer = 1"
+    if filters.get('search'):
+        where += f" AND {prefix}description LIKE ?"
+        params.append(f"%{filters['search']}%")
+    if filters.get('min_amount'):
+        where += f" AND ABS({prefix}amount) >= ?"
+        params.append(float(filters['min_amount']))
+    if filters.get('max_amount'):
+        where += f" AND ABS({prefix}amount) <= ?"
+        params.append(float(filters['max_amount']))
+
+    is_personal_str = str(filters.get('is_personal', ''))
+    is_business_str = str(filters.get('is_business', ''))
+    view_mode = filters.get('view_mode')
+    
+    if view_mode == 'personal' or is_personal_str == '1' or is_personal_str.lower() == 'true':
+        where += f" AND {prefix}is_personal = 1"
+    elif view_mode == 'business' or is_business_str == '1' or is_business_str.lower() == 'true':
+        where += f" AND {prefix}is_business = 1"
+
+    return where, params
+
 def get_summary_stats(filters=None):
     """Get summary statistics for dashboard."""
     conn = get_db()
     cursor = conn.cursor()
 
-    where = "WHERE 1=1"
-    params = []
-    if filters:
-        if filters.get('date_from'):
-            where += " AND trans_date >= ?"
-            params.append(filters['date_from'])
-        if filters.get('date_to'):
-            where += " AND trans_date <= ?"
-            params.append(filters['date_to'])
-        if filters.get('cardholder'):
-            where += " AND cardholder_name LIKE ?"
-            params.append(f"%{filters['cardholder']}%")
-        if filters.get('view_mode') == 'personal':
-            where += " AND is_personal = 1"
-        elif filters.get('view_mode') == 'business':
-            where += " AND is_business = 1"
+    where, params = build_filter_clause(filters)
 
     stats = {}
 
@@ -807,3 +901,124 @@ def get_alerts():
 
     conn.close()
     return alerts
+
+# --- Telemetry Logs ---
+
+def log_drilldown(data):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO drilldown_logs (source_tab, widget_id, target, filters_applied, metadata)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        data.get('source_tab'),
+        data.get('widget_id'),
+        data.get('target'),
+        data.get('filters_applied'),
+        data.get('metadata')
+    ))
+    conn.commit()
+    log_id = cursor.lastrowid
+    conn.close()
+    return log_id
+
+def add_document_extraction(document_id, status='pending'):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO document_extractions (document_id, status)
+        VALUES (?, ?)
+    """, (document_id, status))
+    conn.commit()
+    ext_id = cursor.lastrowid
+    conn.close()
+    return ext_id
+
+def update_document_extraction(ext_id, extraction_data=None, status=None, error_message=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    updates = []
+    params = []
+    
+    if extraction_data is not None:
+        updates.append("extraction_data = ?")
+        params.append(extraction_data if isinstance(extraction_data, str) else json.dumps(extraction_data))
+        
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+        
+    if error_message is not None:
+        updates.append("error_message = ?")
+        params.append(error_message)
+        
+    if not updates:
+        return
+        
+    updates.append("updated_at = CURRENT_TIMESTAMP")
+    params.append(ext_id)
+    
+    query = f"UPDATE document_extractions SET {', '.join(updates)} WHERE id = ?"
+    cursor.execute(query, tuple(params))
+    conn.commit()
+    conn.close()
+
+def get_document_extraction(document_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM document_extractions 
+        WHERE document_id = ? 
+        ORDER BY created_at DESC LIMIT 1
+    """, (document_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_taxonomy_config():
+    """Fetches the taxonomy configuration as a list of dicts."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM taxonomy_config ORDER BY category_type, severity DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def add_document_categorization(document_id, extraction_id, categorization_data, provider, model, status="completed", error_message=None):
+    """Persists an LLM-generated document categorization payload."""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Auto-increment version dynamically per document
+    cursor.execute("SELECT MAX(version) FROM document_categorizations WHERE document_id = ?", (document_id,))
+    result = cursor.fetchone()[0]
+    next_version = 1 if result is None else result + 1
+
+    cursor.execute("""
+        INSERT INTO document_categorizations (
+            document_id, extraction_id, categorization_data, 
+            provider, model, version, status, error_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        document_id, extraction_id, 
+        categorization_data if isinstance(categorization_data, str) else json.dumps(categorization_data),
+        provider, model, next_version, status, error_message
+    ))
+    conn.commit()
+    cat_id = cursor.lastrowid
+    conn.close()
+    return cat_id
+
+def get_document_categorization(document_id):
+    """Fetches the latest categorization for a given document."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM document_categorizations 
+        WHERE document_id = ? 
+        ORDER BY created_at DESC, version DESC LIMIT 1
+    """, (document_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
