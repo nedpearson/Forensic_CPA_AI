@@ -6,6 +6,9 @@ import sqlite3
 import os
 import json
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 if os.environ.get('TESTING') == 'true':
     DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'test_audit.db')
