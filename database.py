@@ -586,10 +586,15 @@ def clear_all_data(user_id):
     cursor.executescript(f"""
         DELETE FROM proof_links WHERE user_id = {user_id};
         DELETE FROM audit_log WHERE user_id = {user_id};
+        DELETE FROM case_notes WHERE user_id = {user_id};
+        DELETE FROM transaction_sources WHERE user_id = {user_id};
+        UPDATE transactions SET document_id = NULL WHERE user_id = {user_id};
         DELETE FROM transactions WHERE user_id = {user_id};
+        DELETE FROM document_categorizations WHERE user_id = {user_id};
+        DELETE FROM document_extractions WHERE user_id = {user_id};
+        UPDATE documents SET parent_document_id = NULL WHERE user_id = {user_id};
         DELETE FROM documents WHERE user_id = {user_id};
         DELETE FROM accounts WHERE user_id = {user_id};
-        DELETE FROM case_notes WHERE user_id = {user_id};
         DELETE FROM saved_filters WHERE user_id = {user_id};
     """)
     conn.commit()
@@ -692,7 +697,21 @@ def delete_document(user_id, doc_id):
         AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
     """, (user_id, user_id))
     
-    # 5. Delete documents
+    # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
+    cursor.execute(f"""
+        UPDATE transactions 
+        SET document_id = NULL
+        WHERE document_id IN ({placeholders}) AND user_id = ?
+    """, (*doc_ids_to_delete, user_id))
+    
+    # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
+    cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+    cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+
+    # 6. Nullify parent_document_id on any document referencing these before they are deleted
+    cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+
+    # 7. Delete documents
     cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
     
     conn.commit()
