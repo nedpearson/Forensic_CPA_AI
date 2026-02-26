@@ -33,8 +33,8 @@ def setup_test_client():
     init_db()
     
     # Pre-seed a document extraction
-    doc_id = add_document('test_statement.pdf', '/fake/path.pdf', 'pdf', 'bank_statement', None)
-    ext_id = add_document_extraction(doc_id, status='completed')
+    doc_id = add_document(1, 'test_statement.pdf', '/fake/path.pdf', 'pdf', 'bank_statement', None)
+    ext_id = add_document_extraction(1, doc_id, status='completed')
     
     # Update extraction with some dummy JSON data
     conn = get_db()
@@ -60,6 +60,13 @@ def test_auto_categorizer_logic():
 def test_api_categorize_endpoint(setup_test_client, mocker):
     client, doc_id = setup_test_client
     
+    def sync_thread(target, args=()):
+        target(*args)
+        class DummyThread:
+            def start(self): pass
+        return DummyThread()
+    mocker.patch('threading.Thread', side_effect=sync_thread)
+    
     # Mock the Categorizer inside the app thread to use our Mock provider
     mock_categorizer = mocker.patch('app.AutoCategorizer')
     mock_instance = mock_categorizer.return_value
@@ -74,11 +81,10 @@ def test_api_categorize_endpoint(setup_test_client, mocker):
     assert response.get_json()['status'] == 'accepted'
     
     # Wait for background thread
-    import time
-    time.sleep(0.5)
+    # time.sleep(0.5) (Removed since thread is sync)
     
     # Retrieve Categorization
-    cat_response = client.get(f'/api/docs/{doc_id}/categorization')
+    cat_response = client.get(f'/api/docs/{doc_id}/categorization', headers=headers)
     assert cat_response.status_code == 200
     
     data = cat_response.get_json()

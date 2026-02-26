@@ -8,12 +8,12 @@ from collections import defaultdict
 from database import get_db, get_category_rules, build_filter_clause
 
 
-def categorize_transaction(description, amount, trans_type='', payment_method=''):
+def categorize_transaction(user_id, description, amount, trans_type='', payment_method=''):
     """
     Apply categorization rules to a transaction.
     Returns dict with category, subcategory, is_personal, is_business, is_transfer, is_flagged, flag_reason.
     """
-    rules = get_category_rules()
+    rules = get_category_rules(user_id)
     desc_upper = description.upper()
     result = {
         'category': 'Uncategorized',
@@ -114,17 +114,18 @@ def categorize_transaction(description, amount, trans_type='', payment_method=''
     return result
 
 
-def recategorize_all():
+def recategorize_all(user_id):
     """Re-run categorization on all auto-categorized (not manually edited) transactions."""
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, description, amount, trans_type, payment_method FROM transactions WHERE manually_edited = 0")
+    cursor.execute("SELECT id, description, amount, trans_type, payment_method FROM transactions WHERE user_id = ? AND manually_edited = 0", (user_id,))
     rows = cursor.fetchall()
 
     updated = 0
     for row in rows:
         result = categorize_transaction(
+            user_id,
             row['description'], row['amount'],
             row['trans_type'], row['payment_method']
         )
@@ -150,14 +151,14 @@ def recategorize_all():
     return updated
 
 
-def detect_deposit_transfer_patterns(filters=None):
+def detect_deposit_transfer_patterns(user_id, filters=None):
     """
     Forensic analysis: Detect patterns where deposits are quickly followed by transfers out.
     This identifies potential money diversion.
     """
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     # Get all deposits ordered by date
     cursor.execute(f"""
@@ -221,11 +222,11 @@ def _days_between(date1, date2):
         return 999
 
 
-def get_cardholder_spending_summary(filters=None):
+def get_cardholder_spending_summary(user_id, filters=None):
     """Get detailed spending breakdown by cardholder."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     cursor.execute(f"""
         SELECT
@@ -258,11 +259,11 @@ def get_cardholder_spending_summary(filters=None):
 
 # =============== NEW FORENSIC ANALYSIS FUNCTIONS ===============
 
-def get_recipient_analysis(filters=None):
+def get_recipient_analysis(user_id, filters=None):
     """Analyze money recipients - who gets the money, how much, how often."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     cursor.execute(f"""
         SELECT description, amount, trans_date, cardholder_name, category,
@@ -421,11 +422,11 @@ def _extract_recipient(description):
     return None
 
 
-def get_deposit_aging(filters=None):
+def get_deposit_aging(user_id, filters=None):
     """Analyze how quickly deposits are followed by withdrawals/transfers."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     cursor.execute(f"""
         SELECT id, trans_date, description, amount, cardholder_name
@@ -480,11 +481,11 @@ def get_deposit_aging(filters=None):
     return results
 
 
-def get_cardholder_comparison(filters=None):
+def get_cardholder_comparison(user_id, filters=None):
     """Side-by-side comparison of all cardholders."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     cursor.execute(f"""
         SELECT
@@ -520,7 +521,7 @@ def get_cardholder_comparison(filters=None):
     return rows
 
 
-def get_audit_trail(limit=200):
+def get_audit_trail(user_id, limit=200):
     """Get recent audit log entries."""
     conn = get_db()
     cursor = conn.cursor()
@@ -529,19 +530,20 @@ def get_audit_trail(limit=200):
         SELECT a.*, t.description as trans_description, t.amount as trans_amount
         FROM audit_log a
         LEFT JOIN transactions t ON a.transaction_id = t.id
+        WHERE a.user_id = ?
         ORDER BY a.timestamp DESC
         LIMIT ?
-    """, (limit,))
+    """, (user_id, limit))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def get_executive_summary(filters=None):
+def get_executive_summary(user_id, filters=None):
     """Generate an executive summary of key forensic findings."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     summary = {'findings': [], 'risk_score': 0, 'total_analyzed': 0}
 
@@ -607,7 +609,7 @@ def get_executive_summary(filters=None):
             summary['risk_score'] += 15
 
     # Finding: Rapid deposit drain
-    where_d, params_d = build_filter_clause(filters, 'd')
+    where_d, params_d = build_filter_clause(user_id, filters, 'd')
     cursor.execute(f"""
         SELECT COUNT(*) as cnt FROM (
             SELECT d.id, d.amount as dep_amt,
@@ -670,12 +672,12 @@ def get_executive_summary(filters=None):
     return summary
 
 
-def get_money_flow(filters=None):
+def get_money_flow(user_id, filters=None):
     """Track money flow between accounts - where money enters and exits."""
     conn = get_db()
     cursor = conn.cursor()
-    where_t, params_t = build_filter_clause(filters, 't')
-    where, params = build_filter_clause(filters)
+    where_t, params_t = build_filter_clause(user_id, filters, 't')
+    where, params = build_filter_clause(user_id, filters)
 
     # Get flow by account
     cursor.execute(f"""
@@ -750,11 +752,11 @@ def get_money_flow(filters=None):
     return {'accounts': accounts, 'flows': flows, 'methods': methods}
 
 
-def get_timeline_data(filters=None):
+def get_timeline_data(user_id, filters=None):
     """Get transaction data organized for timeline visualization."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     cursor.execute(f"""
         SELECT trans_date,
@@ -786,12 +788,12 @@ def get_timeline_data(filters=None):
     return days
 
 
-def get_recurring_transactions(filters=None):
+def get_recurring_transactions(user_id, filters=None):
     """Detect transactions that recur at regular intervals (weekly, biweekly, monthly).
     Flags potential unauthorized recurring payments."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     # Get all outflow transactions grouped by cleaned description
     cursor.execute(f"""
@@ -891,11 +893,11 @@ def get_recurring_transactions(filters=None):
     return recurring
 
 
-def suggest_rule_from_edit(transaction_id):
+def suggest_rule_from_edit(user_id, transaction_id):
     """Suggest a categorization rule based on a manually edited transaction."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,))
+    cursor.execute("SELECT * FROM transactions WHERE user_id = ? AND id = ?", (user_id, transaction_id))
     row = cursor.fetchone()
     conn.close()
 

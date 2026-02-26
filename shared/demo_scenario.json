@@ -1,0 +1,126 @@
+{
+    "accounts": [
+        {
+            "name": "Chase Checking",
+            "number": "1234",
+            "type": "bank",
+            "institution": "Chase"
+        },
+        {
+            "name": "Amex Platinum",
+            "number": "9012",
+            "type": "credit_card",
+            "institution": "American Express"
+        },
+        {
+            "name": "Business Venmo",
+            "number": "business-venmo",
+            "type": "venmo",
+            "institution": "Venmo"
+        }
+    ],
+    "taxonomy": [
+        {
+            "name": "High-Risk Legal",
+            "description": "Payments surrounding active litigation",
+            "category_type": "topic",
+            "severity": "low"
+        },
+        {
+            "name": "Unapproved Vendors",
+            "description": "Entities violating procurement policies",
+            "category_type": "entity",
+            "severity": "medium"
+        }
+    ],
+    "base_transactions": [
+        {
+            "desc": "DIRECT DEP PAYROLL",
+            "amount": 4200.50,
+            "type": "deposit",
+            "acc": "bank"
+        },
+        {
+            "desc": "SUPERIOR GRILL BATON ROUGE",
+            "amount": -145.20,
+            "type": "debit",
+            "acc": "bank"
+        },
+        {
+            "desc": "INTERNET TRANSFER TO AMEX",
+            "amount": -1500.00,
+            "type": "transfer_out",
+            "acc": "bank"
+        },
+        {
+            "desc": "COX COMMUNICATIONS RETAIL",
+            "amount": -119.99,
+            "type": "debit",
+            "acc": "bank"
+        },
+        {
+            "desc": "VENMO CASHOUT",
+            "amount": 800.00,
+            "type": "deposit",
+            "acc": "bank"
+        },
+        {
+            "desc": "AMAZON WEB SERVICES",
+            "amount": -840.12,
+            "type": "debit",
+            "acc": "credit_card"
+        },
+        {
+            "desc": "TST* 601 RESTAURANT",
+            "amount": -89.43,
+            "type": "debit",
+            "acc": "credit_card"
+        },
+        {
+            "desc": "PAYMENT THANK YOU",
+            "amount": 1500.00,
+            "type": "deposit",
+            "acc": "credit_card"
+        },
+        {
+            "desc": "DELTA AIRLINES REDEEM",
+            "amount": -450.00,
+            "type": "debit",
+            "acc": "credit_card"
+        },
+        {
+            "desc": "PAYMENT TO JANE DOE - DINNER",
+            "amount": -45.00,
+            "type": "debit",
+            "acc": "venmo"
+        },
+        {
+            "desc": "PAYMENT FROM JOHN SMITH",
+            "amount": 100.00,
+            "type": "deposit",
+            "acc": "venmo"
+        },
+        {
+            "desc": "TRANSFER TO BANK",
+            "amount": -800.00,
+            "type": "transfer_out",
+            "acc": "venmo"
+        }
+    ],
+    "flagged_transaction": {
+        "desc": "WIRE TRANSFER OFFSHORE LLC",
+        "amount": -25000.00,
+        "type": "transfer_out",
+        "acc": "bank",
+        "flag_reason": "High volume outgoing transfer to unknown entity"
+    },
+    "document": {
+        "filename": "Demo_Bank_Statement_Oct_2023.pdf",
+        "original_path": "/demo/fake_path/Demo_Bank_Statement.pdf",
+        "file_type": "pdf",
+        "doc_category": "bank_statement",
+        "account": "bank",
+        "statement_start_date": "2023-10-01",
+        "statement_end_date": "2023-10-31"
+    }
+}

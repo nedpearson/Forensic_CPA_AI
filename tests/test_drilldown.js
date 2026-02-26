@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { DrilldownTarget } = require('../shared/types/index.js');
 const { drilldownReducer, BreadcrumbStore, createDrilldownHandler } = require('../shared/drilldown.js');
+const { serializeFilters, hydrateFilters } = require('../shared/url.js');
 
 test('drilldownReducer - applies explicit filters and inherits view_mode', (t) => {
     const currentState = { view_mode: 'business', category: 'Dining', search: 'lunch' };
@@ -117,4 +118,29 @@ test('drilldownReducer - Categories Tab', (t) => {
     const nextState = drilldownReducer(currentState, event);
     assert.strictEqual(nextState.category, 'Fraud');
     assert.strictEqual(nextState.search, undefined);
+});
+
+test('serializeFilters - correctly serializes and ignores empty values', (t) => {
+    const filters = {
+        view_mode: 'business',
+        category: 'Dining',
+        search: '',
+        min_amount: null,
+        is_flagged: undefined,
+        cardholder: 'Alice'
+    };
+    const qs = serializeFilters(filters);
+
+    // Sort keys alphabetically is expected based on url.js implementation
+    assert.strictEqual(qs, 'cardholder=Alice&category=Dining&view_mode=business');
+});
+
+test('hydrateFilters - correctly parses query string and ignores unknown keys', (t) => {
+    const qs = '?category=Dining&view_mode=business&min_amount=100&malicious_script=true';
+    const filters = hydrateFilters(qs);
+
+    assert.strictEqual(filters.category, 'Dining');
+    assert.strictEqual(filters.view_mode, 'business');
+    assert.strictEqual(filters.min_amount, '100');
+    assert.strictEqual(filters.malicious_script, undefined); // Should not be hydrated
 });

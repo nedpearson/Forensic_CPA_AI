@@ -14,3 +14,6 @@ openai==1.55.0
 pydantic==2.10.2
 azure-ai-documentintelligence==1.0.0b4
 azure-core==1.32.0
+flask-login
+
+gunicorn

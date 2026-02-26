@@ -36,6 +36,13 @@ def test_api_docs_upload_unauthorized(setup_test_client):
 def test_api_docs_upload_success(setup_test_client, mocker):
     client = setup_test_client
     
+    def sync_thread(target, args=()):
+        target(*args)
+        class DummyThread:
+            def start(self): pass
+        return DummyThread()
+    mocker.patch('threading.Thread', side_effect=sync_thread)
+    
     # Mock the Azure adapter to avoid network calls during tests
     mock_analyze = mocker.patch('document_analyzer.AzureDocumentIntelligenceAdapter.analyze_document')
     mock_analyze.return_value = {"content": "mock extracted content", "pages": []}
@@ -52,12 +59,8 @@ def test_api_docs_upload_success(setup_test_client, mocker):
     
     doc_id = json_data['document_id']
     
-    # Wait for the background thread to finish
-    import time
-    time.sleep(0.5)
-    
     # Verify extraction record
-    ext_response = client.get(f'/api/docs/{doc_id}/extraction')
+    ext_response = client.get(f'/api/docs/{doc_id}/extraction', headers=headers)
     assert ext_response.status_code == 200
     ext_data = ext_response.get_json()
     assert ext_data['status'] == 'completed'
@@ -66,7 +69,12 @@ def test_api_docs_upload_success(setup_test_client, mocker):
 
 def test_api_docs_get(setup_test_client):
     client = setup_test_client
-    # Let's get the doc we just uploaded (should be ID 1 if DB is clean)
-    response = client.get('/api/docs/1')
+    
+    docs_resp = client.get('/api/documents', headers={'Authorization': 'Bearer secret-test-token'})
+    docs = docs_resp.get_json()
+    test_doc = next((d for d in docs if d['filename'] == 'test_upload.pdf'), None)
+    assert test_doc is not None
+    
+    response = client.get(f'/api/docs/{test_doc["id"]}', headers={'Authorization': 'Bearer secret-test-token'})
     assert response.status_code == 200
     assert response.get_json()['filename'] == 'test_upload.pdf'

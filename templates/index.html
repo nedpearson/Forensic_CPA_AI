@@ -1234,12 +1234,18 @@
 
             <!-- Date Range Quick Picks -->
             <div class="date-picks" id="date-picks">
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('all')">All Time</button>
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('30')">Last 30 Days</button>
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('90')">Last 90 Days</button>
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('ytd')">YTD</button>
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2024')">2024</button>
-                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2023')">2023</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('all')" data-preset="all">All
+                    Time</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('30')" data-preset="30">Last 30
+                    Days</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('90')" data-preset="90">Last 90
+                    Days</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('ytd')"
+                    data-preset="ytd">YTD</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2024')"
+                    data-preset="2024">2024</button>
+                <button class="btn btn-sm btn-outline-light" onclick="setDateRange('2023')"
+                    data-preset="2023">2023</button>
             </div>
 
             <!-- Executive Summary -->
@@ -1352,7 +1358,7 @@
                         </select></div>
                     <div class="col"><input type="number" class="form-control form-control-sm" id="filter-min-amt"
                             placeholder="Min $"></div>
-                    <div class="col-auto"><button class="btn btn-sm btn-info" onclick="loadTransactions(true)"><i
+                    <div class="col-auto"><button class="btn btn-sm btn-info" onclick="readFilterUI()"><i
                                 class="fas fa-filter"></i> Filter</button></div>
                     <div class="col-auto"><button class="btn btn-sm btn-outline-light" onclick="clearFilters()"><i
                                 class="fas fa-times"></i></button></div>
@@ -1521,7 +1527,21 @@
 
         <!-- ========== CATEGORIES/RULES ========== -->
         <div class="page-section" id="page-categories">
-            <h4 class="mb-3"><i class="fas fa-tags text-info"></i> Categories & Rules</h4>
+            <h4 class="mb-3"><i class="fas fa-tags text-info"></i> Categories, Rules & Taxonomy</h4>
+
+            <div class="row g-4 mb-4">
+                <div class="col-12">
+                    <div class="card-dark">
+                        <div class="card-header">
+                            <span><i class="fas fa-list-ul text-warning me-1"></i> Taxonomy Configuration</span>
+                            <button class="btn btn-sm btn-info" onclick="showAddTaxonomyModal()"><i
+                                    class="fas fa-plus"></i> Add Taxonomy</button>
+                        </div>
+                        <div class="scrollable-table" id="taxonomy-list"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="row g-4">
                 <div class="col-md-4">
                     <div class="card-dark">
@@ -1535,6 +1555,48 @@
                                 class="btn btn-sm btn-info" onclick="showAddRuleModal()"><i class="fas fa-plus"></i>
                                 Add</button></div>
                         <div class="scrollable-table" id="rules-list"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add Taxonomy Modal -->
+        <div class="modal fade" id="addTaxonomyModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h6 class="modal-title"><i class="fas fa-plus"></i> Add Taxonomy Rule</h6>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-2">
+                            <label class="form-label small">Name / Term</label>
+                            <input type="text" class="form-control form-control-sm" id="tax-name"
+                                placeholder="e.g. Fraud Risk">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small">Description</label>
+                            <input type="text" class="form-control form-control-sm" id="tax-desc"
+                                placeholder="Indicators of fraud">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small">Category Type</label>
+                            <input type="text" class="form-control form-control-sm" id="tax-category-type"
+                                placeholder="e.g. risk, entity, topic">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small">Severity</label>
+                            <select class="form-select form-select-sm" id="tax-severity">
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="critical">Critical</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button class="btn btn-sm btn-info" onclick="addTaxonomy()">Save Taxonomy</button>
                     </div>
                 </div>
             </div>
@@ -1915,6 +1977,54 @@
         window.FilterStore = new GlobalFilterStore(initialFilters);
         window.GlobalBreadcrumbs = new BreadcrumbStore();
 
+        // Subscribe to FilterStore to update URL and UI automatically
+        window.FilterStore.subscribe((filters) => {
+            const qs = serializeFilters(filters);
+            const activePage = document.querySelector('.nav-link.active')?.dataset.page || 'dashboard';
+            const newUrl = qs ? `/?${qs}` : '/';
+            window.history.replaceState({ filters, page: activePage }, '', newUrl);
+
+            // Sync the UI top bar inputs
+            if (typeof syncFilterUI === 'function') syncFilterUI(filters);
+
+            // Persist view_mode to session and update toggle bar
+            if (filters.view_mode) {
+                sessionStorage.setItem('viewMode', filters.view_mode);
+                document.querySelectorAll('.view-toggle-bar .toggle-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.mode === filters.view_mode);
+                });
+            }
+
+            // Sync Date Presets UI
+            if (filters.date_preset) {
+                document.querySelectorAll('.date-picks .btn').forEach(b => {
+                    b.classList.toggle('btn-info', b.dataset.preset === filters.date_preset);
+                    b.classList.toggle('btn-outline-light', b.dataset.preset !== filters.date_preset);
+                });
+            } else {
+                document.querySelectorAll('.date-picks .btn').forEach(b => {
+                    b.classList.remove('btn-info');
+                    b.classList.add('btn-outline-light');
+                });
+            }
+
+            // Reload the active tab's data using the new filters
+            loadPageData(activePage, filters);
+        });
+
+        // Handle browser Back/Forward navigation
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.filters) {
+                window.FilterStore.replace(e.state.filters);
+                if (e.state.page) {
+                    navigateTo(e.state.page, false); // Don't trigger another data load, the replace() via subscription will
+                }
+            } else {
+                const restored = hydrateFilters(window.location.search);
+                window.FilterStore.replace(restored);
+            }
+        });
+
         let allTransactions = [];
         let allCategories = [];
         let selectedIds = new Set();
@@ -1970,33 +2080,29 @@
         // ===== VIEW MODE TOGGLE =====
         function setViewMode(mode) {
             FilterStore.update({ view_mode: mode });
-            // Reload current page
-            const activePage = document.querySelector('.nav-link.active');
-            if (activePage) loadPageData(activePage.dataset.page);
         }
 
-        // Initialize toggle state on load
-        FilterStore.subscribe((filters) => {
-            const qs = serializeFilters(filters);
-            window.history.replaceState(null, '', '?' + qs);
-            if (filters.view_mode) {
-                sessionStorage.setItem('viewMode', filters.view_mode);
-                document.querySelectorAll('.view-toggle-bar .toggle-btn').forEach(b => {
-                    b.classList.toggle('active', b.dataset.mode === filters.view_mode);
-                });
+        function clearFilters() {
+            FilterStore.clear();
+        }
+
+        function setDateRange(preset) {
+            const updates = { date_preset: preset, date_from: null, date_to: null };
+            const today = new Date();
+            if (preset === '30') {
+                const d = new Date(); d.setDate(d.getDate() - 30);
+                updates.date_from = d.toISOString().split('T')[0];
+            } else if (preset === '90') {
+                const d = new Date(); d.setDate(d.getDate() - 90);
+                updates.date_from = d.toISOString().split('T')[0];
+            } else if (preset === 'ytd') {
+                updates.date_from = `${today.getFullYear()}-01-01`;
+            } else if (preset === '2024') {
+                updates.date_from = '2024-01-01'; updates.date_to = '2024-12-31';
+            } else if (preset === '2023') {
+                updates.date_from = '2023-01-01'; updates.date_to = '2023-12-31';
             }
-            syncFilterUI(filters);
-        });
-
-        function getFilterParams() {
-            const params = new URLSearchParams(serializeFilters(FilterStore.getState()));
-            return params;
-        }
-
-        // Deprecated - migrating to getFilterParams stringification
-        function getViewModeParam() {
-            const vm = FilterStore.getState().view_mode;
-            return vm && vm !== 'all' ? `&view_mode=${vm}` : '';
+            FilterStore.update(updates);
         }
 
         function syncFilterUI(filters) {
@@ -2030,6 +2136,7 @@
                 date_from: getVal('filter-date-from'),
                 date_to: getVal('filter-date-to'),
                 min_amount: getVal('filter-min-amt'),
+                date_preset: 'custom',
                 is_flagged: null,
                 is_personal: null,
                 is_business: null,
@@ -2049,37 +2156,46 @@
         document.querySelectorAll('.nav-link[data-page]').forEach(link => {
             link.addEventListener('click', e => {
                 e.preventDefault();
-                navigateTo(link.dataset.page);
+                navigateTo(link.dataset.page, true);
             });
         });
 
-        function navigateTo(page, filters) {
+        function navigateTo(page, triggerLoad = true) {
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             const link = document.querySelector(`.nav-link[data-page="${page}"]`);
             if (link) link.classList.add('active');
+
             document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
             const section = document.getElementById('page-' + page);
             if (section) section.classList.add('active');
-            loadPageData(page, filters);
+
+            if (triggerLoad) {
+                loadPageData(page, window.FilterStore.getState());
+
+                // Also update the URL with the new page state (conceptually, tabs are just hash or state, we use replaceState)
+                window.history.replaceState({ filters: window.FilterStore.getState(), page }, '', window.location.search || '/');
+            }
         }
 
         function loadPageData(page, filters) {
-            if (page === 'dashboard') loadDashboard();
+            if (!filters) filters = window.FilterStore.getState();
+            if (page === 'dashboard') loadDashboard(filters);
             else if (page === 'transactions') loadTransactions(filters);
-            else if (page === 'analysis') loadAnalysis();
-            else if (page === 'recipients') loadRecipients();
-            else if (page === 'deposit-aging') loadDepositAging();
-            else if (page === 'cardholders') loadCardholders();
-            else if (page === 'money-flow') loadMoneyFlow();
-            else if (page === 'timeline') loadTimeline();
-            else if (page === 'recurring') loadRecurring();
-            else if (page === 'cardholder-timeline') loadCardholderTimeline();
-            else if (page === 'alerts') loadAlerts();
+            else if (page === 'analysis') loadAnalysis(filters);
+            else if (page === 'recipients') loadRecipients(filters);
+            else if (page === 'deposit-aging') loadDepositAging(filters);
+            else if (page === 'cardholders') loadCardholders(filters);
+            else if (page === 'money-flow') loadMoneyFlow(filters);
+            else if (page === 'timeline') loadTimeline(filters);
+            else if (page === 'recurring') loadRecurring(filters);
+            else if (page === 'cardholder-timeline') loadCardholderTimeline(filters);
+            else if (page === 'alerts') loadAlerts(filters);
             else if (page === 'case-notes') loadCaseNotes();
             else if (page === 'accounts') loadAccounts();
             else if (page === 'documents') loadDocuments();
             else if (page === 'categories') loadCategoriesPage();
             else if (page === 'audit-trail') loadAuditTrail();
+
             // Close sidebar on mobile after navigation
             if (window.innerWidth <= 768) toggleSidebar(false);
         }
@@ -2098,8 +2214,9 @@
                 getState: () => FilterStore.getState(),
                 onLogEvent: logDrilldownEvent,
                 onNavigate: (target, nextFilters) => {
+                    // Update DOM navigation first to avoid double-fetching during replace
+                    navigateTo(target.toLowerCase(), false);
                     FilterStore.replace(nextFilters);
-                    navigateTo(target.toLowerCase());
                 }
             });
 
@@ -2138,12 +2255,13 @@
             }
 
             FilterStore.update(updates);
-            loadDashboard();
+            // Re-load will be triggered automatically by subscription
         }
 
-        async function loadDashboard() {
-            const statsParams = Object.fromEntries(getFilterParams());
-            dashStats = await api('/api/stats?' + new URLSearchParams(statsParams).toString());
+        async function loadDashboard(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            dashStats = await api('/api/stats?' + qs);
             const s = dashStats;
             const net = s.total_deposits - s.total_withdrawals;
 
@@ -2230,17 +2348,12 @@
         }
 
         // ===== TRANSACTIONS =====
-        async function loadTransactions(fromFilterButton = false) {
+        async function loadTransactions(filters) {
             await ensureCategories();
+            if (!filters) filters = FilterStore.getState();
 
-            if (fromFilterButton) {
-                readFilterUI();
-                GlobalFilterState.date_preset = 'custom';
-                // Optional: reset date buttons UI
-                document.querySelectorAll('.date-picks .btn').forEach(b => b.classList.remove('btn-info'));
-            }
-
-            const params = getFilterParams();
+            const qs = serializeFilters(filters);
+            const params = new URLSearchParams(qs);
 
             // Pagination support
             if (perPage > 0) {
@@ -2505,10 +2618,12 @@
         }
 
         // ===== FORENSIC ANALYSIS =====
-        async function loadAnalysis() {
+        async function loadAnalysis(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+
             // Deposit-transfer patterns
-            const params = getFilterParams();
-            const patterns = await api('/api/analysis/deposit-transfers?' + new URLSearchParams(params).toString());
+            const patterns = await api('/api/analysis/deposit-transfers?' + qs);
             let dtHtml = '<table class="table table-dark-custom"><thead><tr><th>Deposit Date</th><th>Deposit Amt</th><th>Transfers Within 7 Days</th><th>Total Moved</th><th>% Moved</th></tr></thead><tbody>';
             if (!patterns.length) dtHtml += '<tr><td colspan="5" class="text-center text-muted py-3">No patterns detected. Upload bank statements to analyze.</td></tr>';
             patterns.forEach(p => {
@@ -2738,6 +2853,24 @@
             rules.forEach(r => { rHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(r.category)}'})"><td><code style="color:#79c0ff;">${esc(r.pattern)}</code></td><td>${r.category}</td><td>${r.is_personal ? '<i class="fas fa-check text-warning"></i>' : ''}</td><td>${r.is_business ? '<i class="fas fa-check text-info"></i>' : ''}</td><td>${r.is_transfer ? '<i class="fas fa-check text-danger"></i>' : ''}</td><td>${r.priority}</td></tr>`; });
             rHtml += '</tbody></table>';
             document.getElementById('rules-list').innerHTML = rHtml;
+
+            const taxonomy = await api('/api/taxonomy');
+            let taxHtml = '<table class="table table-dark-custom"><thead><tr><th>Name</th><th>Description</th><th>Type</th><th>Severity</th><th>Actions</th></tr></thead><tbody>';
+            if (taxonomy && taxonomy.length > 0) {
+                taxonomy.forEach(t => {
+                    taxHtml += `<tr>
+                        <td class="fw-bold">${esc(t.name)}</td>
+                        <td>${esc(t.description || '')}</td>
+                        <td><span class="badge bg-secondary">${esc(t.category_type || '')}</span></td>
+                        <td><span class="badge ${t.severity === 'high' || t.severity === 'critical' ? 'bg-danger' : t.severity === 'medium' ? 'bg-warning text-dark' : 'bg-info'}">${t.severity}</span></td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="deleteTaxonomy(${t.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`;
+                });
+            } else {
+                taxHtml += '<tr><td colspan="5" class="text-center text-muted">No taxonomy rules defined. System will use defaults.</td></tr>';
+            }
+            taxHtml += '</tbody></table>';
+            document.getElementById('taxonomy-list').innerHTML = taxHtml;
         }
 
         function showAddRuleModal() { loadCategoryOptions('rule-category'); new bootstrap.Modal(document.getElementById('addRuleModal')).show(); }
@@ -2746,12 +2879,42 @@
             bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide(); loadCategoriesPage(); toast('Rule added');
         }
 
+        function showAddTaxonomyModal() {
+            document.getElementById('tax-name').value = '';
+            document.getElementById('tax-desc').value = '';
+            document.getElementById('tax-category-type').value = 'risk';
+            document.getElementById('tax-severity').value = 'medium';
+            new bootstrap.Modal(document.getElementById('addTaxonomyModal')).show();
+        }
+
+        async function addTaxonomy() {
+            const data = {
+                name: document.getElementById('tax-name').value,
+                description: document.getElementById('tax-desc').value,
+                category_type: document.getElementById('tax-category-type').value,
+                severity: document.getElementById('tax-severity').value
+            };
+            if (!data.name) return toast('Name is required');
+            await api('/api/taxonomy', 'POST', data);
+            bootstrap.Modal.getInstance(document.getElementById('addTaxonomyModal')).hide();
+            loadCategoriesPage();
+            toast('Taxonomy added');
+        }
+
+        async function deleteTaxonomy(id) {
+            if (!confirm('Are you sure you want to delete this taxonomy definition?')) return;
+            await api('/api/taxonomy/' + id, 'DELETE');
+            loadCategoriesPage();
+            toast('Taxonomy deleted');
+        }
+
         // ===== RECIPIENT ANALYSIS =====
         let recipientData = [];
 
-        async function loadRecipients() {
-            const params = getFilterParams();
-            recipientData = await api('/api/analysis/recipients?' + new URLSearchParams(params).toString());
+        async function loadRecipients(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            recipientData = await api('/api/analysis/recipients?' + qs);
             renderRecipients();
         }
 
@@ -2804,9 +2967,10 @@
         // ===== DEPOSIT AGING =====
         let agingData = [];
 
-        async function loadDepositAging() {
-            const params = getFilterParams();
-            agingData = await api('/api/analysis/deposit-aging?' + new URLSearchParams(params).toString());
+        async function loadDepositAging(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            agingData = await api('/api/analysis/deposit-aging?' + qs);
             renderDepositAging();
         }
 
@@ -2858,9 +3022,10 @@
         }
 
         // ===== CARDHOLDER COMPARISON (enhanced) =====
-        async function loadCardholders() {
-            const params = getFilterParams();
-            const comparison = await api('/api/analysis/cardholder-comparison?' + new URLSearchParams(params).toString());
+        async function loadCardholders(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const comparison = await api('/api/analysis/cardholder-comparison?' + qs);
             let html = '<div class="row g-3 mb-3">';
 
             // Summary cards for each cardholder
@@ -2931,9 +3096,10 @@
         }
 
         // ===== EXECUTIVE SUMMARY =====
-        async function loadExecutiveSummary() {
-            const params = getFilterParams();
-            const summary = await api('/api/analysis/summary?' + new URLSearchParams(params).toString());
+        async function loadExecutiveSummary(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const summary = await api('/api/analysis/summary?' + qs);
             const el = document.getElementById('executive-summary');
             if (!summary || summary.total_analyzed === 0) { el.style.display = 'none'; return; }
             el.style.display = 'block';
@@ -2962,9 +3128,10 @@
         // ===== MONEY FLOW =====
         let moneyFlowData = null;
 
-        async function loadMoneyFlow() {
-            const params = getFilterParams();
-            moneyFlowData = await api('/api/analysis/money-flow?' + new URLSearchParams(params).toString());
+        async function loadMoneyFlow(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            moneyFlowData = await api('/api/analysis/money-flow?' + qs);
             const d = moneyFlowData;
 
             // Summary
@@ -3033,9 +3200,10 @@
         // ===== TIMELINE =====
         let timelineData = [];
 
-        async function loadTimeline() {
-            const params = getFilterParams();
-            timelineData = await api('/api/analysis/timeline?' + new URLSearchParams(params).toString());
+        async function loadTimeline(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            timelineData = await api('/api/analysis/timeline?' + qs);
             renderTimeline();
         }
 
@@ -3415,8 +3583,10 @@
         }
 
         // ===== RECURRING TRANSACTIONS =====
-        async function loadRecurring() {
-            recurringData = await api('/api/analysis/recurring');
+        async function loadRecurring(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            recurringData = await api('/api/analysis/recurring?' + qs);
             renderRecurring();
         }
 
@@ -3463,8 +3633,10 @@
         }
 
         // ===== CARDHOLDER TIMELINE COMPARISON =====
-        async function loadCardholderTimeline() {
-            const data = await api('/api/analysis/cardholder-timeline');
+        async function loadCardholderTimeline(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const data = await api('/api/analysis/cardholder-timeline?' + qs);
             renderCardholderTimeline(data);
         }
 

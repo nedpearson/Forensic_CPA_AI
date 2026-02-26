@@ -1,0 +1,25 @@
+
+[1m[*] Forensic CPA AI - DevEx Doctor [*][0m
+Running system validations...
+
+[1m=== Checking Environment Variables ===[0m
+[92m[PASS][0m SESSION_SECRET is set.
+[92m[PASS][0m SUPER_ADMIN_BOOTSTRAP is set.
+[92m[PASS][0m SUPER_ADMIN_EMAIL is set.
+
+[1m=== Checking Database Schema & Migrations ===[0m
+[92m[PASS][0m Migration applied: 'role' column exists.
+[92m[PASS][0m Migration applied: 'is_demo' column exists.
+
+[1m=== Checking Super Admin Provisioning ===[0m
+[92m[PASS][0m Super admin 'nedpearson@gmail.com' found with correct role 'SUPER_ADMIN'. (Hash verified, secrets protected)
+
+[1m=== Checking API Endpoints & UI Rendering ===[0m
+[92m[PASS][0m GET /api/health returned 200 OK.
+[92m[PASS][0m GET /api/smoke returned 200 OK.
+[92m[PASS][0m POST /api/auth/signup is reachable (returned expected validation error).
+[92m[PASS][0m GET /login returned 200 OK and contains 'Sign Up' UI bindings.
+
+--------------------------------------------------
+[92m[1m[SUCCESS] All systems GO! The environment is perfectly configured.[0m
+

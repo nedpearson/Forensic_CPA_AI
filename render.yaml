@@ -2,24 +2,21 @@ services:
   - type: web
     name: forensic-cpa-ai
     env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app -b 0.0.0.0:$PORT"
-    # To ensure case files and SQL stay persistent across redeploys:
-    disk:
-      name: sqlite-data
-      mountPath: /data
-      sizeGB: 1
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python -c "import database; database.init_db()"
+    startCommand: gunicorn app:app
     envVars:
+      - key: FLASK_ENV
+        value: production
       - key: PYTHON_VERSION
-        value: 3.11.0
-      - key: DB_PATH
-        value: /data/forensic_audit.db
-      - key: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+        value: 3.10.0
+      - key: DATABASE_URL
         sync: false
-      - key: AZURE_DOCUMENT_INTELLIGENCE_KEY
+      - key: OPENAI_API_KEY
         sync: false
-      - key: LLM_API_KEY
+      - key: SESSION_SECRET
         sync: false
-      - key: UPLOAD_AUTH_TOKEN
-        sync: false
-        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DEMO_SEED_ENABLED
+        value: "false"

@@ -12,15 +12,16 @@ def setup_database():
     os.environ['TESTING'] = 'true'
     init_db()
     conn = get_db()
+    conn.execute('DELETE FROM transactions')
     
     # Insert some dummy transactions
     conn.execute('''
-        INSERT INTO transactions (trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer, trans_type)
+        INSERT INTO transactions (user_id, trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer, trans_type)
         VALUES 
-        ('2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0, 'debit'),
-        ('2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0, 'debit'),
-        ('2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0, 'debit'),
-        ('2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0, 'credit')
+        (1, '2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0, 'debit'),
+        (1, '2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0, 'debit'),
+        (1, '2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0, 'debit'),
+        (1, '2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0, 'credit')
     ''')
     conn.commit()
     conn.close()
@@ -29,26 +30,27 @@ def setup_database():
 
 def test_query_builder_where_clause():
     # Test empty filters
-    qb = QueryBuilder({})
+    qb = QueryBuilder(1, {})
     where, params = qb.get_where_clause()
-    assert where == "1=1"
-    assert len(params) == 0
+    assert where == "user_id = ?"
+    assert len(params) == 1
 
     # Test view mode
-    qb = QueryBuilder({'view_mode': 'business'})
+    qb = QueryBuilder(1, {'view_mode': 'business'})
     where, params = qb.get_where_clause()
-    assert where == "is_business = 1"
+    assert where == "user_id = ? AND is_business = 1"
     
     # Test exact matches
-    qb = QueryBuilder({'cardholder': 'Alice', 'category': 'Personal - Dining'})
+    qb = QueryBuilder(1, {'cardholder': 'Alice', 'category': 'Personal - Dining'})
     where, params = qb.get_where_clause()
+    assert "user_id = ?" in where
     assert "cardholder_name = ?" in where
     assert "category = ?" in where
     assert "Alice" in params
     assert "Personal - Dining" in params
 
 def test_query_builder_faceted_counts(setup_database):
-    qb = QueryBuilder({'view_mode': 'business'})
+    qb = QueryBuilder(1, {'view_mode': 'business'})
     conn = get_db()
     counts = qb.get_faceted_counts(conn)
     conn.close()
@@ -64,8 +66,10 @@ def test_query_builder_faceted_counts(setup_database):
     assert cardholders['Bob'] == 1
 
 def test_api_analytics_overview(setup_database):
+    os.environ['UPLOAD_AUTH_TOKEN'] = 'secret-test-token'
     client = app.test_client()
-    response = client.get('/api/analytics/overview?view_mode=business')
+    headers = {'Authorization': 'Bearer secret-test-token'}
+    response = client.get('/api/analytics/overview?view_mode=business', headers=headers)
     assert response.status_code == 200
     data = response.get_json()
     assert 'facets' in data

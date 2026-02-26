@@ -1,0 +1,56 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\dev\github\business\Forensic_CPA_AI
+plugins: anyio-4.12.1, mock-3.15.1
+collected 8 items
+
+tests\test_analytics.py F.F                                              [ 37%]
+tests\test_categorization.py ..                                          [ 62%]
+tests\test_docs.py ..F                                                   [100%]
+
+================================== FAILURES ===================================
+_______________________ test_query_builder_where_clause _______________________
+
+    def test_query_builder_where_clause():
+        # Test empty filters
+        qb = QueryBuilder(1, {})
+        where, params = qb.get_where_clause()
+        assert where == "user_id = ?"
+>       assert len(params) == 0
+E       assert 1 == 0
+E        +  where 1 = len((1,))
+
+tests\test_analytics.py:35: AssertionError
+_________________________ test_api_analytics_overview _________________________
+
+setup_database = None
+
+    def test_api_analytics_overview(setup_database):
+        client = app.test_client()
+        response = client.get('/api/analytics/overview?view_mode=business')
+>       assert response.status_code == 200
+E       assert 401 == 200
+E        +  where 401 = <WrapperTestResponse streamed [401 UNAUTHORIZED]>.status_code
+
+tests\test_analytics.py:69: AssertionError
+______________________________ test_api_docs_get ______________________________
+
+setup_test_client = <FlaskClient <Flask 'app'>>
+
+    def test_api_docs_get(setup_test_client):
+        client = setup_test_client
+        # Let's get the doc we just uploaded (should be ID 1 if DB is clean)
+        response = client.get('/api/docs/1', headers={'Authorization': 'Bearer secret-test-token'})
+        assert response.status_code == 200
+>       assert response.get_json()['filename'] == 'test_upload.pdf'
+E       AssertionError: assert 'test_statement.pdf' == 'test_upload.pdf'
+E         
+E         - test_upload.pdf
+E         + test_statement.pdf
+
+tests\test_docs.py:75: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_analytics.py::test_query_builder_where_clause - assert 1 == 0
+FAILED tests/test_analytics.py::test_api_analytics_overview - assert 401 == 200
+FAILED tests/test_docs.py::test_api_docs_get - AssertionError: assert 'test_s...
+========================= 3 failed, 5 passed in 2.67s =========================

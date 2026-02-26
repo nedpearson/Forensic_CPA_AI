@@ -7,7 +7,7 @@ import os
 import io
 from datetime import datetime
 from fpdf import FPDF
-from database import get_db
+from database import get_db, build_filter_clause
 from categorizer import get_executive_summary, get_money_flow, get_recurring_transactions
 
 
@@ -120,13 +120,14 @@ class ForensicReport(FPDF):
             self.cell(0, 6, f'... and {len(rows) - max_rows} more rows', new_x='LMARGIN', new_y='NEXT')
 
 
-def generate_forensic_report():
+def generate_forensic_report(user_id, filters=None):
     """Generate the full forensic PDF report and return the file path."""
     pdf = ForensicReport()
     pdf.alias_nb_pages()
 
     conn = get_db()
     cursor = conn.cursor()
+    where, params = build_filter_clause(user_id, filters)
 
     # ===== PAGE 1: COVER PAGE =====
     pdf.add_page()
@@ -149,7 +150,7 @@ def generate_forensic_report():
     pdf.ln(5)
 
     # Get date range
-    cursor.execute("SELECT MIN(trans_date) as first_date, MAX(trans_date) as last_date, COUNT(*) as cnt FROM transactions")
+    cursor.execute(f"SELECT MIN(trans_date) as first_date, MAX(trans_date) as last_date, COUNT(*) as cnt FROM transactions {where}", params)
     date_info = dict(cursor.fetchone())
     pdf.set_font('Helvetica', '', 11)
     pdf.cell(0, 8, f'Period: {date_info["first_date"] or "N/A"} to {date_info["last_date"] or "N/A"}', align='C', new_x='LMARGIN', new_y='NEXT')
@@ -165,7 +166,7 @@ def generate_forensic_report():
     pdf.add_page()
     pdf.section_title('EXECUTIVE SUMMARY')
 
-    summary = get_executive_summary()
+    summary = get_executive_summary(user_id, filters)
 
     # Risk Score
     risk = summary.get('risk_score', 0)
@@ -175,7 +176,7 @@ def generate_forensic_report():
     pdf.body_text(f'Analysis covers {summary.get("total_analyzed", 0)} transactions from {summary.get("date_range", "N/A")}.')
 
     # Summary stats
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT
             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as deposits,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as withdrawals,
@@ -183,7 +184,8 @@ def generate_forensic_report():
             COALESCE(SUM(CASE WHEN is_personal = 1 THEN ABS(amount) ELSE 0 END), 0) as personal,
             COUNT(CASE WHEN is_flagged = 1 THEN 1 END) as flagged_count
         FROM transactions
-    """)
+        {where}
+    """, params)
     stats = dict(cursor.fetchone())
 
     y = pdf.get_y() + 2
@@ -217,11 +219,11 @@ def generate_forensic_report():
         pdf.ln(2)
 
     # ===== PAGE 3: FLAGGED TRANSACTIONS =====
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT trans_date, description, amount, cardholder_name, category, flag_reason
-        FROM transactions WHERE is_flagged = 1
+        FROM transactions {where} AND is_flagged = 1
         ORDER BY ABS(amount) DESC
-    """)
+    """, params)
     flagged = [dict(r) for r in cursor.fetchall()]
 
     if flagged:
@@ -245,11 +247,11 @@ def generate_forensic_report():
         )
 
     # ===== PAGE 4: PERSONAL SPENDING =====
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT trans_date, description, amount, cardholder_name, category
-        FROM transactions WHERE is_personal = 1
+        FROM transactions {where} AND is_personal = 1
         ORDER BY ABS(amount) DESC
-    """)
+    """, params)
     personal = [dict(r) for r in cursor.fetchall()]
 
     if personal:
@@ -274,7 +276,7 @@ def generate_forensic_report():
         )
 
     # ===== PAGE 5: CARDHOLDER COMPARISON =====
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT cardholder_name,
             COUNT(*) as cnt,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as spent,
@@ -282,10 +284,10 @@ def generate_forensic_report():
             COALESCE(SUM(CASE WHEN is_transfer = 1 AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) as transfers,
             COUNT(CASE WHEN is_flagged = 1 THEN 1 END) as flagged
         FROM transactions
-        WHERE cardholder_name IS NOT NULL AND cardholder_name != ''
+        {where} AND cardholder_name IS NOT NULL AND cardholder_name != ''
         GROUP BY cardholder_name
         ORDER BY spent DESC
-    """)
+    """, params)
     cardholders = [dict(r) for r in cursor.fetchall()]
 
     if cardholders:
@@ -310,7 +312,7 @@ def generate_forensic_report():
         )
 
     # ===== PAGE 6: MONEY FLOW =====
-    flow = get_money_flow()
+    flow = get_money_flow(user_id, filters)
     if flow['accounts'] or flow['flows']:
         pdf.add_page()
         pdf.section_title('MONEY FLOW ANALYSIS')
@@ -352,7 +354,7 @@ def generate_forensic_report():
             )
 
     # ===== PAGE 7: RECURRING TRANSACTIONS =====
-    recurring = get_recurring_transactions()
+    recurring = get_recurring_transactions(user_id, filters)
     if recurring:
         pdf.add_page()
         pdf.section_title('RECURRING TRANSACTIONS')
@@ -375,12 +377,13 @@ def generate_forensic_report():
         )
 
     # ===== PAGE 8: TOP TRANSACTIONS =====
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT trans_date, description, amount, cardholder_name, category, is_flagged
         FROM transactions
+        {where}
         ORDER BY ABS(amount) DESC
         LIMIT 50
-    """)
+    """, params)
     top_trans = [dict(r) for r in cursor.fetchall()]
 
     if top_trans:
@@ -406,15 +409,16 @@ def generate_forensic_report():
         )
 
     # ===== PAGE 9: CATEGORY BREAKDOWN =====
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT category,
             COUNT(*) as cnt,
             COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as spent,
             COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as received
         FROM transactions
+        {where}
         GROUP BY category
         ORDER BY spent DESC
-    """)
+    """, params)
     categories = [dict(r) for r in cursor.fetchall()]
 
     if categories:
@@ -435,7 +439,7 @@ def generate_forensic_report():
         )
 
     # ===== CASE NOTES =====
-    cursor.execute("SELECT * FROM case_notes ORDER BY created_at DESC")
+    cursor.execute("SELECT * FROM case_notes WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
     notes = [dict(r) for r in cursor.fetchall()]
 
     if notes:

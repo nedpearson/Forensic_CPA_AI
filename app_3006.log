@@ -1,0 +1,15 @@
+
+============================================================
+  FORENSIC CPA AI - Your Financial Private Investigator
+============================================================
+  Open in your browser: http://localhost:3006
+  Upload folder: C:\dev\github\business\Forensic_CPA_AI\uploads
+============================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+2026-02-25 13:22:11 [INFO] [req_id:system] WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:3006
+ * Running on http://192.168.1.124:3006
+2026-02-25 13:22:11 [INFO] [req_id:system] Press CTRL+C to quit

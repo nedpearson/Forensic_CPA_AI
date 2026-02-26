@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forensic CPA AI - Login</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            max-width: 400px;
+            width: 100%;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .error-message {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h3>Forensic CPA AI</h3>
+            <p class="text-muted">Sign in to your account</p>
+        </div>
+        <div id="error-alert" class="alert alert-danger error-message" role="alert">
+            Invalid credentials
+        </div>
+        <form id="login-form">
+            <div class="mb-3">
+                <label for="email" class="form-label">Email address</label>
+                <input type="email" class="form-control" id="email" required>
+            </div>
+            <div class="mb-3">
+                <label for="password" class="form-label">Password</label>
+                <input type="password" class="form-control" id="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 mb-3">Sign In</button>
+            <p class="text-center"><a href="#" id="show-signup" class="text-decoration-none">Don't have an account? Sign
+                    Up</a></p>
+
+            <div class="position-relative mt-3 mb-3">
+                <hr>
+                <span
+                    class="position-absolute top-50 start-50 translate-middle bg-white px-2 text-muted small">OR</span>
+            </div>
+
+            <button type="button" id="demo-btn" class="btn btn-outline-secondary w-100">
+                <i class="fas fa-magic me-2"></i> Log in as Demo
+            </button>
+        </form>
+
+        <form id="signup-form" style="display: none;">
+            <div class="mb-3">
+                <label for="signup-email" class="form-label">Email address</label>
+                <input type="email" class="form-control" id="signup-email" required>
+            </div>
+            <div class="mb-3">
+                <label for="signup-password" class="form-label">Password</label>
+                <input type="password" class="form-control" id="signup-password" required minlength="8">
+            </div>
+            <div class="mb-3">
+                <label for="signup-confirm-password" class="form-label">Confirm Password</label>
+                <input type="password" class="form-control" id="signup-confirm-password" required minlength="8">
+            </div>
+            <button type="submit" class="btn btn-success w-100 mb-3">Create Account</button>
+            <p class="text-center"><a href="#" id="show-login" class="text-decoration-none text-muted">Already have an
+                    account? Sign In</a></p>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const errorAlert = document.getElementById('error-alert');
+
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    // Store token if API returns one, or just rely on cookie
+                    if (data.token) {
+                        localStorage.setItem('auth_token', data.token);
+                    }
+
+                    // Redirect to next or home
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const next = urlParams.get('next');
+                    window.location.href = next || '/';
+                } else {
+                    errorAlert.style.display = 'block';
+                    errorAlert.textContent = 'Invalid email or password';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                errorAlert.style.display = 'block';
+                errorAlert.textContent = 'Connection error. Please try again.';
+            }
+        });
+
+        document.getElementById('demo-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('demo-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Loading...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/auth/demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    window.location.href = '/';
+                } else {
+                    const data = await response.json().catch(() => ({}));
+                    const errorAlert = document.getElementById('error-alert');
+                    errorAlert.style.display = 'block';
+                    errorAlert.textContent = data.error || 'Demo environment initialization failed.';
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Demo error:', error);
+                const errorAlert = document.getElementById('error-alert');
+                errorAlert.style.display = 'block';
+                errorAlert.textContent = 'Connection error. Please try again.';
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        });
+
+        document.getElementById('show-signup').addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('signup-form').style.display = 'block';
+            document.querySelector('.login-header p').textContent = 'Create a new account';
+            document.getElementById('error-alert').style.display = 'none';
+        });
+
+        document.getElementById('show-login').addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('signup-form').style.display = 'none';
+            document.getElementById('login-form').style.display = 'block';
+            document.querySelector('.login-header p').textContent = 'Sign in to your account';
+            document.getElementById('error-alert').style.display = 'none';
+        });
+
+        document.getElementById('signup-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('signup-email').value;
+            const password = document.getElementById('signup-password').value;
+            const confirmPassword = document.getElementById('signup-confirm-password').value;
+            const errorAlert = document.getElementById('error-alert');
+
+            if (password !== confirmPassword) {
+                errorAlert.style.display = 'block';
+                errorAlert.textContent = 'Passwords do not match';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/auth/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                if (response.ok) {
+                    window.location.href = '/';
+                } else {
+                    const data = await response.json();
+                    errorAlert.style.display = 'block';
+                    errorAlert.textContent = data.error || 'Signup failed';
+                }
+            } catch (error) {
+                console.error('Signup error:', error);
+                errorAlert.style.display = 'block';
+                errorAlert.textContent = 'Connection error. Please try again.';
+            }
+        });
+    </script>
+</body>
+
+</html>

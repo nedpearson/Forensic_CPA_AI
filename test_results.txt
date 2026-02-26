@@ -1,0 +1,124 @@
+E2026-02-25 13:34:09 [WARNING] [req_id:be2b522e-97cf-42c6-b356-b335ed54753e] Auth event: signup failed user_exists email=newuser@example.com ip=127.0.0.1
+2026-02-25 13:34:09 [INFO] [req_id:be2b522e-97cf-42c6-b356-b335ed54753e] POST /api/auth/signup - Status: 400 - Latency: 0.0ms
+FE2026-02-25 13:34:15 [WARNING] [req_id:58446c2a-d211-420b-bc3d-d3f444e58d44] Auth event: signup failed user_exists email=dup@example.com ip=127.0.0.1
+2026-02-25 13:34:15 [INFO] [req_id:58446c2a-d211-420b-bc3d-d3f444e58d44] POST /api/auth/signup - Status: 400 - Latency: 2.01ms
+2026-02-25 13:34:15 [WARNING] [req_id:92d6696c-4828-4f90-8c82-7a9522463759] Auth event: signup failed user_exists email=dup@example.com ip=127.0.0.1
+2026-02-25 13:34:15 [INFO] [req_id:92d6696c-4828-4f90-8c82-7a9522463759] POST /api/auth/signup - Status: 400 - Latency: 0.0ms
+E2026-02-25 13:34:15 [WARNING] [req_id:ea3f6540-55ac-4938-812f-89d5894e2b90] Auth event: signup rate limited ip=127.0.0.1
+2026-02-25 13:34:15 [INFO] [req_id:ea3f6540-55ac-4938-812f-89d5894e2b90] POST /api/auth/signup - Status: 429 - Latency: 0.0ms
+2026-02-25 13:34:15 [WARNING] [req_id:78474ced-a8bd-46f4-a12f-296f1aef36e1] Auth event: login failed email=login@example.com ip=127.0.0.1
+2026-02-25 13:34:15 [INFO] [req_id:78474ced-a8bd-46f4-a12f-296f1aef36e1] POST /api/auth/login - Status: 401 - Latency: 0.0ms
+FE2026-02-25 13:34:20 [WARNING] [req_id:e76e262e-fe10-4d1e-bfdf-2117bf82778a] Auth event: signup rate limited ip=127.0.0.1
+2026-02-25 13:34:20 [INFO] [req_id:e76e262e-fe10-4d1e-bfdf-2117bf82778a] POST /api/auth/signup - Status: 429 - Latency: 0.0ms
+2026-02-25 13:34:20 [WARNING] [req_id:641fe2a8-15c4-4ed9-abaf-4c57ea596c25] Auth event: login failed email=fail@example.com ip=127.0.0.1
+2026-02-25 13:34:20 [INFO] [req_id:641fe2a8-15c4-4ed9-abaf-4c57ea596c25] POST /api/auth/login - Status: 401 - Latency: 1.9ms
+E2026-02-25 13:34:26 [WARNING] [req_id:db4f1048-f1af-49c6-8870-515a571b874b] Auth event: login failed email=nonexistent@example.com ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:db4f1048-f1af-49c6-8870-515a571b874b] POST /api/auth/login - Status: 401 - Latency: 1.01ms
+2026-02-25 13:34:26 [WARNING] [req_id:246ae332-6555-4a33-b30d-fe3ae9878a6e] Auth event: login failed email=nonexistent@example.com ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:246ae332-6555-4a33-b30d-fe3ae9878a6e] POST /api/auth/login - Status: 401 - Latency: 0.0ms
+2026-02-25 13:34:26 [WARNING] [req_id:f5709d58-7ea6-4f4f-8ef0-581fca20560a] Auth event: login failed email=nonexistent@example.com ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:f5709d58-7ea6-4f4f-8ef0-581fca20560a] POST /api/auth/login - Status: 401 - Latency: 0.5ms
+2026-02-25 13:34:26 [WARNING] [req_id:ac8878ec-fc9b-4aae-858d-98b98e385ba5] Auth event: login rate limited ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:ac8878ec-fc9b-4aae-858d-98b98e385ba5] POST /api/auth/login - Status: 429 - Latency: 0.0ms
+2026-02-25 13:34:26 [WARNING] [req_id:0852430b-c37b-4cc0-a34a-e371090250b5] Auth event: login rate limited ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:0852430b-c37b-4cc0-a34a-e371090250b5] POST /api/auth/login - Status: 429 - Latency: 0.0ms
+2026-02-25 13:34:26 [WARNING] [req_id:2ba38974-ae4a-4ed7-b3d4-bb98e842348b] Auth event: login rate limited ip=127.0.0.1
+2026-02-25 13:34:26 [INFO] [req_id:2ba38974-ae4a-4ed7-b3d4-bb98e842348b] POST /api/auth/login - Status: 429 - Latency: 0.0ms
+E2026-02-25 13:34:31 [WARNING] [req_id:6a36a98c-cdad-481e-a906-ba8cdb552328] Auth event: signup rate limited ip=127.0.0.1
+2026-02-25 13:34:31 [INFO] [req_id:6a36a98c-cdad-481e-a906-ba8cdb552328] POST /api/auth/signup - Status: 429 - Latency: 1.0ms
+2026-02-25 13:34:31 [INFO] [req_id:ee633a8d-7df7-4065-be64-04dd00f91e58] GET /api/auth/me - Status: 401 - Latency: 0.0ms
+FE
+======================================================================
+ERROR: test_01_password_hashing (tests.test_auth_endpoints.AuthEndpointsTestCase.test_01_password_hashing)
+Unit test for password hashing logic used by the auth service
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.IntegrityError: FOREIGN KEY constraint failed
+
+======================================================================
+ERROR: test_02_signup_success (tests.test_auth_endpoints.AuthEndpointsTestCase.test_02_signup_success)
+Integration test: Signup a new user
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.OperationalError: database is locked
+
+======================================================================
+ERROR: test_03_signup_duplicate_fails (tests.test_auth_endpoints.AuthEndpointsTestCase.test_03_signup_duplicate_fails)
+Integration test: Signup failure on duplicate email
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.IntegrityError: FOREIGN KEY constraint failed
+
+======================================================================
+ERROR: test_04_login_success (tests.test_auth_endpoints.AuthEndpointsTestCase.test_04_login_success)
+Integration test: Login with correct credentials
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.OperationalError: database is locked
+
+======================================================================
+ERROR: test_05_login_failure (tests.test_auth_endpoints.AuthEndpointsTestCase.test_05_login_failure)
+Integration test: Login with invalid credentials
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.OperationalError: database is locked
+
+======================================================================
+ERROR: test_06_rate_limiting (tests.test_auth_endpoints.AuthEndpointsTestCase.test_06_rate_limiting)
+Integration test: Login rate limit triggers after 5 attempts
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor.execute("DELETE FROM users WHERE email != 'root@system.local'")
+sqlite3.OperationalError: database is locked
+
+======================================================================
+ERROR: test_07_me_and_logout (tests.test_auth_endpoints.AuthEndpointsTestCase.test_07_me_and_logout)
+Integration test: /me and /logout endpoints
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 25, in tearDown
+    cursor = conn.cursor()
+sqlite3.OperationalError: database is locked
+
+======================================================================
+FAIL: test_02_signup_success (tests.test_auth_endpoints.AuthEndpointsTestCase.test_02_signup_success)
+Integration test: Signup a new user
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 42, in test_02_signup_success
+    self.assertEqual(resp.status_code, 200)
+AssertionError: 400 != 200
+
+======================================================================
+FAIL: test_04_login_success (tests.test_auth_endpoints.AuthEndpointsTestCase.test_04_login_success)
+Integration test: Login with correct credentials
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 64, in test_04_login_success
+    self.assertEqual(resp.status_code, 200)
+AssertionError: 401 != 200
+
+======================================================================
+FAIL: test_07_me_and_logout (tests.test_auth_endpoints.AuthEndpointsTestCase.test_07_me_and_logout)
+Integration test: /me and /logout endpoints
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\tests\test_auth_endpoints.py", line 93, in test_07_me_and_logout
+    self.assertEqual(me_resp.status_code, 200)
+AssertionError: 401 != 200
+
+----------------------------------------------------------------------
+Ran 7 tests in 27.775s
+
+FAILED (failures=3, errors=7)

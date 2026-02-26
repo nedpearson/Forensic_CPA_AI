@@ -1,0 +1,90 @@
+
+============================================================
+  FORENSIC CPA AI - Your Financial Private Investigator
+============================================================
+  Open in your browser: http://localhost:3004
+  Upload folder: C:\dev\github\business\Forensic_CPA_AI\uploads
+============================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 464, in format
+    return self._format(record)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 460, in _format
+    return self._fmt % values
+           ~~~~~~~~~~^~~~~~~~
+KeyError: 'request_id'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1160, in emit
+    msg = self.format(record)
+          ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 999, in format
+    return fmt.format(record)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 706, in format
+    s = self.formatMessage(record)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 675, in formatMessage
+    return self._style.format(record)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 466, in format
+    raise ValueError('Formatting field not found in record: %s' % e)
+ValueError: Formatting field not found in record: 'request_id'
+Call stack:
+  File "C:\dev\github\business\Forensic_CPA_AI\app.py", line 1285, in <module>
+    app.run(debug=False, host=host, port=port)
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask\app.py", line 662, in run
+    run_simple(t.cast(str, host), port, self, **options)
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\werkzeug\serving.py", line 1108, in run_simple
+    srv.log_startup()
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\werkzeug\serving.py", line 865, in log_startup
+    _log("info", "\n".join(messages))
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\werkzeug\_internal.py", line 97, in _log
+    getattr(_logger, type)(message.rstrip(), *args, **kwargs)
+Message: '\x1b[31m\x1b[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.\x1b[0m\n * Running on all addresses (0.0.0.0)\n * Running on http://127.0.0.1:3004\n * Running on http://192.168.1.124:3004'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 464, in format
+    return self._format(record)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 460, in _format
+    return self._fmt % values
+           ~~~~~~~~~~^~~~~~~~
+KeyError: 'request_id'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 1160, in emit
+    msg = self.format(record)
+          ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 999, in format
+    return fmt.format(record)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 706, in format
+    s = self.formatMessage(record)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 675, in formatMessage
+    return self._style.format(record)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nedpe\AppData\Local\Programs\Python\Python312\Lib\logging\__init__.py", line 466, in format
+    raise ValueError('Formatting field not found in record: %s' % e)
+ValueError: Formatting field not found in record: 'request_id'
+Call stack:
+  File "C:\dev\github\business\Forensic_CPA_AI\app.py", line 1285, in <module>
+    app.run(debug=False, host=host, port=port)
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask\app.py", line 662, in run
+    run_simple(t.cast(str, host), port, self, **options)
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\werkzeug\serving.py", line 1109, in run_simple
+    _log("info", _ansi_style("Press CTRL+C to quit", "yellow"))
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\werkzeug\_internal.py", line 97, in _log
+    getattr(_logger, type)(message.rstrip(), *args, **kwargs)
+Message: '\x1b[33mPress CTRL+C to quit\x1b[0m'
+Arguments: ()

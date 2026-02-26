@@ -4,10 +4,11 @@ class QueryBuilder:
     """
     Translates a FilterSchema (dict) into a parameterized SQL WHERE clause.
     """
-    def __init__(self, filters=None):
+    def __init__(self, user_id, filters=None):
+        self.user_id = user_id
         self.filters = filters or {}
-        self.conditions = []
-        self.params = []
+        self.conditions = ["user_id = ?"]
+        self.params = [user_id]
         self._build()
 
     def _build(self):

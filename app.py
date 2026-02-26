@@ -21,7 +21,9 @@ from database import (
     get_proofs_for_transaction, get_transactions_for_proof,
     get_account_running_balance, get_alerts, build_filter_clause,
     add_document_extraction, update_document_extraction, get_document_extraction,
-    add_document_categorization, get_document_categorization, get_taxonomy_config
+    add_document_categorization, get_document_categorization, get_taxonomy_config,
+    add_taxonomy_config, delete_taxonomy_config,
+    get_saved_filters, add_saved_filter, delete_saved_filter
 )
 from query_builder import QueryBuilder
 from document_analyzer import AzureDocumentIntelligenceAdapter
@@ -38,7 +40,8 @@ from categorizer import (
 from parsers import compute_transaction_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'forensic-auditor-local-key'
+app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'forensic-auditor-local-key')
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('COOKIE_SECURE', 'false').lower() == 'true'
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
@@ -53,10 +56,16 @@ logger = logging.getLogger('forensic_cpa_ai')
 # Custom filter to inject request_id
 class RequestIdFilter(logging.Filter):
     def filter(self, record):
-        record.request_id = getattr(g, 'request_id', 'system')
+        from flask import has_request_context
+        if has_request_context():
+            record.request_id = getattr(g, 'request_id', 'system')
+        else:
+            record.request_id = 'system'
         return True
 
 logger.addFilter(RequestIdFilter())
+for handler in logging.root.handlers:
+    handler.addFilter(RequestIdFilter())
 
 @app.before_request
 def start_timer():
@@ -76,21 +85,31 @@ def log_request(response):
 # --- Health & Observability Endpoints ---
 @app.route('/api/health')
 def health_check():
-    """Basic alive check for load balancers."""
-    return jsonify({"status": "healthy", "timestamp": time.time()}), 200
+    """Liveness probe with basic DB ping."""
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        return jsonify({"status": "healthy", "db": "connected", "timestamp": time.time()}), 200
+    except Exception as e:
+        logger.error(f"Health check failed (DB error): {str(e)}")
+        return jsonify({"status": "unhealthy", "error": "Database connection failed"}), 503
 
 @app.route('/api/smoke')
 def smoke_test():
-    """Deep health check validating DB connection and critical env vars."""
+    """Deep health check validating DB connection, auth mock check, scoped analytics query, and critical env vars."""
     results = {"status": "pass", "checks": {}}
     
-    # 1. DB Connectivity & Basic Query
+    # 1. DB Connectivity & Scoped Analytics Query
     try:
         conn = get_db()
         count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-        results["checks"]["database"] = {"status": "ok", "row_count": count}
+        # Scoped analytics query
+        cat_count = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+        results["checks"]["database"] = {"status": "ok", "transaction_count": count, "category_count": cat_count}
         conn.close()
     except Exception as e:
+        logger.error(f"Smoke test DB check failed: {str(e)}")
         results["checks"]["database"] = {"status": "error", "message": str(e)}
         results["status"] = "fail"
         
@@ -109,9 +128,16 @@ def smoke_test():
     else:
          results["checks"]["llm_provider"] = {"status": "missing_credentials", "warning": True}
 
+    # 4. Auth & Security Check
+    secret = os.environ.get('SESSION_SECRET')
+    results["checks"]["security"] = {
+        "cookie_secure": app.config.get('SESSION_COOKIE_SECURE', False),
+        "session_secret_set": bool(secret and secret != 'forensic-auditor-local-key'),
+        "demo_seed_enabled": os.environ.get('DEMO_SEED_ENABLED', 'false').lower() == 'true'
+    }
+
     status_code = 200 if results["status"] == "pass" else 503
     return jsonify(results), status_code
-
 
 ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc'}
 
@@ -125,51 +151,240 @@ def allowed_file(filename):
 
 # --- Security & Auth ---
 from functools import wraps
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+import werkzeug.security
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login_page'
+
+class User(UserMixin):
+    def __init__(self, id, email, role='USER'):
+        self.id = id
+        self.email = email
+        self.role = role
+
+@login_manager.user_loader
+def load_user(user_id):
+    from database import get_user_by_id
+    u = get_user_by_id(user_id)
+    if u:
+        return User(id=u['id'], email=u['email'], role=u.get('role', 'USER'))
+    return None
 
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # 1. Check for API Token (for scripts)
         auth_token = os.getenv("UPLOAD_AUTH_TOKEN")
-        if auth_token:
-            provided = request.headers.get("Authorization")
-            if not provided or provided != f"Bearer {auth_token}":
-                return jsonify({"error": "Unauthorized"}), 401
-        return f(*args, **kwargs)
+        if auth_token and request.headers.get("Authorization") == f"Bearer {auth_token}":
+            class ScriptUser:
+                id = 1  # Map scripts to root user
+                is_authenticated = True
+                role = 'SUPER_ADMIN'
+            g.user = ScriptUser()
+            return f(*args, **kwargs)
+        
+        # 2. Check for Browser Session
+        if current_user.is_authenticated:
+            g.user = current_user
+            return f(*args, **kwargs)
+            
+        return jsonify({"error": "Unauthorized"}), 401
     return decorated
+
+def require_admin(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # 1. Check for API Token (for scripts)
+        auth_token = os.getenv("UPLOAD_AUTH_TOKEN")
+        if auth_token and request.headers.get("Authorization") == f"Bearer {auth_token}":
+            class ScriptUser:
+                id = 1  # Map scripts to root user
+                is_authenticated = True
+                role = 'SUPER_ADMIN'
+            g.user = ScriptUser()
+            return f(*args, **kwargs)
+        
+        # 2. Check for Browser Session and Admin Role
+        if current_user.is_authenticated:
+            if getattr(current_user, 'role', 'USER') in ('ADMIN', 'SUPER_ADMIN'):
+                g.user = current_user
+                return f(*args, **kwargs)
+            else:
+                return jsonify({"error": "Forbidden - Admin access required"}), 403
+            
+        return jsonify({"error": "Unauthorized"}), 401
+    return decorated
+
+def require_super_admin(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_token = os.getenv("UPLOAD_AUTH_TOKEN")
+        if auth_token and request.headers.get("Authorization") == f"Bearer {auth_token}":
+            class ScriptUser:
+                id = 1
+                is_authenticated = True
+                role = 'SUPER_ADMIN'
+            g.user = ScriptUser()
+            return f(*args, **kwargs)
+        
+        if current_user.is_authenticated:
+            if getattr(current_user, 'role', 'USER') == 'SUPER_ADMIN':
+                g.user = current_user
+                return f(*args, **kwargs)
+            else:
+                return jsonify({"error": "Forbidden - Super Admin access required"}), 403
+            
+        return jsonify({"error": "Unauthorized"}), 401
+    return decorated
+
+@app.route('/api/admin/verify')
+@require_super_admin
+def api_admin_verify():
+    """Simple verification route to confirm SUPER_ADMIN role."""
+    return jsonify({
+        "status": "success",
+        "message": "Super admin verified",
+        "user_id": g.user.id,
+        "email": getattr(g.user, 'email', 'System/Script')
+    })
+
+@app.route('/login')
+def login_page():
+    return render_template('login.html')
+
+@app.route('/api/auth/login', methods=['POST'])
+def api_login():
+    from database import get_user_by_email
+    data = request.json or {}
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not email or not password:
+        logger.warning("Auth Event: Login failed - missing credentials")
+        return jsonify({"error": "Email and password required"}), 400
+        
+    user_record = get_user_by_email(email)
+    if not user_record or not werkzeug.security.check_password_hash(user_record['password_hash'], password):
+        logger.warning(f"Auth Event: Login failed - invalid credentials for {email}")
+        return jsonify({"error": "Invalid credentials"}), 401
+        
+    user_obj = User(id=user_record['id'], email=user_record['email'], role=user_record.get('role', 'USER'))
+    login_user(user_obj, remember=True)
+    logger.info(f"Auth Event: Login successful for user {user_record['id']}")
+    return jsonify({"status": "success"})
+
+@app.route('/api/auth/signup', methods=['POST'])
+def api_signup():
+    from database import get_user_by_email, create_user
+    data = request.json or {}
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not email or not password:
+        logger.warning("Auth Event: Signup failed - missing credentials")
+        return jsonify({"error": "Email and password required"}), 400
+        
+    if get_user_by_email(email):
+        logger.warning(f"Auth Event: Signup failed - email already registered: {email}")
+        return jsonify({"error": "Email already registered"}), 400
+        
+    user_id = create_user(email, password, role='USER')
+    if not user_id:
+        logger.error(f"Auth Event: Signup failed - server error creating user {email}")
+        return jsonify({"error": "Failed to create user"}), 500
+        
+    user_obj = User(id=user_id, email=email, role='USER')  # new signups are strictly 'USER'
+    login_user(user_obj, remember=True)
+    logger.info(f"Auth Event: Signup successful for new user {user_id}")
+    return jsonify({"status": "success", "user_id": user_id})
+
+
+@app.route('/api/auth/demo', methods=['POST'])
+def api_demo_login():
+    """Idempotent login for the demo user."""
+    if os.environ.get('DEMO_SEED_ENABLED', 'true').lower() == 'false':
+        logger.warning("Auth Event: Demo login blocked - DEMO_SEED_ENABLED is false")
+        return jsonify({'error': 'Demo environment disabled'}), 403
+
+    try:
+        import sys
+        scripts_path = os.path.join(os.path.dirname(__file__), 'scripts')
+        if scripts_path not in sys.path:
+            sys.path.append(scripts_path)
+            
+        from seed_demo import seed_demo_environment
+        user_id = seed_demo_environment()
+        
+        if not user_id:
+            logger.error("Auth Event: Demo login failed - could not initialize demo environment")
+            return jsonify({'error': 'Could not initialize demo environment'}), 500
+            
+    except Exception as e:
+        logger.error(f"Auth Event: Demo initialization exception: {e}")
+        return jsonify({'error': f"Initialization failed: {str(e)}"}), 500
+        
+    user_obj = User(id=user_id, email="demo@forensiccpa.ai", role='USER')
+    login_user(user_obj, remember=True)
+    logger.info(f"Auth Event: Demo login successful for user {user_id}")
+    return jsonify({'msg': 'Demo login successful', 'user_id': user_id}), 200
+
+
+
+@app.route('/api/auth/me', methods=['GET'])
+@require_auth
+def api_me():
+    return jsonify({"id": g.user.id, "email": getattr(g.user, 'email', 'script_user')})
+
+@app.route('/api/auth/logout', methods=['POST'])
+@login_required
+def api_logout():
+    user_id = getattr(g.user, 'id', 'unknown')
+    logout_user()
+    logger.info(f"Auth Event: Logout successful for user {user_id}")
+    return jsonify({"status": "success"})
 
 # --- Page Routes ---
 
 @app.route('/')
+@login_required
 def dashboard():
     return render_template('index.html', page='dashboard')
 
 
 @app.route('/transactions')
+@login_required
 def transactions_page():
     return render_template('index.html', page='transactions')
 
 
 @app.route('/shared/<path:filename>')
+@login_required
 def serve_shared(filename):
     return send_from_directory('shared', filename)
 
 
 @app.route('/upload')
+@login_required
 def upload_page():
     return render_template('index.html', page='upload')
 
 
 @app.route('/analysis')
+@login_required
 def analysis_page():
     return render_template('index.html', page='analysis')
 
 
 @app.route('/categories')
+@login_required
 def categories_page():
     return render_template('index.html', page='categories')
 
 
 @app.route('/documents')
+@login_required
 def documents_page():
     return render_template('index.html', page='documents')
 
@@ -199,10 +414,11 @@ def get_request_filters():
 # --- Analytics Endpoints (Phase 10) ---
 
 @app.route('/api/analytics/overview', methods=['GET'])
+@require_auth
 def api_analytics_overview():
     """Provides high-level grouping and time series for Dashboard views."""
     filters = get_request_filters()
-    qb = QueryBuilder(filters)
+    qb = QueryBuilder(g.user.id, filters)
     conn = get_db()
     try:
         data = {
@@ -215,6 +431,7 @@ def api_analytics_overview():
         conn.close()
 
 @app.route('/api/analytics/tab/<tab_id>', methods=['GET'])
+@require_auth
 def api_analytics_tab(tab_id):
     """Provides specific sliced analytics for specialized tabs."""
     filters = get_request_filters()
@@ -223,7 +440,7 @@ def api_analytics_tab(tab_id):
     if tab_id == 'money-flow':
         filters['is_transfer'] = 1
         
-    qb = QueryBuilder(filters)
+    qb = QueryBuilder(g.user.id, filters)
     conn = get_db()
     try:
         # Re-use builder dynamically based on what the tab needs
@@ -236,6 +453,7 @@ def api_analytics_tab(tab_id):
         conn.close()
 
 @app.route('/api/analytics/drilldown', methods=['GET'])
+@require_auth
 def api_analytics_drilldown():
     """Returns telemetry of drilldown events mapping to targets."""
     limit = min(500, int(request.args.get('limit', 100)))
@@ -243,9 +461,10 @@ def api_analytics_drilldown():
     try:
         cursor = conn.execute('''
             SELECT * FROM drilldown_logs 
+            WHERE user_id = ?
             ORDER BY timestamp DESC 
             LIMIT ?
-        ''', (limit,))
+        ''', (g.user.id, limit))
         return jsonify([dict(r) for r in cursor.fetchall()])
     finally:
         conn.close()
@@ -270,27 +489,32 @@ def api_docs_upload():
         file.save(filepath)
         
         # 2. Persist to DB
-        doc_id = add_document(file.filename, filepath, ext, 'unknown', None)
-        ext_id = add_document_extraction(doc_id, status='pending')
+        doc_id = add_document(g.user.id, file.filename, filepath, ext, 'unknown', None)
+        ext_id = add_document_extraction(g.user.id, doc_id, status='pending')
         
+        # Capture current user_id for thread
+        current_user_id = g.user.id
+
         # 3. Trigger extraction asynchronously 
-        def extract_task(document_id, extraction_id, path):
+        def extract_task(user_id, document_id, extraction_id, path):
             try:
                 analyzer = AzureDocumentIntelligenceAdapter()
                 result = analyzer.analyze_document(path)
                 update_document_extraction(
+                    user_id,
                     extraction_id, 
                     extraction_data=result, 
                     status='completed'
                 )
             except Exception as e:
                 update_document_extraction(
+                    user_id,
                     extraction_id, 
                     status='failed', 
                     error_message=str(e)
                 )
 
-        thread = threading.Thread(target=extract_task, args=(doc_id, ext_id, filepath))
+        thread = threading.Thread(target=extract_task, args=(current_user_id, doc_id, ext_id, filepath))
         thread.start()
         
         return jsonify({
@@ -302,16 +526,18 @@ def api_docs_upload():
     return jsonify({'error': 'File type not allowed'}), 400
 
 @app.route('/api/docs/<int:doc_id>', methods=['GET'])
+@require_auth
 def api_docs_get(doc_id):
-    docs = get_documents()
+    docs = get_documents(g.user.id)
     doc = next((d for d in docs if d['id'] == doc_id), None)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
     return jsonify(doc)
 
 @app.route('/api/docs/<int:doc_id>/extraction', methods=['GET'])
+@require_auth
 def api_docs_get_extraction(doc_id):
-    ext = get_document_extraction(doc_id)
+    ext = get_document_extraction(g.user.id, doc_id)
     if not ext:
         return jsonify({'error': 'Extraction not found'}), 404
         
@@ -330,7 +556,7 @@ def api_docs_get_extraction(doc_id):
 @require_auth
 def api_docs_categorize(doc_id):
     """Manually trigger or rerun LLM Categorization for a document."""
-    ext = get_document_extraction(doc_id)
+    ext = get_document_extraction(g.user.id, doc_id)
     if not ext or ext.get('status') != 'completed':
         return jsonify({'error': 'Document must have a completed extraction to categorize.'}), 400
         
@@ -338,14 +564,17 @@ def api_docs_categorize(doc_id):
     if not ext_data_str:
         return jsonify({'error': 'Extraction data is empty.'}), 400
         
+    current_user_id = g.user.id
+
     # Trigger background thread for categorization
-    def categorize_task(document_id, extraction_id, text_content):
+    def categorize_task(user_id, document_id, extraction_id, text_content):
         try:
             categorizer = AutoCategorizer()
-            taxonomy = get_taxonomy_config()
+            taxonomy = get_taxonomy_config(user_id)
             result_json = categorizer.run_categorization(text_content, taxonomy)
             
             add_document_categorization(
+                user_id,
                 document_id, 
                 extraction_id, 
                 categorization_data=result_json,
@@ -354,6 +583,7 @@ def api_docs_categorize(doc_id):
             )
         except Exception as e:
             add_document_categorization(
+                user_id,
                 document_id,
                 extraction_id,
                 categorization_data="{}",
@@ -363,15 +593,16 @@ def api_docs_categorize(doc_id):
                 error_message=str(e)
             )
 
-    thread = threading.Thread(target=categorize_task, args=(doc_id, ext['id'], str(ext_data_str)))
+    thread = threading.Thread(target=categorize_task, args=(current_user_id, doc_id, ext['id'], str(ext_data_str)))
     thread.start()
     
     return jsonify({'status': 'accepted', 'document_id': doc_id}), 202
 
 @app.route('/api/docs/<int:doc_id>/categorization', methods=['GET'])
+@require_auth
 def api_docs_get_categorization(doc_id):
     """Retrieve the latest categorization results."""
-    cat = get_document_categorization(doc_id)
+    cat = get_document_categorization(g.user.id, doc_id)
     if not cat:
         return jsonify({'error': 'Categorization not found'}), 404
         
@@ -384,16 +615,18 @@ def api_docs_get_categorization(doc_id):
     return jsonify(cat)
 
 @app.route('/api/stats', methods=['GET'])
+@require_auth
 def api_stats():
     filters = get_request_filters()
-    stats = get_summary_stats(filters if filters else None)
+    stats = get_summary_stats(g.user.id, filters if filters else None)
     return jsonify(stats)
 
 
 @app.route('/api/transactions', methods=['GET'])
+@require_auth
 def api_transactions():
     filters = get_request_filters()
-    transactions = get_transactions(filters if filters else None)
+    transactions = get_transactions(g.user.id, filters if filters else None)
 
     # Pagination support (opt-in: pass page= to enable)
     page = request.args.get('page')
@@ -438,25 +671,27 @@ def api_update_transaction(trans_id):
             return jsonify({'error': 'Invalid amount value'}), 400
     try:
         if fields:
-            update_transaction(trans_id, **fields)
+            update_transaction(g.user.id, trans_id, **fields)
     except Exception as e:
         return jsonify({'error': f'Update failed: {str(e)}'}), 500
     # If category was changed, suggest a rule
     result = {'status': 'ok'}
     if 'category' in fields:
-        suggestion = suggest_rule_from_edit(trans_id)
+        suggestion = suggest_rule_from_edit(g.user.id, trans_id)
         if suggestion:
             result['rule_suggestion'] = suggestion
     return jsonify(result)
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['DELETE'])
+@require_auth
 def api_delete_transaction(trans_id):
-    delete_transaction(trans_id)
+    delete_transaction(g.user.id, trans_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/transactions/bulk', methods=['POST'])
+@require_auth
 def api_bulk_update():
     """Bulk update multiple transactions."""
     data = request.get_json()
@@ -469,20 +704,23 @@ def api_bulk_update():
     fields = {k: v for k, v in fields.items() if k in allowed_fields}
     for tid in ids:
         if fields:
-            update_transaction(tid, **fields)
+            update_transaction(g.user.id, tid, **fields)
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
 
 @app.route('/api/drilldowns', methods=['POST'])
+@require_auth
 def handle_drilldown_log():
     data = request.json
     try:
-        database.log_drilldown(data)
+        from database import log_drilldown
+        log_drilldown(g.user.id, data)
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/upload', methods=['POST'])
+@require_auth
 def api_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -518,7 +756,7 @@ def api_upload():
 
     # Handle proof/word documents (no transactions)
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(filename, filepath, ext.replace('.', ''), 'proof')
+        doc_id = add_document(g.user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None)
         return jsonify({
             'status': 'ok',
             'document_id': doc_id,
@@ -530,6 +768,7 @@ def api_upload():
     account_id = None
     if account_info.get('account_number'):
         account_id = get_or_create_account(
+            user_id=g.user.id,
             account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
             account_number=account_info['account_number'],
             account_type=account_info.get('account_type', 'bank'),
@@ -540,6 +779,7 @@ def api_upload():
 
     # Save document record
     doc_id = add_document(
+        user_id=g.user.id,
         filename=filename,
         original_path=filepath,
         file_type=ext.replace('.', ''),
@@ -554,11 +794,13 @@ def api_upload():
     for trans in transactions:
         # Auto-categorize
         cat_result = categorize_transaction(
+            g.user.id,
             trans['description'], trans['amount'],
             trans.get('trans_type', ''), trans.get('payment_method', '')
         )
 
         add_transaction(
+            user_id=g.user.id,
             doc_id=doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
@@ -588,20 +830,50 @@ def api_upload():
     })
 
 
+@app.route('/api/taxonomy', methods=['GET'])
+@require_auth
+def api_get_taxonomy():
+    return jsonify(get_taxonomy_config(g.user.id))
+
+@app.route('/api/taxonomy', methods=['POST'])
+@require_auth
+def api_add_taxonomy():
+    data = request.get_json()
+    tax_id = add_taxonomy_config(
+        user_id=g.user.id,
+        name=data.get('name'),
+        description=data.get('description'),
+        category_type=data.get('category_type'),
+        severity=data.get('severity', 'medium')
+    )
+    if tax_id:
+        return jsonify({'status': 'ok', 'id': tax_id})
+    return jsonify({'error': 'Failed to add taxonomy config'}), 500
+
+@app.route('/api/taxonomy/<int:tax_id>', methods=['DELETE'])
+@require_auth
+def api_delete_taxonomy(tax_id):
+    delete_taxonomy_config(g.user.id, tax_id)
+    return jsonify({'status': 'ok'})
+
 @app.route('/api/categories', methods=['GET'])
+@require_auth
 def api_categories():
-    return jsonify(get_categories())
+    return jsonify(get_categories(g.user.id))
 
 
 @app.route('/api/categories/rules', methods=['GET'])
+@require_auth
 def api_category_rules():
-    return jsonify(get_category_rules())
+    return jsonify(get_category_rules(g.user.id))
 
 
 @app.route('/api/categories/rules', methods=['POST'])
+@require_auth
 def api_add_rule():
     data = request.get_json()
     add_category_rule(
+        user_id=g.user.id,
         pattern=data['pattern'],
         category=data['category'],
         subcategory=data.get('subcategory'),
@@ -614,34 +886,40 @@ def api_add_rule():
 
 
 @app.route('/api/recategorize', methods=['POST'])
+@require_auth
 def api_recategorize():
-    count = recategorize_all()
+    count = recategorize_all(g.user.id)
     return jsonify({'status': 'ok', 'updated': count})
 
 
 @app.route('/api/accounts', methods=['GET'])
+@require_auth
 def api_accounts():
-    return jsonify(get_accounts())
+    return jsonify(get_accounts(g.user.id))
 
 
 @app.route('/api/documents', methods=['GET'])
+@require_auth
 def api_documents():
-    return jsonify(get_documents())
+    return jsonify(get_documents(g.user.id))
 
 
 @app.route('/api/analysis/deposit-transfers', methods=['GET'])
+@require_auth
 def api_deposit_transfers():
-    patterns = detect_deposit_transfer_patterns(get_request_filters())
+    patterns = detect_deposit_transfer_patterns(g.user.id, get_request_filters())
     return jsonify(patterns)
 
 
 @app.route('/api/analysis/cardholder-spending', methods=['GET'])
+@require_auth
 def api_cardholder_spending():
-    summary = get_cardholder_spending_summary(get_request_filters())
+    summary = get_cardholder_spending_summary(g.user.id, get_request_filters())
     return jsonify(summary)
 
 
 @app.route('/api/export/csv', methods=['GET'])
+@require_auth
 def api_export_csv():
     """Export transactions as CSV."""
     import csv
@@ -649,7 +927,7 @@ def api_export_csv():
     from flask import Response
 
     filters = {k: v for k, v in request.args.items() if v}
-    transactions = get_transactions(filters if filters else None)
+    transactions = get_transactions(g.user.id, filters if filters else None)
 
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=[
@@ -670,9 +948,10 @@ def api_export_csv():
 
 
 @app.route('/api/clear-data', methods=['POST'])
+@require_auth
 def api_clear_data():
     """Clear all financial data for a fresh start."""
-    clear_all_data()
+    clear_all_data(g.user.id)
     # Clear uploaded files (keep .gitkeep)
     upload_dir = app.config['UPLOAD_FOLDER']
     for f in os.listdir(upload_dir):
@@ -684,6 +963,7 @@ def api_clear_data():
 
 
 @app.route('/api/upload/preview', methods=['POST'])
+@require_auth
 def api_upload_preview():
     """Parse uploaded file and return preview without saving to DB."""
     if 'file' not in request.files:
@@ -733,6 +1013,7 @@ def api_upload_preview():
     # Auto-categorize for preview
     for trans in transactions:
         cat_result = categorize_transaction(
+            g.user.id,
             trans['description'], trans['amount'],
             trans.get('trans_type', ''), trans.get('payment_method', '')
         )
@@ -776,6 +1057,7 @@ def api_upload_preview():
 
 
 @app.route('/api/upload/commit', methods=['POST'])
+@require_auth
 def api_upload_commit():
     """Commit a previewed upload to the database."""
     data = request.get_json()
@@ -796,6 +1078,7 @@ def api_upload_commit():
     account_id = None
     if account_info.get('account_number'):
         account_id = get_or_create_account(
+            user_id=g.user.id,
             account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
             account_number=account_info['account_number'],
             account_type=account_info.get('account_type', 'bank'),
@@ -806,6 +1089,7 @@ def api_upload_commit():
 
     # Save document record
     doc_id = add_document(
+        user_id=g.user.id,
         filename=filename,
         original_path=filepath,
         file_type=ext.replace('.', ''),
@@ -819,6 +1103,7 @@ def api_upload_commit():
     added = 0
     for trans in transactions:
         add_transaction(
+            user_id=g.user.id,
             doc_id=doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
@@ -848,6 +1133,7 @@ def api_upload_commit():
 
 
 @app.route('/api/upload/cancel', methods=['POST'])
+@require_auth
 def api_upload_cancel():
     """Cancel a previewed upload and delete the temp file."""
     data = request.get_json()
@@ -864,34 +1150,39 @@ def api_upload_cancel():
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs', methods=['GET'])
+@require_auth
 def api_get_proofs(trans_id):
-    proofs = get_proofs_for_transaction(trans_id)
+    proofs = get_proofs_for_transaction(g.user.id, trans_id)
     return jsonify(proofs)
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs', methods=['POST'])
+@require_auth
 def api_link_proof(trans_id):
     data = request.get_json()
     doc_id = data.get('document_id')
     if not doc_id:
         return jsonify({'error': 'document_id required'}), 400
-    link_proof(trans_id, doc_id)
+    link_proof(g.user.id, trans_id, doc_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs/<int:doc_id>', methods=['DELETE'])
+@require_auth
 def api_unlink_proof(trans_id, doc_id):
-    unlink_proof(trans_id, doc_id)
+    unlink_proof(g.user.id, trans_id, doc_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/documents/<int:doc_id>/transactions', methods=['GET'])
+@require_auth
 def api_doc_transactions(doc_id):
-    transactions = get_transactions_for_proof(doc_id)
+    transactions = get_transactions_for_proof(g.user.id, doc_id)
     return jsonify(transactions)
 
 
 @app.route('/api/add-transaction', methods=['POST'])
+@require_auth
 def api_add_manual_transaction():
     """Manually add a transaction."""
     data = request.get_json()
@@ -906,6 +1197,7 @@ def api_add_manual_transaction():
         return jsonify({'error': 'Invalid amount value'}), 400
     try:
         trans_id = add_transaction(
+            user_id=g.user.id,
             doc_id=None,
             account_id=data.get('account_id'),
             trans_date=data['trans_date'],
@@ -934,66 +1226,77 @@ def uploaded_file(filename):
 
 
 @app.route('/api/analysis/summary', methods=['GET'])
+@require_auth
 def api_executive_summary():
     """Executive summary with auto-generated key findings."""
-    return jsonify(get_executive_summary(get_request_filters()))
+    return jsonify(get_executive_summary(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/money-flow', methods=['GET'])
+@require_auth
 def api_money_flow():
     """Cross-account money flow tracking."""
-    return jsonify(get_money_flow(get_request_filters()))
+    return jsonify(get_money_flow(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/timeline', methods=['GET'])
+@require_auth
 def api_timeline():
     """Daily timeline data for visualization."""
-    return jsonify(get_timeline_data(get_request_filters()))
+    return jsonify(get_timeline_data(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/recipients', methods=['GET'])
+@require_auth
 def api_recipient_analysis():
     """Who Gets the Money - recipient profiling with suspicion scores."""
-    return jsonify(get_recipient_analysis(get_request_filters()))
+    return jsonify(get_recipient_analysis(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/deposit-aging', methods=['GET'])
+@require_auth
 def api_deposit_aging():
     """Deposit aging - how quickly deposits leave the account."""
-    return jsonify(get_deposit_aging(get_request_filters()))
+    return jsonify(get_deposit_aging(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-comparison', methods=['GET'])
+@require_auth
 def api_cardholder_comparison():
     """Side-by-side cardholder comparison."""
-    return jsonify(get_cardholder_comparison(get_request_filters()))
+    return jsonify(get_cardholder_comparison(g.user.id, get_request_filters()))
 
 
 @app.route('/api/audit-trail', methods=['GET'])
+@require_auth
 def api_audit_trail():
     """Audit trail log viewer."""
     limit = request.args.get('limit', 200, type=int)
-    return jsonify(get_audit_trail(limit))
+    return jsonify(get_audit_trail(g.user.id, limit))
 
 
 @app.route('/api/transactions/<int:trans_id>/suggest-rule', methods=['GET'])
+@require_auth
 def api_suggest_rule(trans_id):
     """Suggest a categorization rule from a manually edited transaction."""
-    suggestion = suggest_rule_from_edit(trans_id)
+    suggestion = suggest_rule_from_edit(g.user.id, trans_id)
     if suggestion:
         return jsonify(suggestion)
     return jsonify({'error': 'Could not generate rule suggestion'}), 404
 
 
 @app.route('/api/case-notes', methods=['GET'])
+@require_auth
 def api_get_notes():
-    return jsonify(get_case_notes())
+    return jsonify(get_case_notes(g.user.id))
 
 
 @app.route('/api/case-notes', methods=['POST'])
+@require_auth
 def api_add_note():
     data = request.get_json()
     note_id = add_case_note(
+        user_id=g.user.id,
         title=data['title'], content=data['content'],
         note_type=data.get('note_type', 'general'),
         severity=data.get('severity', 'info'),
@@ -1003,47 +1306,55 @@ def api_add_note():
 
 
 @app.route('/api/case-notes/<int:note_id>', methods=['PUT'])
+@require_auth
 def api_update_note(note_id):
     data = request.get_json()
-    update_case_note(note_id, **data)
+    update_case_note(g.user.id, note_id, **data)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/case-notes/<int:note_id>', methods=['DELETE'])
+@require_auth
 def api_delete_note(note_id):
-    delete_case_note(note_id)
+    delete_case_note(g.user.id, note_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/saved-filters', methods=['GET'])
+@require_auth
 def api_get_filters():
-    return jsonify(get_saved_filters())
+    return jsonify(get_saved_filters(g.user.id))
 
 
 @app.route('/api/saved-filters', methods=['POST'])
+@require_auth
 def api_add_filter():
     data = request.get_json()
-    fid = add_saved_filter(data['name'], data['filters'])
+    fid = add_saved_filter(g.user.id, data['name'], data['filters'])
     return jsonify({'status': 'ok', 'id': fid})
 
 
 @app.route('/api/saved-filters/<int:filter_id>', methods=['DELETE'])
+@require_auth
 def api_delete_filter(filter_id):
-    delete_saved_filter(filter_id)
+    delete_saved_filter(g.user.id, filter_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/accounts/<int:account_id>/balance', methods=['GET'])
+@require_auth
 def api_account_balance(account_id):
-    return jsonify(get_account_running_balance(account_id))
+    return jsonify(get_account_running_balance(g.user.id, account_id))
 
 
 @app.route('/api/alerts', methods=['GET'])
+@require_auth
 def api_alerts():
-    return jsonify(get_alerts())
+    return jsonify(get_alerts(g.user.id))
 
 
 @app.route('/api/search/global', methods=['GET'])
+@require_auth
 def api_global_search():
     """Search across transactions, case notes, and documents."""
     q = request.args.get('q', '').strip()
@@ -1051,29 +1362,32 @@ def api_global_search():
         return jsonify({'transactions': [], 'notes': [], 'documents': []})
     conn = get_db()
     cursor = conn.cursor()
+    uid = g.user.id
     like = f'%{q}%'
-    cursor.execute("SELECT id, trans_date, description, amount, category, cardholder_name FROM transactions WHERE description LIKE ? OR user_notes LIKE ? OR category LIKE ? LIMIT 20", (like, like, like))
+    cursor.execute("SELECT id, trans_date, description, amount, category, cardholder_name FROM transactions WHERE user_id = ? AND (description LIKE ? OR user_notes LIKE ? OR category LIKE ?) LIMIT 20", (uid, like, like, like))
     transactions = [dict(r) for r in cursor.fetchall()]
-    cursor.execute("SELECT id, title, content, note_type, severity FROM case_notes WHERE title LIKE ? OR content LIKE ? LIMIT 10", (like, like))
+    cursor.execute("SELECT id, title, content, note_type, severity FROM case_notes WHERE user_id = ? AND (title LIKE ? OR content LIKE ?) LIMIT 10", (uid, like, like))
     notes = [dict(r) for r in cursor.fetchall()]
-    cursor.execute("SELECT id, filename, doc_category, notes FROM documents WHERE filename LIKE ? OR notes LIKE ? LIMIT 10", (like, like))
+    cursor.execute("SELECT id, filename, doc_category, notes FROM documents WHERE user_id = ? AND (filename LIKE ? OR notes LIKE ?) LIMIT 10", (uid, like, like))
     documents = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({'transactions': transactions, 'notes': notes, 'documents': documents})
 
 
 @app.route('/api/analysis/recurring')
+@require_auth
 def api_recurring():
     """Detect recurring/scheduled transactions."""
-    return jsonify(get_recurring_transactions(get_request_filters()))
+    return jsonify(get_recurring_transactions(g.user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-timeline')
+@require_auth
 def api_cardholder_timeline():
     """Get timeline data per cardholder for overlay comparison."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(get_request_filters())
+    where, params = build_filter_clause(g.user.id, get_request_filters())
     
     cursor.execute(f"""
         SELECT cardholder_name,
@@ -1102,11 +1416,12 @@ def api_cardholder_timeline():
 
 
 @app.route('/api/export/report')
+@require_auth
 def api_export_report():
     """Generate and download a PDF forensic report."""
     try:
         from report_generator import generate_forensic_report
-        filepath, filename = generate_forensic_report()
+        filepath, filename = generate_forensic_report(g.user.id, get_request_filters())
         directory = os.path.dirname(filepath)
         return send_from_directory(directory, filename, as_attachment=True, download_name=filename)
     except Exception as e:

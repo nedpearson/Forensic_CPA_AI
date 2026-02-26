@@ -29,8 +29,18 @@ def init_db():
     cursor = conn.cursor()
 
     cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            is_demo INTEGER DEFAULT 0,
+            role TEXT DEFAULT 'user',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             account_name TEXT NOT NULL,
             account_number TEXT,
             account_type TEXT NOT NULL,  -- 'bank', 'credit_card', 'venmo'
@@ -43,6 +53,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             filename TEXT NOT NULL,
             original_path TEXT,
             file_type TEXT NOT NULL,  -- 'pdf', 'xlsx', 'docx', 'csv'
@@ -57,6 +68,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             document_id INTEGER,
             account_id INTEGER,
             trans_date TEXT,
@@ -88,7 +100,8 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
+            user_id INTEGER REFERENCES users(id),
+            name TEXT NOT NULL,
             parent_category TEXT,
             category_type TEXT,  -- 'personal', 'business', 'transfer', 'deposit', 'fee', 'other'
             color TEXT DEFAULT '#6c757d',
@@ -97,6 +110,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS category_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             pattern TEXT NOT NULL,
             category TEXT NOT NULL,
             subcategory TEXT,
@@ -108,6 +122,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             transaction_id INTEGER,
             action TEXT NOT NULL,
             old_value TEXT,
@@ -119,6 +134,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS proof_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             transaction_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -129,6 +145,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS case_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             note_type TEXT DEFAULT 'general',  -- 'general', 'finding', 'evidence', 'timeline'
@@ -140,6 +157,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS drilldown_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             source_tab TEXT NOT NULL,
             widget_id TEXT NOT NULL,
             target TEXT NOT NULL,
@@ -148,8 +166,17 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
+        CREATE TABLE IF NOT EXISTS saved_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            name TEXT NOT NULL,
+            filters TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
         CREATE TABLE IF NOT EXISTS document_extractions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             document_id INTEGER NOT NULL,
             extraction_data TEXT,  -- JSON string of the extracted fields/layout
             status TEXT DEFAULT 'pending',  -- 'pending', 'completed', 'failed'
@@ -162,7 +189,8 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS taxonomy_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
+            user_id INTEGER REFERENCES users(id),
+            name TEXT NOT NULL,
             description TEXT NOT NULL,
             category_type TEXT NOT NULL, -- 'risk', 'entity', 'topic'
             severity TEXT DEFAULT 'low',  -- for risks
@@ -171,6 +199,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS document_categorizations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             document_id INTEGER NOT NULL,
             extraction_id INTEGER,
             categorization_data TEXT, -- JSON containing RiskCategories, entities, topics, summary
@@ -186,6 +215,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS saved_filters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
             name TEXT NOT NULL,
             filters TEXT NOT NULL,  -- JSON object of filter params
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -210,7 +240,37 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_drilldown_logs_target ON drilldown_logs(target, timestamp);
     """)
 
-    # Insert default categories
+    # Migration for user_id on existing databases
+    cursor.execute("SELECT id FROM users WHERE email='root@system.local'")
+    root_user = cursor.fetchone()
+    if not root_user:
+        import werkzeug.security
+        hashed = werkzeug.security.generate_password_hash("root")
+        cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", ("root@system.local", hashed))
+        root_id = cursor.lastrowid
+    else:
+        root_id = root_user['id']
+
+    tables_to_migrate = [
+        'accounts', 'documents', 'transactions', 'categories', 
+        'category_rules', 'saved_filters', 'document_extractions', 
+        'document_categorizations', 'audit_log', 'case_notes', 
+        'drilldown_logs', 'taxonomy_config', 'proof_links'
+    ]
+    for table in tables_to_migrate:
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = [row['name'] for row in cursor.fetchall()]
+        if 'user_id' not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER REFERENCES users(id)")
+            cursor.execute(f"UPDATE {table} SET user_id = ?", (root_id,))
+
+    # Migrate users table to add role
+    cursor.execute("PRAGMA table_info(users)")
+    user_columns = [row['name'] for row in cursor.fetchall()]
+    if 'role' not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+
+    # Insert default categories only for root_id to bootstrap
     default_categories = [
         ('Deposits', None, 'deposit', '#28a745', 'arrow-down'),
         ('Transfers Out', None, 'transfer', '#dc3545', 'arrow-right'),
@@ -241,9 +301,13 @@ def init_db():
 
     for cat in default_categories:
         cursor.execute(
-            "INSERT OR IGNORE INTO categories (name, parent_category, category_type, color, icon) VALUES (?, ?, ?, ?, ?)",
-            cat
+            "SELECT id FROM categories WHERE name = ? AND user_id = ?", (cat[0], root_id)
         )
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO categories (user_id, name, parent_category, category_type, color, icon) VALUES (?, ?, ?, ?, ?, ?)",
+                (root_id,) + cat
+            )
 
     # Insert default categorization rules
     default_rules = [
@@ -291,28 +355,136 @@ def init_db():
 
     for rule in default_rules:
         cursor.execute(
-            "INSERT OR IGNORE INTO category_rules (pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            rule
+            "SELECT id FROM category_rules WHERE pattern = ? AND user_id = ?", (rule[0], root_id)
         )
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (root_id,) + rule
+            )
 
     conn.commit()
     conn.close()
 
+    # Bootstrap Super Admin from environment
+    if os.environ.get('SUPER_ADMIN_BOOTSTRAP', 'false').lower() == 'true':
+        admin_email = os.environ.get('SUPER_ADMIN_EMAIL')
+        admin_pass = os.environ.get('SUPER_ADMIN_PASSWORD')
+        if admin_email and admin_pass:
+            import werkzeug.security
+            user_record = get_user_by_email(admin_email)
+            if not user_record:
+                _id = create_user(admin_email, admin_pass, role='SUPER_ADMIN')
+                if _id:
+                    print(f"Super admin verified: {admin_email} created.")
+            elif user_record.get('role') != 'SUPER_ADMIN':
+                conn_admin = get_db()
+                conn_admin.execute("UPDATE users SET role = 'SUPER_ADMIN', password_hash = ? WHERE email = ?", 
+                                   (werkzeug.security.generate_password_hash(admin_pass), admin_email))
+                conn_admin.commit()
+                conn_admin.close()
+                print(f"Super admin verified: {admin_email} updated to SUPER_ADMIN.")
+            else:
+                print(f"Super admin verified: {admin_email} already active.")
+
+# --- Identity / Auth Operations ---
+
+def get_user_by_email(email):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+def get_user_by_id(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+def create_user(email, password, role='USER'):
+    import werkzeug.security
+    import sqlite3
+    hashed = werkzeug.security.generate_password_hash(password)
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)", (email, hashed, role))
+        user_id = cursor.lastrowid
+        conn.commit()
+        return user_id
+    except sqlite3.IntegrityError as e:
+        print(f"IntegrityError in create_user: {e}")
+        return None
+    except Exception as e:
+        print(f"Error creating user: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def create_demo_user(wipe_data=False):
+    """Guarantee a clean demo user exists, optionally wiping existing data to keep seeding idempotent."""
+    import werkzeug.security
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    email = "demo@forensiccpa.ai"
+    password = "demo_password_not_used"
+    hashed = werkzeug.security.generate_password_hash(password)
+    
+    try:
+        # Check if exists
+        cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
+        user_row = cursor.fetchone()
+        
+        if user_row:
+            user_id = user_row['id']
+            # Wipe existing tenant data for idempotent seeded demo runs
+            if wipe_data:
+                tables = [
+                    'audit_log', 'proof_links', 'document_categorizations', 
+                    'document_extractions', 'drilldown_logs', 'case_notes', 
+                    'saved_filters', 'category_rules', 'categories', 'taxonomy_config',
+                    'transactions', 'documents', 'accounts'
+                ]
+                for t in tables:
+                    cursor.execute(f"DELETE FROM {t} WHERE user_id = ?", (user_id,))
+                
+            # Ensure is_demo is flipped just in case
+            cursor.execute("UPDATE users SET is_demo = 1, password_hash = ? WHERE id = ?", (hashed, user_id))
+        else:
+            # Create new
+            cursor.execute(
+                "INSERT INTO users (email, password_hash, is_demo) VALUES (?, ?, 1)", 
+                (email, hashed)
+            )
+            user_id = cursor.lastrowid
+            
+        conn.commit()
+        return user_id
+    except Exception as e:
+        print(f"Error initializing demo user: {e}")
+        return None
+
 
 # --- Data Management ---
 
-def clear_all_data():
+def clear_all_data(user_id):
     """Delete all financial data while keeping categories and rules."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.executescript("""
-        DELETE FROM proof_links;
-        DELETE FROM audit_log;
-        DELETE FROM transactions;
-        DELETE FROM documents;
-        DELETE FROM accounts;
-        DELETE FROM case_notes;
-        DELETE FROM saved_filters;
+    cursor.executescript(f"""
+        DELETE FROM proof_links WHERE user_id = {user_id};
+        DELETE FROM audit_log WHERE user_id = {user_id};
+        DELETE FROM transactions WHERE user_id = {user_id};
+        DELETE FROM documents WHERE user_id = {user_id};
+        DELETE FROM accounts WHERE user_id = {user_id};
+        DELETE FROM case_notes WHERE user_id = {user_id};
+        DELETE FROM saved_filters WHERE user_id = {user_id};
     """)
     conn.commit()
     conn.close()
@@ -320,12 +492,12 @@ def clear_all_data():
 
 # --- CRUD Operations ---
 
-def add_account(account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None):
+def add_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO accounts (account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
+        "INSERT INTO accounts (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
     )
     account_id = cursor.lastrowid
     conn.commit()
@@ -333,27 +505,27 @@ def add_account(account_name, account_number, account_type, institution, cardhol
     return account_id
 
 
-def get_or_create_account(account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None):
+def get_or_create_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id FROM accounts WHERE account_number = ? AND account_type = ? AND (cardholder_name = ? OR cardholder_name IS NULL)",
-        (account_number, account_type, cardholder_name)
+        "SELECT id FROM accounts WHERE user_id = ? AND account_number = ? AND account_type = ? AND (cardholder_name = ? OR cardholder_name IS NULL)",
+        (user_id, account_number, account_type, cardholder_name)
     )
     row = cursor.fetchone()
     if row:
         conn.close()
         return row['id']
     conn.close()
-    return add_account(account_name, account_number, account_type, institution, cardholder_name, card_last_four)
+    return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four)
 
 
-def add_document(filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None):
+def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO documents (filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes)
+        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes)
     )
     doc_id = cursor.lastrowid
     conn.commit()
@@ -361,7 +533,7 @@ def add_document(filename, original_path, file_type, doc_category, account_id=No
     return doc_id
 
 
-def find_duplicate_transactions(transactions):
+def find_duplicate_transactions(user_id, transactions):
     """Check a list of parsed transactions against existing DB transactions.
     Returns list of (index, existing_transaction) tuples for duplicates."""
     conn = get_db()
@@ -370,9 +542,9 @@ def find_duplicate_transactions(transactions):
     for i, t in enumerate(transactions):
         cursor.execute("""
             SELECT id, trans_date, description, amount FROM transactions
-            WHERE trans_date = ? AND ABS(amount - ?) < 0.01
+            WHERE user_id = ? AND trans_date = ? AND ABS(amount - ?) < 0.01
             AND UPPER(description) = UPPER(?)
-        """, (t.get('trans_date', ''), t.get('amount', 0), t.get('description', '')))
+        """, (user_id, t.get('trans_date', ''), t.get('amount', 0), t.get('description', '')))
         existing = cursor.fetchone()
         if existing:
             duplicates.append({'index': i, 'existing': dict(existing)})
@@ -380,17 +552,17 @@ def find_duplicate_transactions(transactions):
     return duplicates
 
 
-def add_transaction(doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', **kwargs):
+def add_transaction(user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', **kwargs):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO transactions (document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+        INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
             subcategory, cardholder_name, card_last_four, payment_method, check_number,
             is_transfer, transfer_to_account, transfer_from_account,
             is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+        user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
         kwargs.get('subcategory'), kwargs.get('cardholder_name'), kwargs.get('card_last_four'),
         kwargs.get('payment_method'), kwargs.get('check_number'),
         kwargs.get('is_transfer', 0), kwargs.get('transfer_to_account'), kwargs.get('transfer_from_account'),
@@ -404,14 +576,17 @@ def add_transaction(doc_id, account_id, trans_date, post_date, description, amou
     return trans_id
 
 
-def update_transaction(trans_id, **fields):
+def update_transaction(user_id, trans_id, **fields):
     """Update a transaction and log the changes."""
     conn = get_db()
     cursor = conn.cursor()
 
     # Get current values for audit log
-    cursor.execute("SELECT * FROM transactions WHERE id = ?", (trans_id,))
-    old = dict(cursor.fetchone())
+    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
+    old = dict(cursor.fetchone() or {})
+    if not old:
+        conn.close()
+        return
 
     set_clauses = []
     values = []
@@ -421,36 +596,38 @@ def update_transaction(trans_id, **fields):
         # Log the change
         if str(old.get(field)) != str(value):
             cursor.execute(
-                "INSERT INTO audit_log (transaction_id, action, old_value, new_value, field_changed) VALUES (?, 'update', ?, ?, ?)",
-                (trans_id, str(old.get(field)), str(value), field)
+                "INSERT INTO audit_log (user_id, transaction_id, action, old_value, new_value, field_changed) VALUES (?, ?, 'update', ?, ?, ?)",
+                (user_id, trans_id, str(old.get(field)), str(value), field)
             )
 
     set_clauses.append("updated_at = ?")
     values.append(datetime.now().isoformat())
     set_clauses.append("manually_edited = 1")
+    
     values.append(trans_id)
+    values.append(user_id)
 
-    cursor.execute(f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id = ?", values)
+    cursor.execute(f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ?", values)
     conn.commit()
     conn.close()
 
 
-def delete_transaction(trans_id):
+def delete_transaction(user_id, trans_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM transactions WHERE id = ?", (trans_id,))
+    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
     old = cursor.fetchone()
     if old:
         cursor.execute(
-            "INSERT INTO audit_log (transaction_id, action, old_value, field_changed) VALUES (?, 'delete', ?, 'all')",
-            (trans_id, str(dict(old)))
+            "INSERT INTO audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (?, ?, 'delete', ?, 'all')",
+            (user_id, trans_id, str(dict(old)))
         )
-    cursor.execute("DELETE FROM transactions WHERE id = ?", (trans_id,))
+    cursor.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
     conn.commit()
     conn.close()
 
 
-def get_transactions(filters=None):
+def get_transactions(user_id, filters=None):
     """Get transactions with optional filters."""
     conn = get_db()
     cursor = conn.cursor()
@@ -460,9 +637,10 @@ def get_transactions(filters=None):
         FROM transactions t
         LEFT JOIN documents d ON t.document_id = d.id
         LEFT JOIN accounts a ON t.account_id = a.id
-        WHERE 1=1
+        WHERE t.user_id = ?
     """
-    params = []
+    params = [user_id]
+
 
     if filters:
         if filters.get('category'):
@@ -513,38 +691,38 @@ def get_transactions(filters=None):
     return rows
 
 
-def get_categories():
+def get_categories(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM categories ORDER BY name")
+    cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def get_accounts():
+def get_accounts(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM accounts ORDER BY account_name")
+    cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def get_documents():
+def get_documents(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id ORDER BY d.upload_date DESC")
+    cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def build_filter_clause(filters=None, table_alias=''):
+def build_filter_clause(user_id, filters=None, table_alias=''):
     """Build a SQL WHERE clause and parameter list from a filters dictionary."""
     prefix = f"{table_alias}." if table_alias else ""
-    where = "WHERE 1=1"
-    params = []
+    where = f"WHERE {prefix}user_id = ?"
+    params = [user_id]
     
     if not filters:
         return where, params
@@ -595,12 +773,12 @@ def build_filter_clause(filters=None, table_alias=''):
 
     return where, params
 
-def get_summary_stats(filters=None):
+def get_summary_stats(user_id, filters=None):
     """Get summary statistics for dashboard."""
     conn = get_db()
     cursor = conn.cursor()
 
-    where, params = build_filter_clause(filters)
+    where, params = build_filter_clause(user_id, filters)
 
     stats = {}
 
@@ -681,21 +859,21 @@ def get_summary_stats(filters=None):
     return stats
 
 
-def add_category_rule(pattern, category, subcategory=None, is_personal=0, is_business=0, is_transfer=0, priority=50):
+def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=0, is_business=0, is_transfer=0, priority=50):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO category_rules (pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
+        "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
     )
     conn.commit()
     conn.close()
 
 
-def get_category_rules():
+def get_category_rules(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM category_rules ORDER BY priority DESC, pattern")
+    cursor.execute("SELECT * FROM category_rules WHERE user_id = ? ORDER BY priority DESC, pattern", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -703,52 +881,52 @@ def get_category_rules():
 
 # --- Proof Document Links ---
 
-def link_proof(transaction_id, document_id):
+def link_proof(user_id, transaction_id, document_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT OR IGNORE INTO proof_links (transaction_id, document_id) VALUES (?, ?)",
-        (transaction_id, document_id)
+        "INSERT OR IGNORE INTO proof_links (user_id, transaction_id, document_id) VALUES (?, ?, ?)",
+        (user_id, transaction_id, document_id)
     )
     conn.commit()
     conn.close()
 
 
-def unlink_proof(transaction_id, document_id):
+def unlink_proof(user_id, transaction_id, document_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "DELETE FROM proof_links WHERE transaction_id = ? AND document_id = ?",
-        (transaction_id, document_id)
+        "DELETE FROM proof_links WHERE transaction_id = ? AND document_id = ? AND user_id = ?",
+        (transaction_id, document_id, user_id)
     )
     conn.commit()
     conn.close()
 
 
-def get_proofs_for_transaction(transaction_id):
+def get_proofs_for_transaction(user_id, transaction_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT d.* FROM documents d
         JOIN proof_links pl ON pl.document_id = d.id
-        WHERE pl.transaction_id = ?
+        WHERE pl.transaction_id = ? AND pl.user_id = ?
         ORDER BY d.upload_date DESC
-    """, (transaction_id,))
+    """, (transaction_id, user_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def get_transactions_for_proof(document_id):
+def get_transactions_for_proof(user_id, document_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT t.id, t.trans_date, t.description, t.amount
         FROM transactions t
         JOIN proof_links pl ON pl.transaction_id = t.id
-        WHERE pl.document_id = ?
+        WHERE pl.document_id = ? AND pl.user_id = ?
         ORDER BY t.trans_date DESC
-    """, (document_id,))
+    """, (document_id, user_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -756,21 +934,21 @@ def get_transactions_for_proof(document_id):
 
 # --- Case Notes ---
 
-def get_case_notes():
+def get_case_notes(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM case_notes ORDER BY updated_at DESC")
+    cursor.execute("SELECT * FROM case_notes WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def add_case_note(title, content, note_type='general', severity='info', linked_transaction_ids=None):
+def add_case_note(user_id, title, content, note_type='general', severity='info', linked_transaction_ids=None):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO case_notes (title, content, note_type, severity, linked_transaction_ids) VALUES (?, ?, ?, ?, ?)",
-        (title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
+        "INSERT INTO case_notes (user_id, title, content, note_type, severity, linked_transaction_ids) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
     )
     note_id = cursor.lastrowid
     conn.commit()
@@ -778,7 +956,7 @@ def add_case_note(title, content, note_type='general', severity='info', linked_t
     return note_id
 
 
-def update_case_note(note_id, **fields):
+def update_case_note(user_id, note_id, **fields):
     conn = get_db()
     cursor = conn.cursor()
     set_clauses = []
@@ -789,60 +967,61 @@ def update_case_note(note_id, **fields):
             values.append(value if field != 'linked_transaction_ids' else json.dumps(value or []))
     set_clauses.append("updated_at = CURRENT_TIMESTAMP")
     values.append(note_id)
-    cursor.execute(f"UPDATE case_notes SET {', '.join(set_clauses)} WHERE id = ?", values)
+    values.append(user_id)
+    cursor.execute(f"UPDATE case_notes SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ?", values)
     conn.commit()
     conn.close()
 
 
-def delete_case_note(note_id):
+def delete_case_note(user_id, note_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM case_notes WHERE id = ?", (note_id,))
+    cursor.execute("DELETE FROM case_notes WHERE id = ? AND user_id = ?", (note_id, user_id))
     conn.commit()
     conn.close()
 
 
 # --- Saved Filters ---
 
-def get_saved_filters():
+def get_saved_filters(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM saved_filters ORDER BY name")
+    cursor.execute("SELECT * FROM saved_filters WHERE user_id = ? ORDER BY name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def add_saved_filter(name, filters):
+def add_saved_filter(user_id, name, filters):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO saved_filters (name, filters) VALUES (?, ?)", (name, json.dumps(filters)))
+    cursor.execute("INSERT INTO saved_filters (user_id, name, filters) VALUES (?, ?, ?)", (user_id, name, json.dumps(filters)))
     fid = cursor.lastrowid
     conn.commit()
     conn.close()
     return fid
 
 
-def delete_saved_filter(filter_id):
+def delete_saved_filter(user_id, filter_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM saved_filters WHERE id = ?", (filter_id,))
+    cursor.execute("DELETE FROM saved_filters WHERE id = ? AND user_id = ?", (filter_id, user_id))
     conn.commit()
     conn.close()
 
 
 # --- Running Balance Per Account ---
 
-def get_account_running_balance(account_id):
+def get_account_running_balance(user_id, account_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, trans_date, description, amount, category,
             SUM(amount) OVER (ORDER BY trans_date, id) as running_balance
         FROM transactions
-        WHERE account_id = ?
+        WHERE account_id = ? AND user_id = ?
         ORDER BY trans_date, id
-    """, (account_id,))
+    """, (account_id, user_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -850,13 +1029,13 @@ def get_account_running_balance(account_id):
 
 # --- Alerts ---
 
-def get_alerts():
+def get_alerts(user_id):
     conn = get_db()
     cursor = conn.cursor()
     alerts = []
 
     # Uncategorized transactions
-    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'")
+    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized' AND user_id = ?", (user_id,))
     r = dict(cursor.fetchone())
     if r['cnt'] > 0:
         alerts.append({'type': 'uncategorized', 'severity': 'warning', 'count': r['cnt'],
@@ -864,7 +1043,7 @@ def get_alerts():
             'action': 'transactions', 'filters': {'category': 'Uncategorized'}})
 
     # Flagged needing review
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_flagged = 1 AND (user_notes IS NULL OR user_notes = '')")
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_flagged = 1 AND (user_notes IS NULL OR user_notes = '') AND user_id = ?", (user_id,))
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'flagged_unreviewed', 'severity': 'danger', 'count': r['cnt'],
@@ -873,7 +1052,7 @@ def get_alerts():
             'action': 'transactions', 'filters': {'is_flagged': '1'}})
 
     # Transactions with no cardholder
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE (cardholder_name IS NULL OR cardholder_name = '') AND amount < 0")
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE (cardholder_name IS NULL OR cardholder_name = '') AND amount < 0 AND user_id = ?", (user_id,))
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'no_cardholder', 'severity': 'info', 'count': r['cnt'],
@@ -882,7 +1061,7 @@ def get_alerts():
             'action': 'transactions', 'filters': {}})
 
     # Not classified as personal or business
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_personal = 0 AND is_business = 0 AND amount < 0")
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_personal = 0 AND is_business = 0 AND amount < 0 AND user_id = ?", (user_id,))
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'unclassified', 'severity': 'warning', 'count': r['cnt'],
@@ -891,7 +1070,7 @@ def get_alerts():
             'action': 'transactions', 'filters': {}})
 
     # Large single transactions
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE ABS(amount) > 5000 AND (user_notes IS NULL OR user_notes = '')")
+    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE ABS(amount) > 5000 AND (user_notes IS NULL OR user_notes = '') AND user_id = ?", (user_id,))
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'large_unnoted', 'severity': 'info', 'count': r['cnt'],
@@ -902,15 +1081,45 @@ def get_alerts():
     conn.close()
     return alerts
 
+# --- Saved Filters ---
+
+def get_saved_filters(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, filters FROM saved_filters WHERE user_id = ? ORDER BY name ASC", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{'id': r['id'], 'name': r['name'], 'filters': json.loads(r['filters'])} for r in rows]
+
+def add_saved_filter(user_id, name, filters_dict):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO saved_filters (user_id, name, filters) VALUES (?, ?, ?)",
+        (user_id, name, json.dumps(filters_dict))
+    )
+    conn.commit()
+    fid = cursor.lastrowid
+    conn.close()
+    return fid
+
+def delete_saved_filter(user_id, filter_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM saved_filters WHERE user_id = ? AND id = ?", (user_id, filter_id))
+    conn.commit()
+    conn.close()
+
 # --- Telemetry Logs ---
 
-def log_drilldown(data):
+def log_drilldown(user_id, data):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO drilldown_logs (source_tab, widget_id, target, filters_applied, metadata)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO drilldown_logs (user_id, source_tab, widget_id, target, filters_applied, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
     """, (
+        user_id,
         data.get('source_tab'),
         data.get('widget_id'),
         data.get('target'),
@@ -922,19 +1131,19 @@ def log_drilldown(data):
     conn.close()
     return log_id
 
-def add_document_extraction(document_id, status='pending'):
+def add_document_extraction(user_id, document_id, status='pending'):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO document_extractions (document_id, status)
-        VALUES (?, ?)
-    """, (document_id, status))
+        INSERT INTO document_extractions (user_id, document_id, status)
+        VALUES (?, ?, ?)
+    """, (user_id, document_id, status))
     conn.commit()
     ext_id = cursor.lastrowid
     conn.close()
     return ext_id
 
-def update_document_extraction(ext_id, extraction_data=None, status=None, error_message=None):
+def update_document_extraction(user_id, ext_id, extraction_data=None, status=None, error_message=None):
     conn = get_db()
     cursor = conn.cursor()
     
@@ -958,50 +1167,74 @@ def update_document_extraction(ext_id, extraction_data=None, status=None, error_
         
     updates.append("updated_at = CURRENT_TIMESTAMP")
     params.append(ext_id)
+    params.append(user_id)
     
-    query = f"UPDATE document_extractions SET {', '.join(updates)} WHERE id = ?"
+    query = f"UPDATE document_extractions SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
     cursor.execute(query, tuple(params))
     conn.commit()
     conn.close()
 
-def get_document_extraction(document_id):
+def get_document_extraction(user_id, document_id):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT * FROM document_extractions 
-        WHERE document_id = ? 
+        WHERE document_id = ? AND user_id = ?
         ORDER BY created_at DESC LIMIT 1
-    """, (document_id,))
+    """, (document_id, user_id))
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
 
-def get_taxonomy_config():
+def get_taxonomy_config(user_id):
     """Fetches the taxonomy configuration as a list of dicts."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM taxonomy_config ORDER BY category_type, severity DESC")
+    cursor.execute("SELECT * FROM taxonomy_config WHERE user_id = ? ORDER BY category_type, severity DESC", (user_id,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
-def add_document_categorization(document_id, extraction_id, categorization_data, provider, model, status="completed", error_message=None):
+def add_taxonomy_config(user_id, name, description, category_type, severity):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO taxonomy_config (user_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?)",
+            (user_id, name, description, category_type, severity)
+        )
+        _id = cursor.lastrowid
+        conn.commit()
+        return _id
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+def delete_taxonomy_config(user_id, tax_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM taxonomy_config WHERE id = ? AND user_id = ?", (tax_id, user_id))
+    conn.commit()
+    conn.close()
+
+def add_document_categorization(user_id, document_id, extraction_id, categorization_data, provider, model, status="completed", error_message=None):
     """Persists an LLM-generated document categorization payload."""
     conn = get_db()
     cursor = conn.cursor()
     
     # Auto-increment version dynamically per document
-    cursor.execute("SELECT MAX(version) FROM document_categorizations WHERE document_id = ?", (document_id,))
+    cursor.execute("SELECT MAX(version) FROM document_categorizations WHERE document_id = ? AND user_id = ?", (document_id, user_id))
     result = cursor.fetchone()[0]
     next_version = 1 if result is None else result + 1
 
     cursor.execute("""
         INSERT INTO document_categorizations (
-            document_id, extraction_id, categorization_data, 
+            user_id, document_id, extraction_id, categorization_data, 
             provider, model, version, status, error_message
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        document_id, extraction_id, 
+        user_id, document_id, extraction_id, 
         categorization_data if isinstance(categorization_data, str) else json.dumps(categorization_data),
         provider, model, next_version, status, error_message
     ))
@@ -1010,15 +1243,15 @@ def add_document_categorization(document_id, extraction_id, categorization_data,
     conn.close()
     return cat_id
 
-def get_document_categorization(document_id):
+def get_document_categorization(user_id, document_id):
     """Fetches the latest categorization for a given document."""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT * FROM document_categorizations 
-        WHERE document_id = ? 
+        WHERE document_id = ? AND user_id = ?
         ORDER BY created_at DESC, version DESC LIMIT 1
-    """, (document_id,))
+    """, (document_id, user_id))
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
