@@ -1846,6 +1846,8 @@ def api_upload_commit():
     # Save transactions
     added = 0
     skipped = 0
+    doc_stats = {} # track counts per doc id: {doc_id: {'added': 0, 'skipped': 0, 'total': 0}}
+
     for trans in transactions:
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
@@ -1865,6 +1867,10 @@ def api_upload_commit():
                 )
                 child_doc_map[child_hash] = c_id
             target_doc_id = child_doc_map[child_hash]
+
+        if target_doc_id not in doc_stats:
+            doc_stats[target_doc_id] = {'added': 0, 'skipped': 0, 'total': 0}
+        doc_stats[target_doc_id]['total'] += 1
 
         # Deduplication Fingerprint
         txn_fingerprint = compute_transaction_hash(
@@ -1901,11 +1907,34 @@ def api_upload_commit():
         )
         if is_new:
             added += 1
+            doc_stats[target_doc_id]['added'] += 1
         else:
             skipped += 1
+            doc_stats[target_doc_id]['skipped'] += 1
 
     from database import update_document_status
-    update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
+
+    # Update all child documents (if any) and the parent
+    for d_id, stats in doc_stats.items():
+        update_document_status(
+            current_user.id, 
+            d_id, 
+            status='pending_approval', 
+            parsed_count=stats['total'], 
+            import_count=stats['added'], 
+            skipped_count=stats['skipped']
+        )
+    
+    # If the parent ZIP itself had no direct transactions (only children did), mark it approved or pending
+    if parent_doc_id not in doc_stats:
+        update_document_status(
+            current_user.id, 
+            parent_doc_id, 
+            status='pending_approval', 
+            parsed_count=len(transactions), 
+            import_count=added, 
+            skipped_count=skipped
+        )
 
     return jsonify({
         'status': 'ok',
@@ -1942,8 +1971,16 @@ def api_document_approve(doc_id):
     # Update document status to approved
     update_document_status(current_user.id, doc_id, status='approved')
     
-    # Update all linked transactions to is_approved = 1
-    cursor.execute("UPDATE transactions SET is_approved = 1 WHERE document_id = ? AND user_id = ?", (doc_id, current_user.id))
+    # Also approve any child documents
+    cursor.execute("UPDATE documents SET status = 'approved' WHERE parent_document_id = ? AND user_id = ?", (doc_id, current_user.id))
+    
+    # Update all linked transactions to is_approved = 1 (for this doc and its children)
+    cursor.execute("""
+        UPDATE transactions 
+        SET is_approved = 1 
+        WHERE (document_id = ? OR document_id IN (SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?))
+        AND user_id = ?
+    """, (doc_id, doc_id, current_user.id, current_user.id))
     transactions_approved = cursor.rowcount
     
     conn.commit()
