@@ -1297,12 +1297,8 @@ def get_alerts(user_id):
     cursor = conn.cursor()
     alerts = []
 
-    if _is_super_admin():
-        user_cnd = ""
-        params = ()
-    else:
-        user_cnd = " AND user_id = ?"
-        params = (user_id,)
+    user_cnd = " AND user_id = ?"
+    params = (user_id,)
 
     # Uncategorized transactions
     cursor.execute(f"SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'{user_cnd}", params)
