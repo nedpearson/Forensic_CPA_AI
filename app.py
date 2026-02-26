@@ -20,7 +20,7 @@ import urllib.parse
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g, session
 from werkzeug.utils import secure_filename
 from database import (
-    init_db, get_db, add_account, get_or_create_account, add_document,
+    init_db, get_db, add_account, get_or_create_account, add_document, get_duplicate_document,
     add_transaction, update_transaction, delete_transaction,
     get_transactions, get_categories, get_accounts, get_documents,
     get_summary_stats, add_category_rule, get_category_rules,
@@ -179,6 +179,13 @@ _preview_lock = threading.Lock()
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def compute_file_hash(filepath):
+    sha256 = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
 # --- Security & Auth ---
 from functools import wraps
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -295,7 +302,7 @@ def login_page():
 def api_login():
     from database import get_user_by_email
     data = request.json or {}
-    email = data.get('email')
+    email = data.get('email', '').strip().lower()
     password = data.get('password')
     
     if not email or not password:
@@ -303,7 +310,11 @@ def api_login():
         return jsonify({"error": "Email and password required"}), 400
         
     user_record = get_user_by_email(email)
-    if not user_record or not werkzeug.security.check_password_hash(user_record['password_hash'], password):
+    if not user_record:
+        logger.warning(f"Auth Event: Login failed - user not found for {email}")
+        return jsonify({"error": "Invalid credentials"}), 401
+        
+    if not werkzeug.security.check_password_hash(user_record['password_hash'], password):
         logger.warning(f"Auth Event: Login failed - invalid credentials for {email}")
         return jsonify({"error": "Invalid credentials"}), 401
         
@@ -316,7 +327,7 @@ def api_login():
 def api_signup():
     from database import get_user_by_email, create_user
     data = request.json or {}
-    email = data.get('email')
+    email = data.get('email', '').strip().lower()
     password = data.get('password')
     
     if not email or not password:
@@ -372,7 +383,11 @@ def api_demo_login():
 @app.route('/api/auth/me', methods=['GET'])
 @login_required
 def api_me():
-    return jsonify({"id": current_user.id, "email": getattr(g.user, 'email', 'script_user')})
+    return jsonify({
+         "id": current_user.id, 
+         "email": getattr(current_user, 'email', 'unknown'),
+         "role": getattr(current_user, 'role', 'USER')
+    })
 
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required
@@ -939,6 +954,7 @@ def get_request_filters():
         'date_to': request.args.get('date_to'),
         'cardholder': request.args.get('cardholder'),
         'account_id': request.args.get('account_id'),
+        'document_id': request.args.get('document_id'),
         'category': request.args.get('category'),
         'trans_type': request.args.get('trans_type'),
         'payment_method': request.args.get('payment_method'),
@@ -1030,9 +1046,19 @@ def api_docs_upload():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         file.save(filepath)
         
+        # Deduplication check
+        file_hash = compute_file_hash(filepath)
+        existing_doc_id = get_duplicate_document(current_user.id, file_hash)
+        if existing_doc_id:
+            os.remove(filepath)
+            return jsonify({'status': 'ok', 'message': 'Duplicate document detected', 'document_id': existing_doc_id, 'duplicate': True}), 200
+        
         # 2. Persist to DB
-        doc_id = add_document(current_user.id, file.filename, filepath, ext, 'unknown', None)
+        doc_id = add_document(current_user.id, file.filename, filepath, ext, 'unknown', None, content_sha256=file_hash)
         ext_id = add_document_extraction(current_user.id, doc_id, status='pending')
+        
+        from database import update_document_status
+        update_document_status(current_user.id, doc_id, status='queued')
         
         # Capture current user_id for thread
         current_user_id = current_user.id
@@ -1040,6 +1066,7 @@ def api_docs_upload():
         # 3. Trigger extraction asynchronously 
         def extract_task(user_id, document_id, extraction_id, path):
             try:
+                update_document_status(user_id, document_id, status='processing')
                 analyzer = AzureDocumentIntelligenceAdapter()
                 result = analyzer.analyze_document(path)
                 update_document_extraction(
@@ -1048,6 +1075,18 @@ def api_docs_upload():
                     extraction_data=result, 
                     status='completed'
                 )
+                
+                # Automatically attempt to extract tabular transactions from Azure payload
+                update_document_status(user_id, document_id, status='parsed')
+                
+                # Currently we only parse PDFs if they enter via this route or ZIPs.
+                # Since the old analyzer approach didn't natively build transactions,
+                # we are adding status support for the UI to be aware of the gap.
+                
+                # Update: we need to at least notify the UI that the document has completed processing successfully 
+                # even if we haven't ported the Azure-to-Transaction mapping logic yet.
+                update_document_status(user_id, document_id, status='approved', parsed_count=0, import_count=0)
+                
             except Exception as e:
                 update_document_extraction(
                     user_id,
@@ -1055,6 +1094,7 @@ def api_docs_upload():
                     status='failed', 
                     error_message=str(e)
                 )
+                update_document_status(user_id, document_id, status='failed', failure_reason=str(e))
 
         thread = threading.Thread(target=extract_task, args=(current_user_id, doc_id, ext_id, filepath))
         thread.start()
@@ -1290,7 +1330,21 @@ def api_upload():
 
     file.save(filepath)
 
+    file_hash = compute_file_hash(filepath)
+    if ext.lower() != '.zip':
+        existing_doc_id = get_duplicate_document(current_user.id, file_hash)
+        if existing_doc_id:
+            os.remove(filepath)
+            return jsonify({
+                'status': 'ok',
+                'mode': 'duplicate',
+                'document_id': existing_doc_id,
+                'message': 'This document has already been uploaded.',
+                'transactions_added': 0
+            })
+
     # Parse the document
+    zip_children_info = {} # Map child hash to filename
     try:
         if ext.lower() == '.zip':
             import zipfile
@@ -1305,12 +1359,20 @@ def api_upload():
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
                         f_path = os.path.join(root, f)
+                        child_hash = compute_file_hash(f_path)
+                        dup_id = get_duplicate_document(current_user.id, child_hash)
+                        if dup_id:
+                            app.logger.info(f"Skipping duplicate zip child: {f}")
+                            continue
                         try:
                             t, ai = parse_document(f_path, doc_type)
                             if t:
+                                for trans in t:
+                                    trans['_source_hash'] = child_hash
                                 transactions.extend(t)
                             if not account_info and ai:
                                 account_info = ai
+                            zip_children_info[child_hash] = f
                         except Exception as inner_e:
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
@@ -1323,7 +1385,7 @@ def api_upload():
 
     # Handle proof/word documents (no transactions)
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None)
+        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None, content_sha256=file_hash)
         
         # Persist extracted text and tables for AI categorization
         if account_info.get('content'):
@@ -1351,8 +1413,8 @@ def api_upload():
             card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
         )
 
-    # Save document record
-    doc_id = add_document(
+    # Save parent document record
+    parent_doc_id = add_document(
         user_id=current_user.id,
         filename=filename,
         original_path=filepath,
@@ -1361,21 +1423,54 @@ def api_upload():
         account_id=account_id,
         statement_start=account_info.get('statement_start'),
         statement_end=account_info.get('statement_end'),
+        content_sha256=file_hash
     )
+    
+    child_doc_map = {}
 
     # Save transactions with auto-categorization
     added = 0
+    skipped = 0
     for trans in transactions:
+        target_doc_id = parent_doc_id
+        child_hash = trans.get('_source_hash')
+        if child_hash:
+            if child_hash not in child_doc_map:
+                c_filename = zip_children_info.get(child_hash, 'extracted_pdf')
+                c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+                c_id = add_document(
+                    user_id=current_user.id,
+                    filename=c_filename,
+                    original_path=None,
+                    file_type=c_ext,
+                    doc_category=doc_category,
+                    account_id=account_id,
+                    content_sha256=child_hash,
+                    parent_document_id=parent_doc_id
+                )
+                child_doc_map[child_hash] = c_id
+            target_doc_id = child_doc_map[child_hash]
+
         # Auto-categorize
         cat_result = categorize_transaction(
             current_user.id,
             trans['description'], trans['amount'],
             trans.get('trans_type', ''), trans.get('payment_method', '')
         )
+        
+        # Deduplication Fingerprint
+        txn_fingerprint = compute_transaction_hash(
+            account_scope_id=account_id,
+            trans_date=trans['trans_date'],
+            amount=trans['amount'],
+            description=trans['description'],
+            post_date=trans.get('post_date', trans.get('trans_date')),
+            check_number=trans.get('check_number')
+        )
 
-        add_transaction(
+        trans_id, is_new = add_transaction(
             user_id=current_user.id,
-            doc_id=doc_id,
+            doc_id=target_doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
             post_date=trans.get('post_date', trans['trans_date']),
@@ -1392,14 +1487,24 @@ def api_upload():
             is_business=cat_result['is_business'],
             is_flagged=cat_result['is_flagged'],
             flag_reason=cat_result['flag_reason'],
+            txn_fingerprint=txn_fingerprint,
+            is_approved=0,
         )
-        added += 1
+        if is_new:
+            added += 1
+        else:
+            skipped += 1
+
+    from database import update_document_status
+    update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
+
 
     return jsonify({
         'status': 'ok',
         'document_id': doc_id,
         'filename': filename,
         'transactions_added': added,
+        'transactions_skipped': skipped,
         'account_info': account_info,
     })
 
@@ -1566,7 +1671,25 @@ def api_upload_preview():
 
     file.save(filepath)
 
+    file_hash = compute_file_hash(filepath)
+    if ext.lower() != '.zip':
+        existing_doc_id = get_duplicate_document(current_user.id, file_hash)
+        if existing_doc_id:
+            os.remove(filepath)
+            return jsonify({
+                'status': 'ok',
+                'mode': 'duplicate',
+                'document_id': existing_doc_id,
+                'message': 'This document has already been uploaded.',
+                'transactions_added': 0,
+                'transactions': [],
+                'account_info': {},
+                'transaction_count': 0,
+                'duplicate_count': 0,
+            })
+
     # Parse the document
+    zip_children_info = {}
     try:
         if ext.lower() == '.zip':
             import zipfile
@@ -1581,14 +1704,21 @@ def api_upload_preview():
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
                         f_path = os.path.join(root, f)
+                        child_hash = compute_file_hash(f_path)
+                        dup_id = get_duplicate_document(current_user.id, child_hash)
+                        if dup_id:
+                            app.logger.info(f"Skipping duplicate zip child: {f}")
+                            continue
                         try:
                             t, ai = parse_document(f_path, doc_type)
                             if t:
                                 for trans in t:
                                     trans['_source_file'] = f
+                                    trans['_source_hash'] = child_hash
                                 transactions.extend(t)
                             if not account_info and ai:
                                 account_info = ai
+                            zip_children_info[child_hash] = f
                         except Exception as inner_e:
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
@@ -1602,7 +1732,7 @@ def api_upload_preview():
 
     # For proof/word docs, skip preview and commit directly
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof')
+        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', content_sha256=file_hash)
         
         # Persist extracted text and tables for AI categorization
         if account_info.get('content'):
@@ -1649,6 +1779,8 @@ def api_upload_preview():
             'filepath': filepath,
             'ext': ext,
             'doc_category': doc_category,
+            'zip_children_info': zip_children_info,
+            'file_hash': file_hash,
         }
 
     return jsonify({
@@ -1680,6 +1812,8 @@ def api_upload_commit():
     filepath = preview['filepath']
     ext = preview['ext']
     doc_category = preview['doc_category']
+    file_hash = preview.get('file_hash')
+    zip_children_info = preview.get('zip_children_info', {})
 
     # Create/get account
     account_id = None
@@ -1695,7 +1829,7 @@ def api_upload_commit():
         )
 
     # Save document record
-    doc_id = add_document(
+    parent_doc_id = add_document(
         user_id=current_user.id,
         filename=filename,
         original_path=filepath,
@@ -1704,14 +1838,47 @@ def api_upload_commit():
         account_id=account_id,
         statement_start=account_info.get('statement_start'),
         statement_end=account_info.get('statement_end'),
+        content_sha256=file_hash
     )
+
+    child_doc_map = {}
 
     # Save transactions
     added = 0
+    skipped = 0
     for trans in transactions:
-        add_transaction(
+        target_doc_id = parent_doc_id
+        child_hash = trans.get('_source_hash')
+        if child_hash:
+            if child_hash not in child_doc_map:
+                c_filename = zip_children_info.get(child_hash, 'extracted_pdf')
+                c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+                c_id = add_document(
+                    user_id=current_user.id,
+                    filename=c_filename,
+                    original_path=None,
+                    file_type=c_ext,
+                    doc_category=doc_category,
+                    account_id=account_id,
+                    content_sha256=child_hash,
+                    parent_document_id=parent_doc_id
+                )
+                child_doc_map[child_hash] = c_id
+            target_doc_id = child_doc_map[child_hash]
+
+        # Deduplication Fingerprint
+        txn_fingerprint = compute_transaction_hash(
+            account_scope_id=account_id,
+            trans_date=trans['trans_date'],
+            amount=trans['amount'],
+            description=trans['description'],
+            post_date=trans.get('post_date', trans.get('trans_date')),
+            check_number=trans.get('check_number')
+        )
+
+        trans_id, is_new = add_transaction(
             user_id=current_user.id,
-            doc_id=doc_id,
+            doc_id=target_doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
             post_date=trans.get('post_date', trans['trans_date']),
@@ -1728,15 +1895,77 @@ def api_upload_commit():
             is_business=trans.get('is_business', 0),
             is_flagged=trans.get('is_flagged', 0),
             flag_reason=trans.get('flag_reason'),
+            user_notes=trans.get('user_notes', ''),
+            txn_fingerprint=txn_fingerprint,
+            is_approved=0,
         )
-        added += 1
+        if is_new:
+            added += 1
+        else:
+            skipped += 1
+
+    from database import update_document_status
+    update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
 
     return jsonify({
         'status': 'ok',
-        'document_id': doc_id,
+        'document_id': parent_doc_id,
         'filename': filename,
         'transactions_added': added,
+        'transactions_skipped': skipped,
     })
+
+
+@app.route('/api/documents/<int:doc_id>/approve', methods=['POST'])
+@login_required
+def api_document_approve(doc_id):
+    """Approve a document and its parsed transactions."""
+    from database import get_db, update_document_status
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Verify ownership
+    cursor.execute("SELECT id, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
+    doc = cursor.fetchone()
+    if not doc:
+        conn.close()
+        return jsonify({'error': 'Document not found or unauthorized'}), 404
+        
+    doc_status = doc['status']
+    
+    # If already approved, handle idempotency
+    if doc_status == 'approved':
+        conn.close()
+        return jsonify({'status': 'ok', 'message': 'Document already approved', 'transactions_approved': 0})
+        
+    # Update document status to approved
+    update_document_status(current_user.id, doc_id, status='approved')
+    
+    # Update all linked transactions to is_approved = 1
+    cursor.execute("UPDATE transactions SET is_approved = 1 WHERE document_id = ? AND user_id = ?", (doc_id, current_user.id))
+    transactions_approved = cursor.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        'status': 'ok',
+        'message': 'Document approved',
+        'transactions_approved': transactions_approved
+    })
+
+
+@app.route('/api/documents/<int:doc_id>', methods=['DELETE'])
+@login_required
+def api_document_delete(doc_id):
+    """Delete a document, its children (if zip), and safely remove orphan transactions."""
+    from database import delete_document
+    success = delete_document(current_user.id, doc_id)
+    if success:
+        return jsonify({'status': 'ok', 'message': 'Document and derived data deleted'})
+    else:
+        return jsonify({'error': 'Document not found or unauthorized'}), 404
 
 
 @app.route('/api/upload/cancel', methods=['POST'])
@@ -1803,7 +2032,15 @@ def api_add_manual_transaction():
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid amount value'}), 400
     try:
-        trans_id = add_transaction(
+        txn_fingerprint = compute_transaction_hash(
+            account_scope_id=data.get('account_id'),
+            trans_date=data['trans_date'],
+            amount=amount,
+            description=data['description'],
+            post_date=data.get('post_date', data['trans_date']),
+            check_number=data.get('check_number')
+        )
+        trans_id, _ = add_transaction(
             user_id=current_user.id,
             doc_id=None,
             account_id=data.get('account_id'),
@@ -1821,6 +2058,7 @@ def api_add_manual_transaction():
             is_business=data.get('is_business', 0),
             auto_categorized=0,
             manually_edited=1,
+            txn_fingerprint=txn_fingerprint,
         )
     except Exception as e:
         return jsonify({'error': f'Failed to add transaction: {str(e)}'}), 500

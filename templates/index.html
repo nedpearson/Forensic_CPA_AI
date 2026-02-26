@@ -1524,9 +1524,12 @@
                                 <th>Type</th>
                                 <th>Category</th>
                                 <th>Account</th>
-                                <th>Period</th>
-                                <th>Linked</th>
+                                <th>Status</th>
+                                <th>Parsed</th>
+                                <th>Imported</th>
+                                <th>Skipped</th>
                                 <th>Uploaded</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="documents-tbody"></tbody>
@@ -2973,17 +2976,63 @@
             let html = '';
             for (const d of docs) {
                 const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : 'fa-file text-info';
-                const linkedTrans = await api(`/api/documents/${d.id}/transactions`);
-                const linkedCount = Array.isArray(linkedTrans) ? linkedTrans.length : 0;
-                html += `<tr>
-                <td><a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
+
+                let sClass = 'secondary';
+                if (d.status === 'processing' || d.status === 'queued') sClass = 'warning text-dark';
+                else if (d.status === 'approved' || d.status === 'imported' || d.status === 'completed') sClass = 'success';
+                else if (d.status === 'failed') sClass = 'danger';
+
+                let actionHtml = '';
+                if (d.status === 'pending_approval') {
+                    actionHtml += `<button class="btn btn-sm btn-success py-0 px-2 me-1" onclick="event.stopPropagation(); approveDocument('${d.id}')" title="Approve Document"><i class="fas fa-check"></i> Approve</button>`;
+                }
+                actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteDocument('${d.id}')" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
+
+                html += `<tr class="clickable-row" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
+                <td><a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
                 <td>${d.file_type}</td><td>${d.doc_category || ''}</td><td>${d.account_name || ''}</td>
-                <td>${d.statement_start_date || ''} - ${d.statement_end_date || ''}</td>
-                <td>${linkedCount > 0 ? `<span class="badge bg-info">${linkedCount} linked</span>` : '-'}</td>
+                <td><span class="badge bg-${sClass}">${d.status || 'queued'}</span></td>
+                <td>${d.parsed_transaction_count || 0}</td>
+                <td class="text-success fw-bold">${d.import_transaction_count || 0}</td>
+                <td class="text-warning">${d.deduped_skipped_count || 0}</td>
                 <td>${(d.upload_date || '').substring(0, 16)}</td>
+                <td>${actionHtml}</td>
             </tr>`;
             }
-            document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="7" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
+            document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="10" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
+        }
+
+        async function approveDocument(docId) {
+            try {
+                toast("Approving document...", "info");
+                const res = await api(`/api/documents/${docId}/approve`, 'POST');
+                if (res.error) {
+                    toast(res.error, "danger");
+                } else {
+                    toast(`Approved successfully. ${res.transactions_approved} transactions activated.`, "success");
+                    loadDocuments();
+                    loadAnalytics();
+                }
+            } catch (e) {
+                toast("Error approving document.", "danger");
+            }
+        }
+
+        async function deleteDocument(docId) {
+            if (!confirm("Deleting this document will remove the document and any transactions/data imported from it.")) return;
+            try {
+                toast("Deleting document...", "info");
+                const res = await api(`/api/documents/${docId}`, 'DELETE');
+                if (res.error) {
+                    toast(res.error, "danger");
+                } else {
+                    toast(`Document deleted successfully.`, "success");
+                    loadDocuments();
+                    loadAnalytics();
+                }
+            } catch (e) {
+                toast("Error deleting document.", "danger");
+            }
         }
 
         // ===== CATEGORIES =====

@@ -117,8 +117,9 @@
                     const next = urlParams.get('next');
                     window.location.href = next || '/';
                 } else {
+                    const data = await response.json().catch(() => ({}));
                     errorAlert.style.display = 'block';
-                    errorAlert.textContent = 'Invalid email or password';
+                    errorAlert.textContent = data.error || 'Invalid email or password';
                 }
             } catch (error) {
                 console.error('Login error:', error);
@@ -202,7 +203,7 @@
                     const next = urlParams.get('next');
                     window.location.href = next || '/';
                 } else {
-                    const data = await response.json();
+                    const data = await response.json().catch(() => ({}));
                     errorAlert.style.display = 'block';
                     errorAlert.textContent = data.error || 'Signup failed';
                 }

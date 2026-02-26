@@ -10,8 +10,9 @@ import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook
 from docx import Document as DocxDocument
-
-# OCR configuration
+from pydantic import BaseModel, Field
+from typing import List, Optional
+import json
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
 
@@ -63,10 +64,46 @@ def _ocr_pdf(filepath):
         return [], str(e)
 
 
-def compute_transaction_hash(trans_date, description, amount):
-    """Create a hash for duplicate detection."""
-    key = f"{trans_date}|{description}|{amount:.2f}"
-    return hashlib.md5(key.encode()).hexdigest()
+def _normalize_text(text):
+    if not text:
+        return ""
+    # trim, collapse whitespace, uppercase
+    text = str(text)
+    text = re.sub(r'\s+', ' ', text).strip().upper()
+    return text
+
+def compute_transaction_hash(account_scope_id, trans_date, amount, description, merchant=None, currency='USD', post_date=None, check_number=None, running_balance=None):
+    """Create a deterministic hash for duplicate detection."""
+    norm_desc = _normalize_text(description)
+    norm_merch = _normalize_text(merchant) if merchant else ""
+    
+    # Amount in cents
+    try:
+        amount_cents = int(round(float(amount) * 100))
+    except (ValueError, TypeError):
+        amount_cents = 0
+        
+    components = [
+        str(account_scope_id or ""),
+        str(trans_date or ""),
+        str(amount_cents),
+        norm_desc,
+        norm_merch,
+        str(currency).upper(),
+    ]
+    if post_date:
+        components.append(str(post_date))
+    if check_number:
+        components.append(str(check_number))
+    if running_balance is not None:
+        try:
+            bal_cents = int(round(float(running_balance) * 100))
+            components.append(str(bal_cents))
+        except (ValueError, TypeError):
+            pass
+            
+    key = "|".join(components)
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()
 
 
 def parse_pdf_tables(filepath):
@@ -98,19 +135,79 @@ def _normalize_bank_date(date_str, year='2026'):
 
 
 def parse_bank_statement(filepath):
-    """Parse Bank of St. Francisville PDF statements (handles OCR text)."""
+    """Parse PDF statements using Generative AI with strict JSON schema."""
     pages = parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
     transactions = []
     account_info = {
-        'institution': 'Bank of St. Francisville',
+        'institution': 'Unknown',
         'account_type': 'bank',
         'account_number': '',
-        'account_name': 'Gulf Coast Recovery of Baton Rouge, LLC',
+        'account_name': '',
         'statement_start': '',
         'statement_end': '',
     }
+
+    if not full_text.strip():
+        return transactions, account_info
+
+    try:
+        from openai import OpenAI
+        import httpx
+        custom_http_client = httpx.Client()
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=custom_http_client)
+        
+        class TransactionSchema(BaseModel):
+            date: str = Field(description="ISO 8601 date, e.g. 2024-12-17")
+            description: str = Field(description="Cleaned description of the transaction")
+            amount: float = Field(description="Signed float. Negative for debits/withdrawals/fees, positive for credits/deposits.")
+            type: str = Field(description="'debit' or 'credit'")
+            balance: Optional[float] = Field(None, description="Running balance if shown")
+
+        class AccountInfoSchema(BaseModel):
+            institution: str = Field(description="Name of the bank or institution")
+            account_type: str = Field(description="'bank', 'credit_card', or 'other'")
+            account_number: str = Field(description="Account number or last 4 digits")
+            statement_start: str = Field(description="Statement start date (YYYY-MM-DD), or empty if unknown")
+            statement_end: str = Field(description="Statement end date (YYYY-MM-DD), or empty if unknown")
+            
+        class StatementExtractionSchema(BaseModel):
+            account_info: AccountInfoSchema
+            transactions: List[TransactionSchema]
+
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a financial parsing assistant. Extract all transactions and account information from the given bank statement text. Ensure the amount is always negative for debits (withdrawals, fees) and positive for credits (deposits). Include all explicit line-item transactions, overdraft fees, service charges, or other fees that affect the balance."},
+                {"role": "user", "content": full_text[:100000]} # Limit to 100k chars for safety
+            ],
+            response_format=StatementExtractionSchema,
+            temperature=0.0
+        )
+
+        parsed_data = response.choices[0].message.parsed
+        account_info = parsed_data.account_info.model_dump()
+
+        # Map to old standard transactional format
+        for trans in parsed_data.transactions:
+            transactions.append({
+                'trans_date': trans.date,
+                'post_date': trans.date,
+                'description': trans.description,
+                'amount': trans.amount,
+                'trans_type': trans.type,
+                'balance': trans.balance,
+                'cardholder_name': '',
+                'card_last_four': '',
+                'payment_method': ''
+            })
+
+    except Exception as e:
+        print(f"LLM Parsing failed: {e}")
+        # Could fallback to regex here if heavily needed...
+
+    return transactions, account_info
 
     # Extract account number
     acct_match = re.search(r'Account\s*(?:Number|#|No\.?)[:\s]*(\d+)', full_text, re.IGNORECASE)

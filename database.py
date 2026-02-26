@@ -65,6 +65,11 @@ def init_db():
             statement_end_date TEXT,
             account_id INTEGER,
             notes TEXT,
+            status TEXT DEFAULT 'queued', -- 'queued', 'processing', 'parsed', 'pending_approval', 'approved', 'failed'
+            parsed_transaction_count INTEGER DEFAULT 0,
+            import_transaction_count INTEGER DEFAULT 0,
+            failure_reason TEXT,
+            content_sha256 TEXT,
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         );
 
@@ -94,6 +99,8 @@ def init_db():
             user_notes TEXT,
             auto_categorized INTEGER DEFAULT 1,
             manually_edited INTEGER DEFAULT 0,
+            txn_fingerprint TEXT,
+            is_approved INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES documents(id),
@@ -135,6 +142,17 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS proof_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            transaction_id INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+            UNIQUE(transaction_id, document_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS transaction_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES users(id),
             transaction_id INTEGER NOT NULL,
@@ -258,6 +276,63 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_trans_amount_date ON transactions(amount, trans_date);
         CREATE INDEX IF NOT EXISTS idx_drilldown_logs_target ON drilldown_logs(target, timestamp);
     """)
+
+    # Dynamic migrations for documents table tracking fields
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN status TEXT DEFAULT 'queued'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN parsed_transaction_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN import_transaction_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN failure_reason TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN content_sha256 TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN txn_fingerprint TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN deduped_skipped_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN parent_document_id INTEGER REFERENCES documents(id)")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        # Backfill transaction_sources for existing transactions
+        cursor.execute("""
+            INSERT OR IGNORE INTO transaction_sources (user_id, transaction_id, document_id)
+            SELECT user_id, id, document_id FROM transactions WHERE document_id IS NOT NULL
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+
+    # Create uniqueness constraints after all columns are confirmed to exist
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_user_sha ON documents(user_id, content_sha256) WHERE content_sha256 IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_fingerprint ON transactions(user_id, txn_fingerprint) WHERE txn_fingerprint IS NOT NULL")
+
 
     # Migration for user_id on existing databases
     cursor.execute("SELECT id FROM users WHERE email='root@system.local'")
@@ -386,8 +461,8 @@ def init_db():
     conn.close()
 
     # Bootstrap Super Admin from environment
-    if os.environ.get('SUPER_ADMIN_BOOTSTRAP', 'false').lower() == 'true':
-        admin_email = os.environ.get('SUPER_ADMIN_EMAIL')
+    if os.environ.get('ENABLE_SUPER_ADMIN_BOOTSTRAP', os.environ.get('SUPER_ADMIN_BOOTSTRAP', 'false')).lower() in ('true', '1'):
+        admin_email = os.environ.get('SUPER_ADMIN_EMAIL', 'nedpearson@gmail.com').strip().lower()
         admin_pass = os.environ.get('SUPER_ADMIN_PASSWORD')
         if admin_email and admin_pass:
             import werkzeug.security
@@ -396,19 +471,27 @@ def init_db():
                 _id = create_user(admin_email, admin_pass, role='SUPER_ADMIN')
                 if _id:
                     print(f"Super admin verified: {admin_email} created.")
-            elif user_record.get('role') != 'SUPER_ADMIN':
-                conn_admin = get_db()
-                conn_admin.execute("UPDATE users SET role = 'SUPER_ADMIN', password_hash = ? WHERE email = ?", 
-                                   (werkzeug.security.generate_password_hash(admin_pass), admin_email))
-                conn_admin.commit()
-                conn_admin.close()
-                print(f"Super admin verified: {admin_email} updated to SUPER_ADMIN.")
             else:
-                print(f"Super admin verified: {admin_email} already active.")
+                needs_repair = False
+                if user_record.get('role') != 'SUPER_ADMIN':
+                    needs_repair = True
+                elif not werkzeug.security.check_password_hash(user_record['password_hash'], admin_pass):
+                    needs_repair = True
+                
+                if needs_repair:
+                    conn_admin = get_db()
+                    conn_admin.execute("UPDATE users SET role = 'SUPER_ADMIN', password_hash = ? WHERE email = ?", 
+                                       (werkzeug.security.generate_password_hash(admin_pass), admin_email))
+                    conn_admin.commit()
+                    conn_admin.close()
+                    print(f"Super admin verified: {admin_email} repaired to SUPER_ADMIN with correct password.")
+                else:
+                    print(f"Super admin verified: {admin_email} already active and correct.")
 
 # --- Identity / Auth Operations ---
 
 def get_user_by_email(email):
+    email = email.strip().lower()
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
@@ -425,6 +508,7 @@ def get_user_by_id(user_id):
     return dict(user) if user else None
 
 def create_user(email, password, role='USER'):
+    email = email.strip().lower()
     import werkzeug.security
     import sqlite3
     hashed = werkzeug.security.generate_password_hash(password)
@@ -538,18 +622,115 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
     conn.close()
     return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four)
 
-
-def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None):
+def get_duplicate_document(user_id, content_sha256):
+    if not content_sha256:
+        return None
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ?", (user_id, content_sha256))
+    row = cursor.fetchone()
+    conn.close()
+    return row['id'] if row else None
+
+
+def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if content_sha256:
+        cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ?", (user_id, content_sha256))
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            return row['id']
+
     cursor.execute(
-        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes)
+        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id)
     )
     doc_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return doc_id
+
+
+def delete_document(user_id, doc_id):
+    """
+    Deletes a document, its children (if zip), and safely removes orphan transactions.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # 1. Get document details
+    cursor.execute("SELECT id, filename, file_type, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
+    doc = cursor.fetchone()
+    if not doc:
+        conn.close()
+        return False
+        
+    doc_ids_to_delete = [doc_id]
+    
+    # 2. Find any children documents (if zip container)
+    if doc['file_type'] == 'zip':
+        cursor.execute("SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?", (doc_id, user_id))
+        children = cursor.fetchall()
+        doc_ids_to_delete.extend([child['id'] for child in children])
+        
+    # Create placeholders
+    placeholders = ','.join('?' for _ in doc_ids_to_delete)
+    
+    # 3. Delete from transaction_sources
+    cursor.execute(f"DELETE FROM transaction_sources WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+    
+    # 4. Remove orphan transactions
+    cursor.execute("""
+        DELETE FROM transactions 
+        WHERE user_id = ? 
+        AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
+    """, (user_id, user_id))
+    
+    # 5. Delete documents
+    cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return True
+
+
+def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None):
+    """Update the status and tracking metrics of a document."""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    updates = []
+    params = []
+    
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if parsed_count is not None:
+        updates.append("parsed_transaction_count = ?")
+        params.append(parsed_count)
+    if import_count is not None:
+        updates.append("import_transaction_count = ?")
+        params.append(import_count)
+    if skipped_count is not None:
+        updates.append("deduped_skipped_count = ?")
+        params.append(skipped_count)
+    if failure_reason is not None:
+        updates.append("failure_reason = ?")
+        params.append(failure_reason)
+        
+    if not updates:
+        return
+        
+    params.extend([doc_id, user_id])
+    query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
+    
+    cursor.execute(query, tuple(params))
+    conn.commit()
+    conn.close()
 
 
 def find_duplicate_transactions(user_id, transactions):
@@ -574,12 +755,31 @@ def find_duplicate_transactions(user_id, transactions):
 def add_transaction(user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', **kwargs):
     conn = get_db()
     cursor = conn.cursor()
+    
+    txn_fingerprint = kwargs.get('txn_fingerprint')
+    if txn_fingerprint:
+        cursor.execute("SELECT id FROM transactions WHERE user_id = ? AND txn_fingerprint = ?", (user_id, txn_fingerprint))
+        existing = cursor.fetchone()
+        if existing:
+            trans_id = existing['id']
+            if doc_id:
+                try:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO transaction_sources (user_id, transaction_id, document_id)
+                        VALUES (?, ?, ?)
+                    """, (user_id, trans_id, doc_id))
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+            conn.close()
+            return trans_id, False
+
     cursor.execute("""
         INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
             subcategory, cardholder_name, card_last_four, payment_method, check_number,
             is_transfer, transfer_to_account, transfer_from_account,
-            is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
         kwargs.get('subcategory'), kwargs.get('cardholder_name'), kwargs.get('card_last_four'),
@@ -587,12 +787,22 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
         kwargs.get('is_transfer', 0), kwargs.get('transfer_to_account'), kwargs.get('transfer_from_account'),
         kwargs.get('is_personal', 0), kwargs.get('is_business', 0),
         kwargs.get('is_flagged', 0), kwargs.get('flag_reason'),
-        kwargs.get('auto_categorized', 1), kwargs.get('manually_edited', 0)
+        kwargs.get('auto_categorized', 1), kwargs.get('manually_edited', 0), txn_fingerprint, kwargs.get('is_approved', 1)
     ))
     trans_id = cursor.lastrowid
+    
+    if doc_id:
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO transaction_sources (user_id, transaction_id, document_id)
+                VALUES (?, ?, ?)
+            """, (user_id, trans_id, doc_id))
+        except sqlite3.OperationalError:
+            pass
+            
     conn.commit()
     conn.close()
-    return trans_id
+    return trans_id, True
 
 
 def update_transaction(user_id, trans_id, **fields):
@@ -656,9 +866,14 @@ def get_transactions(user_id, filters=None):
         FROM transactions t
         LEFT JOIN documents d ON t.document_id = d.id
         LEFT JOIN accounts a ON t.account_id = a.id
-        WHERE t.user_id = ?
     """
-    params = [user_id]
+    
+    if _is_super_admin():
+        query += " WHERE 1=1"
+        params = []
+    else:
+        query += " WHERE t.user_id = ?"
+        params = [user_id]
 
 
     if filters:
@@ -710,28 +925,42 @@ def get_transactions(user_id, filters=None):
     return rows
 
 
+def _is_super_admin():
+    from flask_login import current_user
+    try:
+        return current_user.is_authenticated and getattr(current_user, 'role', '') == 'SUPER_ADMIN'
+    except Exception:
+        return False
+
 def get_categories(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
+    if _is_super_admin():
+        cursor.execute("SELECT * FROM categories ORDER BY name")
+    else:
+        cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
-
 
 def get_accounts(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
+    if _is_super_admin():
+        cursor.execute("SELECT * FROM accounts ORDER BY account_name")
+    else:
+        cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
-
 def get_documents(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
+    if _is_super_admin():
+        cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id ORDER BY d.upload_date DESC")
+    else:
+        cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -740,8 +969,19 @@ def get_documents(user_id):
 def build_filter_clause(user_id, filters=None, table_alias=''):
     """Build a SQL WHERE clause and parameter list from a filters dictionary."""
     prefix = f"{table_alias}." if table_alias else ""
-    where = f"WHERE {prefix}user_id = ?"
-    params = [user_id]
+    
+    from flask_login import current_user
+    try:
+        is_sup = current_user.is_authenticated and getattr(current_user, 'role', '') == 'SUPER_ADMIN'
+    except Exception:
+        is_sup = False
+
+    if is_sup:
+        where = "WHERE 1=1"
+        params = []
+    else:
+        where = f"WHERE {prefix}user_id = ?"
+        params = [user_id]
     
     if not filters:
         return where, params
@@ -767,6 +1007,9 @@ def build_filter_clause(user_id, filters=None, table_alias=''):
     if filters.get('payment_method'):
         where += f" AND {prefix}payment_method = ?"
         params.append(filters['payment_method'])
+    if filters.get('document_id'):
+        where += f" AND {prefix}id IN (SELECT transaction_id FROM transaction_sources WHERE document_id = ?)"
+        params.append(filters['document_id'])
     if str(filters.get('is_flagged')) == '1':
         where += f" AND {prefix}is_flagged = 1"
     if str(filters.get('is_transfer')) == '1':
@@ -780,6 +1023,10 @@ def build_filter_clause(user_id, filters=None, table_alias=''):
     if filters.get('max_amount'):
         where += f" AND ABS({prefix}amount) <= ?"
         params.append(float(filters['max_amount']))
+
+    # By default, only show approved transactions UNLESS we are viewing a specific document
+    if not filters.get('document_id') and not filters.get('include_pending'):
+        where += f" AND {prefix}is_approved = 1"
 
     is_personal_str = str(filters.get('is_personal', ''))
     is_business_str = str(filters.get('is_business', ''))
@@ -1053,8 +1300,15 @@ def get_alerts(user_id):
     cursor = conn.cursor()
     alerts = []
 
+    if _is_super_admin():
+        user_cnd = ""
+        params = ()
+    else:
+        user_cnd = " AND user_id = ?"
+        params = (user_id,)
+
     # Uncategorized transactions
-    cursor.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized' AND user_id = ?", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt, COALESCE(SUM(ABS(amount)),0) as total FROM transactions WHERE category = 'Uncategorized'{user_cnd}", params)
     r = dict(cursor.fetchone())
     if r['cnt'] > 0:
         alerts.append({'type': 'uncategorized', 'severity': 'warning', 'count': r['cnt'],
@@ -1062,7 +1316,7 @@ def get_alerts(user_id):
             'action': 'transactions', 'filters': {'category': 'Uncategorized'}})
 
     # Flagged needing review
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_flagged = 1 AND (user_notes IS NULL OR user_notes = '') AND user_id = ?", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM transactions WHERE is_flagged = 1 AND (user_notes IS NULL OR user_notes = ''){user_cnd}", params)
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'flagged_unreviewed', 'severity': 'danger', 'count': r['cnt'],
@@ -1071,7 +1325,7 @@ def get_alerts(user_id):
             'action': 'transactions', 'filters': {'is_flagged': '1'}})
 
     # Transactions with no cardholder
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE (cardholder_name IS NULL OR cardholder_name = '') AND amount < 0 AND user_id = ?", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM transactions WHERE (cardholder_name IS NULL OR cardholder_name = '') AND amount < 0{user_cnd}", params)
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'no_cardholder', 'severity': 'info', 'count': r['cnt'],
@@ -1080,7 +1334,7 @@ def get_alerts(user_id):
             'action': 'transactions', 'filters': {}})
 
     # Not classified as personal or business
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE is_personal = 0 AND is_business = 0 AND amount < 0 AND user_id = ?", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM transactions WHERE is_personal = 0 AND is_business = 0 AND amount < 0{user_cnd}", params)
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'unclassified', 'severity': 'warning', 'count': r['cnt'],
@@ -1089,7 +1343,7 @@ def get_alerts(user_id):
             'action': 'transactions', 'filters': {}})
 
     # Large single transactions
-    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE ABS(amount) > 5000 AND (user_notes IS NULL OR user_notes = '') AND user_id = ?", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM transactions WHERE ABS(amount) > 5000 AND (user_notes IS NULL OR user_notes = ''){user_cnd}", params)
     r = cursor.fetchone()
     if r['cnt'] > 0:
         alerts.append({'type': 'large_unnoted', 'severity': 'info', 'count': r['cnt'],
