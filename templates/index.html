@@ -3587,7 +3587,15 @@
         async function api(url, method = 'GET', body = null) {
             const opts = { method, headers: {} };
             if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-            try { const r = await fetch(url, opts); return await r.json(); } catch (e) { toast('Error: ' + e.message); return []; }
+            try {
+                const r = await fetch(url, opts);
+                if (r.status === 401 || r.status === 403) {
+                    const nextUrl = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
+                    window.location.href = '/login?next=' + nextUrl;
+                    return new Promise(() => { }); // Halt execution to prevent UI flashing before navigation completes
+                }
+                return await r.json();
+            } catch (e) { toast('Error: ' + e.message); return []; }
         }
 
         function fmt(n) { return (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
