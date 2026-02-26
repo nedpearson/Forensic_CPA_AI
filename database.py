@@ -888,15 +888,9 @@ def get_transactions(user_id, filters=None):
         FROM transactions t
         LEFT JOIN documents d ON t.document_id = d.id
         LEFT JOIN accounts a ON t.account_id = a.id
+        WHERE t.user_id = ?
     """
-    
-    if _is_super_admin():
-        query += " WHERE 1=1"
-        params = []
-    else:
-        query += " WHERE t.user_id = ?"
-        params = [user_id]
-
+    params = [user_id]
 
     if filters:
         if filters.get('category'):
@@ -957,10 +951,7 @@ def _is_super_admin():
 def get_categories(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    if _is_super_admin():
-        cursor.execute("SELECT * FROM categories ORDER BY name")
-    else:
-        cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
+    cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -968,10 +959,7 @@ def get_categories(user_id):
 def get_accounts(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    if _is_super_admin():
-        cursor.execute("SELECT * FROM accounts ORDER BY account_name")
-    else:
-        cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
+    cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -979,10 +967,7 @@ def get_accounts(user_id):
 def get_documents(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    if _is_super_admin():
-        cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id ORDER BY d.upload_date DESC")
-    else:
-        cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
+    cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -992,18 +977,8 @@ def build_filter_clause(user_id, filters=None, table_alias=''):
     """Build a SQL WHERE clause and parameter list from a filters dictionary."""
     prefix = f"{table_alias}." if table_alias else ""
     
-    from flask_login import current_user
-    try:
-        is_sup = current_user.is_authenticated and getattr(current_user, 'role', '') == 'SUPER_ADMIN'
-    except Exception:
-        is_sup = False
-
-    if is_sup:
-        where = "WHERE 1=1"
-        params = []
-    else:
-        where = f"WHERE {prefix}user_id = ?"
-        params = [user_id]
+    where = f"WHERE {prefix}user_id = ?"
+    params = [user_id]
     
     if not filters:
         return where, params
