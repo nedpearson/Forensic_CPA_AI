@@ -1862,14 +1862,26 @@
                         style="color: #c9d1d9; border: none;">Integrations</a>
                 </li>
             </ul>
-            <div class="card-dark p-4 text-center">
+            <div class="card-dark p-4 text-center position-relative">
                 <p class="text-muted">General settings panel. Ensure the Integrations route is navigated.</p>
                 <button class="btn btn-outline-info" onclick="navigateTo('integrations')">View Integrations</button>
+
+                <!-- User Badge -->
+                <div class="position-absolute bottom-0 end-0 p-3">
+                    <div class="d-flex align-items-center rounded px-3 py-2 shadow-sm"
+                        style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
+                        <span class="text-muted me-3 small"><i class="fas fa-user-check text-success me-2"></i>{{
+                            current_user.email }}</span>
+                        <button class="btn btn-sm btn-outline-danger" onclick="logout()" title="Sign Out">
+                            <i class="fas fa-sign-out-alt me-1"></i> Sign Out
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- ========== INTEGRATIONS ========== -->
-        <div class="page-section" id="page-integrations">
+        <div class="page-section position-relative" id="page-integrations" style="min-height: 400px;">
             <h4 class="mb-1"><i class="fas fa-plug text-primary"></i> Data Integrations</h4>
             <ul class="nav nav-tabs mb-3" style="border-bottom: 1px solid rgba(255,255,255,0.1);">
                 <li class="nav-item">
@@ -1885,6 +1897,18 @@
 
             <div class="row g-3" id="integrations-list">
                 <!-- Managed by JS loadIntegrations() -->
+            </div>
+
+            <!-- User Badge -->
+            <div class="position-absolute bottom-0 end-0 p-3">
+                <div class="d-flex align-items-center rounded px-3 py-2 shadow-sm"
+                    style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
+                    <span class="text-muted me-3 small"><i class="fas fa-user-check text-success me-2"></i>{{
+                        current_user.email }}</span>
+                    <button class="btn btn-sm btn-outline-danger" onclick="logout()" title="Sign Out">
+                        <i class="fas fa-sign-out-alt me-1"></i> Sign Out
+                    </button>
+                </div>
             </div>
         </div>
         {% endif %}
@@ -4159,6 +4183,24 @@
                 navigateTo(e.state.page, true, false);
             }
         });
+
+        // ===== AUTH =====
+        async function logout() {
+            try {
+                // 1. Clear local auth state entirely
+                localStorage.removeItem('auth_token');
+                sessionStorage.clear();
+
+                // 2. Destroy Flask-Login session
+                await fetch('/api/auth/logout', { method: 'POST' });
+
+                // 3. Navigate back to login
+                window.location.href = '/login';
+            } catch (e) {
+                console.error('Logout failed', e);
+                window.location.href = '/login';
+            }
+        }
 
         // ===== INIT =====
         (async () => {
