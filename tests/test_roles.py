@@ -9,17 +9,17 @@ from app import app, require_auth, require_admin, require_super_admin, User
 # Add dummy routes for testing roles
 @app.route('/api/test_auth', methods=['GET'])
 @require_auth
-def test_auth():
+def dummy_auth():
     return jsonify({"status": "ok", "role": getattr(g, 'user', User(0, '', 'none')).role})
 
 @app.route('/api/test_admin', methods=['GET'])
 @require_admin
-def test_admin():
+def dummy_admin():
     return jsonify({"status": "ok"})
 
 @app.route('/api/test_super', methods=['GET'])
 @require_super_admin
-def test_super():
+def dummy_super():
     return jsonify({"status": "ok"})
 
 @pytest.fixture(scope="module")
@@ -35,7 +35,9 @@ def setup_test_client():
     
     # clear users for pure test
     conn = get_db()
+    conn.execute("PRAGMA foreign_keys = OFF;")
     conn.execute("DELETE FROM users")
+    conn.execute("PRAGMA foreign_keys = ON;")
     conn.commit()
     
     # Add dummy users directly
@@ -102,10 +104,8 @@ def test_super_admin_role(setup_test_client):
     assert res.status_code == 200
 
 def test_unauthenticated(setup_test_client):
-    client = setup_test_client
-    
-    # explicitly logout (clear cookies)
-    client.cookie_jar.clear()
+    # explicitly logout by using a clean client without cookies
+    client = app.test_client()
     
     res = client.get('/api/test_auth')
     assert res.status_code == 401

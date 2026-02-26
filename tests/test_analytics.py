@@ -12,19 +12,24 @@ def setup_database():
     os.environ['TESTING'] = 'true'
     init_db()
     conn = get_db()
-    conn.execute('DELETE FROM transactions')
-    
-    # Insert some dummy transactions
-    conn.execute('''
-        INSERT INTO transactions (user_id, trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer, trans_type)
-        VALUES 
-        (1, '2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0, 'debit'),
-        (1, '2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0, 'debit'),
-        (1, '2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0, 'debit'),
-        (1, '2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0, 'credit')
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute('PRAGMA foreign_keys = OFF;')
+        conn.execute('DELETE FROM transactions')
+        conn.execute('PRAGMA foreign_keys = ON;')
+        
+        # Insert some dummy transactions
+        conn.execute('''
+            INSERT INTO transactions (user_id, trans_date, description, amount, category, cardholder_name, is_personal, is_business, is_transfer, trans_type)
+            VALUES 
+            (1, '2023-01-01', 'Test Business 1', -100.0, 'Business - Supplies', 'Alice', 0, 1, 0, 'debit'),
+            (1, '2023-01-02', 'Test Business 2', -200.0, 'Business - Services', 'Bob', 0, 1, 0, 'debit'),
+            (1, '2023-01-03', 'Test Personal 1', -50.0, 'Personal - Dining', 'Alice', 1, 0, 0, 'debit'),
+            (1, '2023-01-04', 'Test Deposit', 500.0, 'Deposits', NULL, 0, 0, 0, 'credit')
+        ''')
+        conn.commit()
+    finally:
+        conn.close()
+        
     yield
     # Teardown logic if needed
 

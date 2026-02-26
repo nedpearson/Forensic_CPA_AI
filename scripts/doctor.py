@@ -42,6 +42,8 @@ def check_env_vars():
         ('SESSION_SECRET', 'Set SESSION_SECRET in .env to a secure random string.'),
         ('SUPER_ADMIN_BOOTSTRAP', 'Set SUPER_ADMIN_BOOTSTRAP=true in .env to enable root provisioning.'),
         ('SUPER_ADMIN_EMAIL', 'Set SUPER_ADMIN_EMAIL in .env to your root email address.'),
+        ('PLAID_CLIENT_ID', 'Set PLAID_CLIENT_ID in .env, required for external integrations.'),
+        ('QUICKBOOKS_CLIENT_ID', 'Set QUICKBOOKS_CLIENT_ID in .env, required for external integrations.')
     ]
     
     for var, fix in required_vars:

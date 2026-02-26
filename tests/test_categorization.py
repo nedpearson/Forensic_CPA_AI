@@ -32,6 +32,11 @@ def setup_test_client():
     
     init_db()
     
+    conn = get_db()
+    conn.execute("INSERT OR IGNORE INTO users (id, email, password_hash, role) VALUES (1, 'test@test.com', 'hash', 'USER')")
+    conn.commit()
+    conn.close()
+    
     # Pre-seed a document extraction
     doc_id = add_document(1, 'test_statement.pdf', '/fake/path.pdf', 'pdf', 'bank_statement', None)
     ext_id = add_document_extraction(1, doc_id, status='completed')

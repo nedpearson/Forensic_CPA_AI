@@ -5,7 +5,7 @@ from flask import g
 from werkzeug.security import generate_password_hash
 
 from app import app
-from database import init_db, get_db
+from database import init_db, get_db, DB_PATH
 
 @pytest.fixture(scope="module")
 def smoke_client():
@@ -13,9 +13,11 @@ def smoke_client():
     app.config['TESTING'] = True
     
     # We must reset everything so that nedpearson@gmail.com and the demo user are created cleanly
-    db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'forensic_audit.db')
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    try:
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+    except Exception:
+        pass
         
     os.environ['SUPER_ADMIN_BOOTSTRAP'] = 'true'
     os.environ['SUPER_ADMIN_EMAIL'] = 'nedpearson@gmail.com'
@@ -26,10 +28,12 @@ def smoke_client():
     
     client = app.test_client()
     yield client
-    
     # Teardown
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    try:
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+    except Exception:
+        pass
 
 def test_super_admin_empty_state_and_login(smoke_client):
     # 1. Login as super admin mapped from DB init

@@ -24,7 +24,9 @@ def get_db():
 
 def init_db():
     """Initialize all database tables."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     conn = get_db()
     cursor = conn.cursor()
 
@@ -221,6 +223,23 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS integrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            provider TEXT NOT NULL,
+            account_id TEXT,
+            status TEXT DEFAULT 'Not connected',
+            scopes TEXT,
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at INTEGER,
+            metadata TEXT,
+            connected_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, provider)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_trans_date ON transactions(trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_category ON transactions(category);
         CREATE INDEX IF NOT EXISTS idx_trans_cardholder ON transactions(cardholder_name);
@@ -255,7 +274,7 @@ def init_db():
         'accounts', 'documents', 'transactions', 'categories', 
         'category_rules', 'saved_filters', 'document_extractions', 
         'document_categorizations', 'audit_log', 'case_notes', 
-        'drilldown_logs', 'taxonomy_config', 'proof_links'
+        'drilldown_logs', 'taxonomy_config', 'proof_links', 'integrations'
     ]
     for table in tables_to_migrate:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -1255,3 +1274,56 @@ def get_document_categorization(user_id, document_id):
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# --- Integrations ---
+
+def get_integration(user_id, provider):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM integrations WHERE user_id = ? AND provider = ?", (user_id, provider))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_integrations(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM integrations WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Store JSON if metadata or scopes are dicts/lists
+    if isinstance(scopes, (dict, list)):
+        scopes = json.dumps(scopes)
+    if isinstance(metadata, (dict, list)):
+        metadata = json.dumps(metadata)
+        
+    cursor.execute("""
+        INSERT INTO integrations (
+            user_id, provider, status, scopes, access_token, refresh_token,
+            expires_at, metadata, connected_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, provider) DO UPDATE SET
+            status = excluded.status,
+            scopes = excluded.scopes,
+            access_token = excluded.access_token,
+            refresh_token = excluded.refresh_token,
+            expires_at = excluded.expires_at,
+            metadata = excluded.metadata,
+            updated_at = CURRENT_TIMESTAMP
+    """, (user_id, provider, status, scopes, access_token, refresh_token, expires_at, metadata))
+    conn.commit()
+    conn.close()
+
+def delete_integration(user_id, provider):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM integrations WHERE user_id = ? AND provider = ?", (user_id, provider))
+    conn.commit()
+    conn.close()

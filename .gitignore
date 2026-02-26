@@ -11,3 +11,6 @@ reports/*
 .claude/hooks/*
 !.claude/hooks/session-start.sh
 *.zip
+.venv/
+*.txt
+!requirements.txt

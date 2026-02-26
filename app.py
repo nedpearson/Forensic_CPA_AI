@@ -3,6 +3,8 @@ Forensic Auditor - Main Flask Application
 Web-based forensic auditing tool for bank/credit card/Venmo statements.
 """
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import json
 import shutil
 import uuid
@@ -10,7 +12,12 @@ import time
 import logging
 import glob as glob_mod
 import threading
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g
+import secrets
+import hashlib
+import base64
+import requests
+import urllib.parse
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g, session
 from werkzeug.utils import secure_filename
 from database import (
     init_db, get_db, add_account, get_or_create_account, add_document,
@@ -23,8 +30,10 @@ from database import (
     add_document_extraction, update_document_extraction, get_document_extraction,
     add_document_categorization, get_document_categorization, get_taxonomy_config,
     add_taxonomy_config, delete_taxonomy_config,
-    get_saved_filters, add_saved_filter, delete_saved_filter
+    get_saved_filters, add_saved_filter, delete_saved_filter,
+    get_integration, get_integrations, upsert_integration, delete_integration
 )
+from shared.encryption import encrypt_token, decrypt_token
 from query_builder import QueryBuilder
 from document_analyzer import AzureDocumentIntelligenceAdapter
 from auto_categorizer import AutoCategorizer
@@ -67,6 +76,14 @@ logger.addFilter(RequestIdFilter())
 for handler in logging.root.handlers:
     handler.addFilter(RequestIdFilter())
 
+@app.context_processor
+def inject_feature_flags():
+    return dict(
+        enable_integrations=os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true',
+        enable_google=os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true',
+        enable_qb=os.environ.get('ENABLE_QB', 'false').lower() == 'true'
+    )
+
 @app.before_request
 def start_timer():
     g.start = time.time()
@@ -90,7 +107,19 @@ def health_check():
         conn = get_db()
         conn.execute("SELECT 1").fetchone()
         conn.close()
-        return jsonify({"status": "healthy", "db": "connected", "timestamp": time.time()}), 200
+        
+        configured_providers = []
+        if os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
+            configured_providers.append('google')
+        if os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+            configured_providers.append('quickbooks')
+            
+        return jsonify({
+            "status": "healthy", 
+            "db": "connected", 
+            "configured_providers": configured_providers,
+            "timestamp": time.time()
+        }), 200
     except Exception as e:
         logger.error(f"Health check failed (DB error): {str(e)}")
         return jsonify({"status": "unhealthy", "error": "Database connection failed"}), 503
@@ -172,6 +201,13 @@ def load_user(user_id):
         return User(id=u['id'], email=u['email'], role=u.get('role', 'USER'))
     return None
 
+@login_manager.request_loader
+def load_user_from_request(request):
+    auth_token = os.getenv("UPLOAD_AUTH_TOKEN")
+    if auth_token and request.headers.get("Authorization") == f"Bearer {auth_token}":
+        return User(id=1, email="script_telemetry@system.local", role="SUPER_ADMIN")
+    return None
+
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -246,7 +282,7 @@ def api_admin_verify():
     return jsonify({
         "status": "success",
         "message": "Super admin verified",
-        "user_id": g.user.id,
+        "user_id": current_user.id,
         "email": getattr(g.user, 'email', 'System/Script')
     })
 
@@ -333,9 +369,9 @@ def api_demo_login():
 
 
 @app.route('/api/auth/me', methods=['GET'])
-@require_auth
+@login_required
 def api_me():
-    return jsonify({"id": g.user.id, "email": getattr(g.user, 'email', 'script_user')})
+    return jsonify({"id": current_user.id, "email": getattr(g.user, 'email', 'script_user')})
 
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required
@@ -344,6 +380,7 @@ def api_logout():
     logout_user()
     logger.info(f"Auth Event: Logout successful for user {user_id}")
     return jsonify({"status": "success"})
+
 
 # --- Page Routes ---
 
@@ -389,7 +426,511 @@ def documents_page():
     return render_template('index.html', page='documents')
 
 
+@app.route('/settings')
+@login_required
+def settings_page():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return redirect(url_for('dashboard'))
+    return render_template('index.html', page='settings')
+
+@app.route('/settings/integrations')
+@login_required
+def settings_integrations_page():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return redirect(url_for('dashboard'))
+    return render_template('index.html', page='integrations')
+
+@app.route('/integrations')
+@login_required
+def integrations_page():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return redirect(url_for('dashboard'))
+    return render_template('index.html', page='integrations')
+
+
 # --- API Routes ---
+
+@app.route('/api/integrations/status')
+@login_required
+def api_integrations_status():
+    try:
+        if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+            return jsonify({"error": "Integrations disabled"}), 403
+        
+        saved = get_integrations(current_user.id)
+        connected_map = {c['provider']: c['status'] for c in saved}
+        
+        return jsonify({
+            "status": "success",
+            "role": getattr(current_user, 'role', 'USER'),
+            "integrations": [
+                {"provider": "google_drive", "status": connected_map.get("google_drive", "Not connected")},
+                {"provider": "google_calendar", "status": connected_map.get("google_calendar", "Not connected")},
+                {"provider": "gmail", "status": connected_map.get("gmail", "Not connected")},
+                {"provider": "quickbooks", "status": connected_map.get("quickbooks", "Not connected")}
+            ]
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/integrations/google/connect', methods=['POST'])
+@login_required
+def api_integrations_google_connect():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+    
+    if not os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
+        return jsonify({"error": "Google Integration disabled"}), 403
+        
+    client_id = os.environ.get('GOOGLE_CLIENT_ID')
+    if not client_id:
+        return jsonify({"error": "Google Client ID not configured"}), 501
+    
+    scopes = os.environ.get('GOOGLE_OAUTH_SCOPES', '')
+    
+    # 1. Generate CSRF State Token
+    state = secrets.token_urlsafe(32)
+    session['oauth_state_google'] = state
+    
+    # 2. Generate PKCE Verifier & Challenge (RFC 7636)
+    code_verifier = secrets.token_urlsafe(64)
+    session['oauth_verifier_google'] = code_verifier
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode('utf-8')).digest()).decode('utf-8').rstrip('=')
+    
+    host = request.host_url.rstrip('/')
+    redirect_uri = f"{host}/api/integrations/google/callback"
+    session['oauth_redirect_google'] = redirect_uri
+    
+    # 3. Build the Google Authorization URL
+    auth_params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scopes,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256"
+    }
+    
+    authorization_url = f"https://accounts.google.com/o/oauth2/v2/auth?{'&'.join([f'{k}={urllib.parse.quote_plus(v)}' for k, v in auth_params.items()])}"
+    
+    return jsonify({
+        "status": "success",
+        "authorization_url": authorization_url,
+        "state": state,
+        "code_challenge": code_challenge
+    })
+
+@app.route('/api/integrations/google/callback', methods=['GET'])
+@login_required
+def api_integrations_google_callback():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return "Integrations disabled", 403
+        
+    if not os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
+        return "Google Integration disabled", 403
+        
+    state = request.args.get('state')
+    code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        return f"OAuth Error: {error}", 400
+        
+    saved_state = session.pop('oauth_state_google', None)
+    code_verifier = session.pop('oauth_verifier_google', None)
+    redirect_uri = session.pop('oauth_redirect_google', None)
+    
+    if not saved_state or state != saved_state:
+        return "Invalid State (CSRF check failed)", 400
+        
+    if not code or not code_verifier or not redirect_uri:
+        return "Invalid OAuth exchange parameters", 400
+        
+    client_id = os.environ.get('GOOGLE_CLIENT_ID')
+    client_secret = os.environ.get('GOOGLE_CLIENT_SECRET')
+    
+    # HTTP Token Exchange
+    token_url = "https://oauth2.googleapis.com/token"
+    token_payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+        "code_verifier": code_verifier,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri
+    }
+    
+    try:
+        response = requests.post(token_url, data=token_payload)
+        response.raise_for_status()
+        token_data = response.json()
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Google Token Exchange Failed: {e.response.text}")
+        return f"Token Exchange Failed: {e.response.text}", 400
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Google Token Request Failed: {e}")
+        return "Token Request Failed due to network error", 500
+        
+    # Extract & Encrypt
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    # if a refresh token wasn't returned, we might already have one, but for simplicity of this implementation we require it during initial consent
+    if not access_token:
+        return "Missing access token in response", 400
+        
+    encrypted_access = encrypt_token(access_token)
+    encrypted_refresh = encrypt_token(refresh_token) if refresh_token else None
+    
+    upsert_integration(
+        user_id=current_user.id, 
+        provider="google_drive", 
+        status="Connected", 
+        access_token=encrypted_access, 
+        refresh_token=encrypted_refresh,
+        scopes=token_data.get('scope', '').split(' ')
+    )
+    
+    return redirect(url_for('settings_integrations_page'))
+
+@app.route('/api/integrations/google/test', methods=['POST'])
+@login_required
+def api_integrations_google_test():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    if not os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
+        return jsonify({"error": "Google Integration disabled"}), 403
+        
+    integration = get_integration(current_user.id, "google_drive")
+    if not integration or integration.get("status") != "Connected":
+        return jsonify({"error": "Google integration not connected"}), 400
+        
+    try:
+        access_token = decrypt_token(integration["access_token"])
+    except Exception as e:
+        logger.error(f"Failed to decrypt Google token: {e}")
+        return jsonify({"error": "Stored credentials corrupted"}), 500
+        
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    results = {}
+    scopes = integration.get("scopes", "[]") # It's technically stored as a JSON string array in sqlite
+    if isinstance(scopes, str):
+        import json
+        try:
+            scopes = json.loads(scopes)
+        except json.JSONDecodeError:
+            scopes = []
+            
+    # 1. Test Drive
+    if "https://www.googleapis.com/auth/drive.readonly" in scopes:
+        try:
+            res = requests.get("https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id,name)", headers=headers)
+            res.raise_for_status()
+            files = res.json().get('files', [])
+            results['drive'] = {"status": "success", "message": f"Found {len(files)} files"}
+        except requests.exceptions.RequestException as e:
+            results['drive'] = {"status": "error", "message": str(e)}
+
+    # 2. Test Calendar
+    if "https://www.googleapis.com/auth/calendar.readonly" in scopes:
+        try:
+            res = requests.get("https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1", headers=headers)
+            res.raise_for_status()
+            cals = res.json().get('items', [])
+            results['calendar'] = {"status": "success", "message": f"Found {len(cals)} calendars"}
+        except requests.exceptions.RequestException as e:
+            results['calendar'] = {"status": "error", "message": str(e)}
+            
+    # 3. Test Gmail
+    if "https://www.googleapis.com/auth/gmail.metadata" in scopes or "https://mail.google.com/" in scopes:
+        try:
+            res = requests.get("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1", headers=headers)
+            res.raise_for_status()
+            msgs = res.json().get('messages', [])
+            results['gmail'] = {"status": "success", "message": f"Found {len(msgs)} messages"}
+        except requests.exceptions.RequestException as e:
+            results['gmail'] = {"status": "error", "message": str(e)}
+
+    if not results:
+        results['scopes'] = {"status": "info", "message": "Database holds token but lacks Drive/Calendar/Gmail scopes required to ping data APIs."}
+
+    return jsonify({"status": "success", "test_results": results})
+
+def check_workspace_access(provider):
+    """Ensure standard users cannot modify workspace integrations."""
+    if provider == 'quickbooks':
+        if getattr(current_user, 'role', 'USER') not in ('ADMIN', 'SUPER_ADMIN'):
+            return False
+    return True
+
+# --- QuickBooks OAuth Endpoints ---
+@app.route('/api/integrations/quickbooks/connect', methods=['POST'])
+@login_required
+def api_integrations_quickbooks_connect():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+    
+    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+        return jsonify({"error": "QuickBooks Integration disabled"}), 403
+        
+    if not check_workspace_access('quickbooks'):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+        
+    client_id = os.environ.get('QUICKBOOKS_CLIENT_ID')
+    if not client_id:
+        return jsonify({"error": "QuickBooks Client ID not configured"}), 501
+    
+    # Intuit OAuth Scopes
+    scopes = "com.intuit.quickbooks.accounting"
+    
+    # 1. Generate CSRF State Token
+    state = secrets.token_urlsafe(32)
+    session['oauth_state_qb'] = state
+    
+    host = request.host_url.rstrip('/')
+    redirect_uri = f"{host}/api/integrations/quickbooks/callback"
+    session['oauth_redirect_qb'] = redirect_uri
+    
+    # 3. Build Authorization URL
+    auth_params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scopes,
+        "state": state
+    }
+    
+    authorization_url = f"https://appcenter.intuit.com/connect/oauth2?{'&'.join([f'{k}={urllib.parse.quote_plus(v)}' for k, v in auth_params.items()])}"
+    
+    return jsonify({
+        "status": "success",
+        "authorization_url": authorization_url,
+        "state": state
+    })
+
+@app.route('/api/integrations/quickbooks/callback', methods=['GET'])
+@login_required
+def api_integrations_quickbooks_callback():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return "Integrations disabled", 403
+        
+    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+        return "QuickBooks Integration disabled", 403
+        
+    if not check_workspace_access('quickbooks'):
+        return "Forbidden - Workspace integration restricted to Admins", 403
+        
+    state = request.args.get('state')
+    code = request.args.get('code')
+    realm_id = request.args.get('realmId')
+    error = request.args.get('error')
+    
+    if error:
+        return f"OAuth Error: {error}", 400
+        
+    saved_state = session.pop('oauth_state_qb', None)
+    redirect_uri = session.pop('oauth_redirect_qb', None)
+    
+    if not saved_state or state != saved_state:
+        return "Invalid State (CSRF check failed)", 400
+        
+    if not code or not redirect_uri:
+        return "Invalid OAuth exchange parameters", 400
+        
+    client_id = os.environ.get('QUICKBOOKS_CLIENT_ID')
+    client_secret = os.environ.get('QUICKBOOKS_CLIENT_SECRET')
+    
+    # HTTP Token Exchange (Intuit requires Basic Auth)
+    auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode('utf-8')).decode('utf-8')
+    token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+    
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
+    token_payload = {
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri
+    }
+    
+    try:
+        response = requests.post(token_url, headers=headers, data=token_payload)
+        response.raise_for_status()
+        token_data = response.json()
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"QuickBooks Token Exchange Failed: {e.response.text}")
+        return f"Token Exchange Failed: {e.response.text}", 400
+    except requests.exceptions.RequestException as e:
+        logger.error(f"QuickBooks Token Request Failed: {e}")
+        return "Token Request Failed due to network error", 500
+        
+    # Extract & Encrypt
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    if not access_token:
+        return "Missing access token in response", 400
+        
+    encrypted_access = encrypt_token(access_token)
+    encrypted_refresh = encrypt_token(refresh_token) if refresh_token else None
+    
+    upsert_integration(
+        user_id=current_user.id, 
+        provider="quickbooks", 
+        status="Connected", 
+        access_token=encrypted_access, 
+        refresh_token=encrypted_refresh,
+        scopes=["com.intuit.quickbooks.accounting"],
+        metadata={"realmId": realm_id} if realm_id else {}
+    )
+    
+    return redirect(url_for('settings_integrations_page'))
+
+@app.route('/api/integrations/quickbooks/test', methods=['POST'])
+@login_required
+def api_integrations_quickbooks_test():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+        return jsonify({"error": "QuickBooks Integration disabled"}), 403
+        
+    if not check_workspace_access('quickbooks'):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+        
+    integration = get_integration(current_user.id, "quickbooks")
+    if not integration or integration.get("status") != "Connected":
+        return jsonify({"error": "QuickBooks integration not connected"}), 400
+        
+    try:
+        access_token = decrypt_token(integration["access_token"])
+    except Exception:
+        return jsonify({"error": "Stored credentials corrupted"}), 500
+        
+    # Parse metadata to get realmId
+    metadata = {}
+    if integration.get("metadata"):
+        try:
+            metadata = json.loads(integration["metadata"])
+        except ValueError:
+            pass
+            
+    realm_id = metadata.get("realmId")
+    if not realm_id:
+       return jsonify({"error": "Missing realmId. Please reconnect your QuickBooks account."}), 400
+       
+    # Determine Environment Base URL
+    qb_env = os.environ.get('QUICKBOOKS_ENVIRONMENT', 'sandbox').lower()
+    base_url = "https://quickbooks.api.intuit.com" if qb_env == "production" else "https://sandbox-quickbooks.api.intuit.com"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    results = {}
+    
+    try:
+        # Fetch CompanyInfo
+        url = f"{base_url}/v3/company/{realm_id}/companyinfo/{realm_id}?minorversion=70"
+        res = requests.get(url, headers=headers)
+        res.raise_for_status()
+        info = res.json().get('CompanyInfo', {})
+        company_name = info.get('CompanyName', 'Unknown Company')
+        results['company'] = {"status": "success", "message": f"Connected to: {company_name}"}
+    except requests.exceptions.RequestException as e:
+        results['company'] = {"status": "error", "message": str(e)}
+
+    return jsonify({"status": "success", "test_results": results})
+
+# Generic fallback for other providers
+@app.route('/api/integrations/<provider>/connect', methods=['POST'])
+@login_required
+def api_integrations_connect(provider):
+    if provider in ['google_drive', 'google_calendar', 'gmail']:
+        return jsonify({"error": f"Route {provider} through /api/integrations/google/connect"}), 400
+    if provider == 'quickbooks':
+        return jsonify({"error": "Route quickbooks through /api/integrations/quickbooks/connect"}), 400
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+    
+    # 1. Generate CSRF State Token
+    state = secrets.token_urlsafe(32)
+    session[f'oauth_state_{provider}'] = state
+    
+    # 2. Generate PKCE Verifier & Challenge (RFC 7636)
+    code_verifier = secrets.token_urlsafe(64)
+    session[f'oauth_verifier_{provider}'] = code_verifier
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode('utf-8')).digest()).decode('utf-8').rstrip('=')
+    
+    # In a real provider, we'd build the Authorization URL. For now we simulate the flow
+    authorization_url = f"/api/integrations/{provider}/callback?state={state}&code=mock_auth_code_for_{provider}"
+    
+    return jsonify({
+        "status": "success",
+        "authorization_url": authorization_url,
+        "state": state,
+        "code_challenge": code_challenge
+    })
+
+@app.route('/api/integrations/<provider>/callback', methods=['GET'])
+@login_required
+def api_integrations_callback(provider):
+    if provider in ['google_drive', 'google_calendar', 'gmail']:
+        return "Route google_drive through /api/integrations/google/callback", 400
+    if provider == 'quickbooks':
+        return "Route quickbooks through /api/integrations/quickbooks/callback", 400
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return "Integrations disabled", 403
+        
+    state = request.args.get('state')
+    code = request.args.get('code')
+    saved_state = session.pop(f'oauth_state_{provider}', None)
+    code_verifier = session.pop(f'oauth_verifier_{provider}', None)
+    
+    if not saved_state or state != saved_state:
+        return "Invalid State (CSRF check failed)", 400
+        
+    if not code or not code_verifier:
+        return "Invalid OAuth exchange parameters", 400
+    
+    # Mocking actual OAuth HTTP exchange
+    dummy_access = encrypt_token(f"mock_access_token_{provider}_{secrets.token_hex(4)}")
+    dummy_refresh = encrypt_token(f"mock_refresh_token_{provider}_{secrets.token_hex(4)}")
+    
+    upsert_integration(
+        user_id=current_user.id, 
+        provider=provider, 
+        status="Connected", 
+        access_token=dummy_access, 
+        refresh_token=dummy_refresh,
+        scopes=['read_all']
+    )
+    return redirect(url_for('settings_integrations_page'))
+
+@app.route('/api/integrations/<provider>/disconnect', methods=['POST'])
+@login_required
+def api_integrations_disconnect(provider):
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    if not check_workspace_access(provider):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+        
+    delete_integration(current_user.id, provider)
+    return jsonify({"status": "success", "message": f"Disconnected {provider}"})
+
 
 def get_request_filters():
     filters = {
@@ -414,11 +955,11 @@ def get_request_filters():
 # --- Analytics Endpoints (Phase 10) ---
 
 @app.route('/api/analytics/overview', methods=['GET'])
-@require_auth
+@login_required
 def api_analytics_overview():
     """Provides high-level grouping and time series for Dashboard views."""
     filters = get_request_filters()
-    qb = QueryBuilder(g.user.id, filters)
+    qb = QueryBuilder(current_user.id, filters)
     conn = get_db()
     try:
         data = {
@@ -431,7 +972,7 @@ def api_analytics_overview():
         conn.close()
 
 @app.route('/api/analytics/tab/<tab_id>', methods=['GET'])
-@require_auth
+@login_required
 def api_analytics_tab(tab_id):
     """Provides specific sliced analytics for specialized tabs."""
     filters = get_request_filters()
@@ -440,7 +981,7 @@ def api_analytics_tab(tab_id):
     if tab_id == 'money-flow':
         filters['is_transfer'] = 1
         
-    qb = QueryBuilder(g.user.id, filters)
+    qb = QueryBuilder(current_user.id, filters)
     conn = get_db()
     try:
         # Re-use builder dynamically based on what the tab needs
@@ -453,7 +994,7 @@ def api_analytics_tab(tab_id):
         conn.close()
 
 @app.route('/api/analytics/drilldown', methods=['GET'])
-@require_auth
+@login_required
 def api_analytics_drilldown():
     """Returns telemetry of drilldown events mapping to targets."""
     limit = min(500, int(request.args.get('limit', 100)))
@@ -464,7 +1005,7 @@ def api_analytics_drilldown():
             WHERE user_id = ?
             ORDER BY timestamp DESC 
             LIMIT ?
-        ''', (g.user.id, limit))
+        ''', (current_user.id, limit))
         return jsonify([dict(r) for r in cursor.fetchall()])
     finally:
         conn.close()
@@ -489,11 +1030,11 @@ def api_docs_upload():
         file.save(filepath)
         
         # 2. Persist to DB
-        doc_id = add_document(g.user.id, file.filename, filepath, ext, 'unknown', None)
-        ext_id = add_document_extraction(g.user.id, doc_id, status='pending')
+        doc_id = add_document(current_user.id, file.filename, filepath, ext, 'unknown', None)
+        ext_id = add_document_extraction(current_user.id, doc_id, status='pending')
         
         # Capture current user_id for thread
-        current_user_id = g.user.id
+        current_user_id = current_user.id
 
         # 3. Trigger extraction asynchronously 
         def extract_task(user_id, document_id, extraction_id, path):
@@ -528,16 +1069,16 @@ def api_docs_upload():
 @app.route('/api/docs/<int:doc_id>', methods=['GET'])
 @require_auth
 def api_docs_get(doc_id):
-    docs = get_documents(g.user.id)
+    docs = get_documents(current_user.id)
     doc = next((d for d in docs if d['id'] == doc_id), None)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
     return jsonify(doc)
 
 @app.route('/api/docs/<int:doc_id>/extraction', methods=['GET'])
-@require_auth
+@login_required
 def api_docs_get_extraction(doc_id):
-    ext = get_document_extraction(g.user.id, doc_id)
+    ext = get_document_extraction(current_user.id, doc_id)
     if not ext:
         return jsonify({'error': 'Extraction not found'}), 404
         
@@ -553,10 +1094,10 @@ def api_docs_get_extraction(doc_id):
 # --- Categorization Endpoints (Phase 12) ---
 
 @app.route('/api/docs/<int:doc_id>/categorize', methods=['POST'])
-@require_auth
+@login_required
 def api_docs_categorize(doc_id):
     """Manually trigger or rerun LLM Categorization for a document."""
-    ext = get_document_extraction(g.user.id, doc_id)
+    ext = get_document_extraction(current_user.id, doc_id)
     if not ext or ext.get('status') != 'completed':
         return jsonify({'error': 'Document must have a completed extraction to categorize.'}), 400
         
@@ -564,7 +1105,7 @@ def api_docs_categorize(doc_id):
     if not ext_data_str:
         return jsonify({'error': 'Extraction data is empty.'}), 400
         
-    current_user_id = g.user.id
+    current_user_id = current_user.id
 
     # Trigger background thread for categorization
     def categorize_task(user_id, document_id, extraction_id, text_content):
@@ -599,10 +1140,10 @@ def api_docs_categorize(doc_id):
     return jsonify({'status': 'accepted', 'document_id': doc_id}), 202
 
 @app.route('/api/docs/<int:doc_id>/categorization', methods=['GET'])
-@require_auth
+@login_required
 def api_docs_get_categorization(doc_id):
     """Retrieve the latest categorization results."""
-    cat = get_document_categorization(g.user.id, doc_id)
+    cat = get_document_categorization(current_user.id, doc_id)
     if not cat:
         return jsonify({'error': 'Categorization not found'}), 404
         
@@ -615,18 +1156,18 @@ def api_docs_get_categorization(doc_id):
     return jsonify(cat)
 
 @app.route('/api/stats', methods=['GET'])
-@require_auth
+@login_required
 def api_stats():
     filters = get_request_filters()
-    stats = get_summary_stats(g.user.id, filters if filters else None)
+    stats = get_summary_stats(current_user.id, filters if filters else None)
     return jsonify(stats)
 
 
 @app.route('/api/transactions', methods=['GET'])
-@require_auth
+@login_required
 def api_transactions():
     filters = get_request_filters()
-    transactions = get_transactions(g.user.id, filters if filters else None)
+    transactions = get_transactions(current_user.id, filters if filters else None)
 
     # Pagination support (opt-in: pass page= to enable)
     page = request.args.get('page')
@@ -671,27 +1212,27 @@ def api_update_transaction(trans_id):
             return jsonify({'error': 'Invalid amount value'}), 400
     try:
         if fields:
-            update_transaction(g.user.id, trans_id, **fields)
+            update_transaction(current_user.id, trans_id, **fields)
     except Exception as e:
         return jsonify({'error': f'Update failed: {str(e)}'}), 500
     # If category was changed, suggest a rule
     result = {'status': 'ok'}
     if 'category' in fields:
-        suggestion = suggest_rule_from_edit(g.user.id, trans_id)
+        suggestion = suggest_rule_from_edit(current_user.id, trans_id)
         if suggestion:
             result['rule_suggestion'] = suggestion
     return jsonify(result)
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['DELETE'])
-@require_auth
+@login_required
 def api_delete_transaction(trans_id):
-    delete_transaction(g.user.id, trans_id)
+    delete_transaction(current_user.id, trans_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/transactions/bulk', methods=['POST'])
-@require_auth
+@login_required
 def api_bulk_update():
     """Bulk update multiple transactions."""
     data = request.get_json()
@@ -704,23 +1245,23 @@ def api_bulk_update():
     fields = {k: v for k, v in fields.items() if k in allowed_fields}
     for tid in ids:
         if fields:
-            update_transaction(g.user.id, tid, **fields)
+            update_transaction(current_user.id, tid, **fields)
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
 
 @app.route('/api/drilldowns', methods=['POST'])
-@require_auth
+@login_required
 def handle_drilldown_log():
     data = request.json
     try:
         from database import log_drilldown
-        log_drilldown(g.user.id, data)
+        log_drilldown(current_user.id, data)
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/upload', methods=['POST'])
-@require_auth
+@login_required
 def api_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -756,7 +1297,7 @@ def api_upload():
 
     # Handle proof/word documents (no transactions)
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(g.user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None)
+        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None)
         return jsonify({
             'status': 'ok',
             'document_id': doc_id,
@@ -768,7 +1309,7 @@ def api_upload():
     account_id = None
     if account_info.get('account_number'):
         account_id = get_or_create_account(
-            user_id=g.user.id,
+            user_id=current_user.id,
             account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
             account_number=account_info['account_number'],
             account_type=account_info.get('account_type', 'bank'),
@@ -779,7 +1320,7 @@ def api_upload():
 
     # Save document record
     doc_id = add_document(
-        user_id=g.user.id,
+        user_id=current_user.id,
         filename=filename,
         original_path=filepath,
         file_type=ext.replace('.', ''),
@@ -794,13 +1335,13 @@ def api_upload():
     for trans in transactions:
         # Auto-categorize
         cat_result = categorize_transaction(
-            g.user.id,
+            current_user.id,
             trans['description'], trans['amount'],
             trans.get('trans_type', ''), trans.get('payment_method', '')
         )
 
         add_transaction(
-            user_id=g.user.id,
+            user_id=current_user.id,
             doc_id=doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
@@ -831,16 +1372,16 @@ def api_upload():
 
 
 @app.route('/api/taxonomy', methods=['GET'])
-@require_auth
+@login_required
 def api_get_taxonomy():
-    return jsonify(get_taxonomy_config(g.user.id))
+    return jsonify(get_taxonomy_config(current_user.id))
 
 @app.route('/api/taxonomy', methods=['POST'])
-@require_auth
+@login_required
 def api_add_taxonomy():
     data = request.get_json()
     tax_id = add_taxonomy_config(
-        user_id=g.user.id,
+        user_id=current_user.id,
         name=data.get('name'),
         description=data.get('description'),
         category_type=data.get('category_type'),
@@ -851,29 +1392,29 @@ def api_add_taxonomy():
     return jsonify({'error': 'Failed to add taxonomy config'}), 500
 
 @app.route('/api/taxonomy/<int:tax_id>', methods=['DELETE'])
-@require_auth
+@login_required
 def api_delete_taxonomy(tax_id):
-    delete_taxonomy_config(g.user.id, tax_id)
+    delete_taxonomy_config(current_user.id, tax_id)
     return jsonify({'status': 'ok'})
 
 @app.route('/api/categories', methods=['GET'])
-@require_auth
+@login_required
 def api_categories():
-    return jsonify(get_categories(g.user.id))
+    return jsonify(get_categories(current_user.id))
 
 
 @app.route('/api/categories/rules', methods=['GET'])
-@require_auth
+@login_required
 def api_category_rules():
-    return jsonify(get_category_rules(g.user.id))
+    return jsonify(get_category_rules(current_user.id))
 
 
 @app.route('/api/categories/rules', methods=['POST'])
-@require_auth
+@login_required
 def api_add_rule():
     data = request.get_json()
     add_category_rule(
-        user_id=g.user.id,
+        user_id=current_user.id,
         pattern=data['pattern'],
         category=data['category'],
         subcategory=data.get('subcategory'),
@@ -886,40 +1427,40 @@ def api_add_rule():
 
 
 @app.route('/api/recategorize', methods=['POST'])
-@require_auth
+@login_required
 def api_recategorize():
-    count = recategorize_all(g.user.id)
+    count = recategorize_all(current_user.id)
     return jsonify({'status': 'ok', 'updated': count})
 
 
 @app.route('/api/accounts', methods=['GET'])
-@require_auth
+@login_required
 def api_accounts():
-    return jsonify(get_accounts(g.user.id))
+    return jsonify(get_accounts(current_user.id))
 
 
 @app.route('/api/documents', methods=['GET'])
 @require_auth
 def api_documents():
-    return jsonify(get_documents(g.user.id))
+    return jsonify(get_documents(current_user.id))
 
 
 @app.route('/api/analysis/deposit-transfers', methods=['GET'])
-@require_auth
+@login_required
 def api_deposit_transfers():
-    patterns = detect_deposit_transfer_patterns(g.user.id, get_request_filters())
+    patterns = detect_deposit_transfer_patterns(current_user.id, get_request_filters())
     return jsonify(patterns)
 
 
 @app.route('/api/analysis/cardholder-spending', methods=['GET'])
-@require_auth
+@login_required
 def api_cardholder_spending():
-    summary = get_cardholder_spending_summary(g.user.id, get_request_filters())
+    summary = get_cardholder_spending_summary(current_user.id, get_request_filters())
     return jsonify(summary)
 
 
 @app.route('/api/export/csv', methods=['GET'])
-@require_auth
+@login_required
 def api_export_csv():
     """Export transactions as CSV."""
     import csv
@@ -927,7 +1468,7 @@ def api_export_csv():
     from flask import Response
 
     filters = {k: v for k, v in request.args.items() if v}
-    transactions = get_transactions(g.user.id, filters if filters else None)
+    transactions = get_transactions(current_user.id, filters if filters else None)
 
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=[
@@ -948,10 +1489,10 @@ def api_export_csv():
 
 
 @app.route('/api/clear-data', methods=['POST'])
-@require_auth
+@login_required
 def api_clear_data():
     """Clear all financial data for a fresh start."""
-    clear_all_data(g.user.id)
+    clear_all_data(current_user.id)
     # Clear uploaded files (keep .gitkeep)
     upload_dir = app.config['UPLOAD_FOLDER']
     for f in os.listdir(upload_dir):
@@ -963,7 +1504,7 @@ def api_clear_data():
 
 
 @app.route('/api/upload/preview', methods=['POST'])
-@require_auth
+@login_required
 def api_upload_preview():
     """Parse uploaded file and return preview without saving to DB."""
     if 'file' not in request.files:
@@ -1013,7 +1554,7 @@ def api_upload_preview():
     # Auto-categorize for preview
     for trans in transactions:
         cat_result = categorize_transaction(
-            g.user.id,
+            current_user.id,
             trans['description'], trans['amount'],
             trans.get('trans_type', ''), trans.get('payment_method', '')
         )
@@ -1057,7 +1598,7 @@ def api_upload_preview():
 
 
 @app.route('/api/upload/commit', methods=['POST'])
-@require_auth
+@login_required
 def api_upload_commit():
     """Commit a previewed upload to the database."""
     data = request.get_json()
@@ -1078,7 +1619,7 @@ def api_upload_commit():
     account_id = None
     if account_info.get('account_number'):
         account_id = get_or_create_account(
-            user_id=g.user.id,
+            user_id=current_user.id,
             account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
             account_number=account_info['account_number'],
             account_type=account_info.get('account_type', 'bank'),
@@ -1089,7 +1630,7 @@ def api_upload_commit():
 
     # Save document record
     doc_id = add_document(
-        user_id=g.user.id,
+        user_id=current_user.id,
         filename=filename,
         original_path=filepath,
         file_type=ext.replace('.', ''),
@@ -1103,7 +1644,7 @@ def api_upload_commit():
     added = 0
     for trans in transactions:
         add_transaction(
-            user_id=g.user.id,
+            user_id=current_user.id,
             doc_id=doc_id,
             account_id=account_id,
             trans_date=trans['trans_date'],
@@ -1133,7 +1674,7 @@ def api_upload_commit():
 
 
 @app.route('/api/upload/cancel', methods=['POST'])
-@require_auth
+@login_required
 def api_upload_cancel():
     """Cancel a previewed upload and delete the temp file."""
     data = request.get_json()
@@ -1150,39 +1691,39 @@ def api_upload_cancel():
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs', methods=['GET'])
-@require_auth
+@login_required
 def api_get_proofs(trans_id):
-    proofs = get_proofs_for_transaction(g.user.id, trans_id)
+    proofs = get_proofs_for_transaction(current_user.id, trans_id)
     return jsonify(proofs)
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs', methods=['POST'])
-@require_auth
+@login_required
 def api_link_proof(trans_id):
     data = request.get_json()
     doc_id = data.get('document_id')
     if not doc_id:
         return jsonify({'error': 'document_id required'}), 400
-    link_proof(g.user.id, trans_id, doc_id)
+    link_proof(current_user.id, trans_id, doc_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/transactions/<int:trans_id>/proofs/<int:doc_id>', methods=['DELETE'])
-@require_auth
+@login_required
 def api_unlink_proof(trans_id, doc_id):
-    unlink_proof(g.user.id, trans_id, doc_id)
+    unlink_proof(current_user.id, trans_id, doc_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/documents/<int:doc_id>/transactions', methods=['GET'])
-@require_auth
+@login_required
 def api_doc_transactions(doc_id):
-    transactions = get_transactions_for_proof(g.user.id, doc_id)
+    transactions = get_transactions_for_proof(current_user.id, doc_id)
     return jsonify(transactions)
 
 
 @app.route('/api/add-transaction', methods=['POST'])
-@require_auth
+@login_required
 def api_add_manual_transaction():
     """Manually add a transaction."""
     data = request.get_json()
@@ -1197,7 +1738,7 @@ def api_add_manual_transaction():
         return jsonify({'error': 'Invalid amount value'}), 400
     try:
         trans_id = add_transaction(
-            user_id=g.user.id,
+            user_id=current_user.id,
             doc_id=None,
             account_id=data.get('account_id'),
             trans_date=data['trans_date'],
@@ -1226,77 +1767,77 @@ def uploaded_file(filename):
 
 
 @app.route('/api/analysis/summary', methods=['GET'])
-@require_auth
+@login_required
 def api_executive_summary():
     """Executive summary with auto-generated key findings."""
-    return jsonify(get_executive_summary(g.user.id, get_request_filters()))
+    return jsonify(get_executive_summary(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/money-flow', methods=['GET'])
-@require_auth
+@login_required
 def api_money_flow():
     """Cross-account money flow tracking."""
-    return jsonify(get_money_flow(g.user.id, get_request_filters()))
+    return jsonify(get_money_flow(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/timeline', methods=['GET'])
-@require_auth
+@login_required
 def api_timeline():
     """Daily timeline data for visualization."""
-    return jsonify(get_timeline_data(g.user.id, get_request_filters()))
+    return jsonify(get_timeline_data(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/recipients', methods=['GET'])
-@require_auth
+@login_required
 def api_recipient_analysis():
     """Who Gets the Money - recipient profiling with suspicion scores."""
-    return jsonify(get_recipient_analysis(g.user.id, get_request_filters()))
+    return jsonify(get_recipient_analysis(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/deposit-aging', methods=['GET'])
-@require_auth
+@login_required
 def api_deposit_aging():
     """Deposit aging - how quickly deposits leave the account."""
-    return jsonify(get_deposit_aging(g.user.id, get_request_filters()))
+    return jsonify(get_deposit_aging(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-comparison', methods=['GET'])
-@require_auth
+@login_required
 def api_cardholder_comparison():
     """Side-by-side cardholder comparison."""
-    return jsonify(get_cardholder_comparison(g.user.id, get_request_filters()))
+    return jsonify(get_cardholder_comparison(current_user.id, get_request_filters()))
 
 
 @app.route('/api/audit-trail', methods=['GET'])
-@require_auth
+@login_required
 def api_audit_trail():
     """Audit trail log viewer."""
     limit = request.args.get('limit', 200, type=int)
-    return jsonify(get_audit_trail(g.user.id, limit))
+    return jsonify(get_audit_trail(current_user.id, limit))
 
 
 @app.route('/api/transactions/<int:trans_id>/suggest-rule', methods=['GET'])
-@require_auth
+@login_required
 def api_suggest_rule(trans_id):
     """Suggest a categorization rule from a manually edited transaction."""
-    suggestion = suggest_rule_from_edit(g.user.id, trans_id)
+    suggestion = suggest_rule_from_edit(current_user.id, trans_id)
     if suggestion:
         return jsonify(suggestion)
     return jsonify({'error': 'Could not generate rule suggestion'}), 404
 
 
 @app.route('/api/case-notes', methods=['GET'])
-@require_auth
+@login_required
 def api_get_notes():
-    return jsonify(get_case_notes(g.user.id))
+    return jsonify(get_case_notes(current_user.id))
 
 
 @app.route('/api/case-notes', methods=['POST'])
-@require_auth
+@login_required
 def api_add_note():
     data = request.get_json()
     note_id = add_case_note(
-        user_id=g.user.id,
+        user_id=current_user.id,
         title=data['title'], content=data['content'],
         note_type=data.get('note_type', 'general'),
         severity=data.get('severity', 'info'),
@@ -1306,55 +1847,55 @@ def api_add_note():
 
 
 @app.route('/api/case-notes/<int:note_id>', methods=['PUT'])
-@require_auth
+@login_required
 def api_update_note(note_id):
     data = request.get_json()
-    update_case_note(g.user.id, note_id, **data)
+    update_case_note(current_user.id, note_id, **data)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/case-notes/<int:note_id>', methods=['DELETE'])
-@require_auth
+@login_required
 def api_delete_note(note_id):
-    delete_case_note(g.user.id, note_id)
+    delete_case_note(current_user.id, note_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/saved-filters', methods=['GET'])
-@require_auth
+@login_required
 def api_get_filters():
-    return jsonify(get_saved_filters(g.user.id))
+    return jsonify(get_saved_filters(current_user.id))
 
 
 @app.route('/api/saved-filters', methods=['POST'])
-@require_auth
+@login_required
 def api_add_filter():
     data = request.get_json()
-    fid = add_saved_filter(g.user.id, data['name'], data['filters'])
+    fid = add_saved_filter(current_user.id, data['name'], data['filters'])
     return jsonify({'status': 'ok', 'id': fid})
 
 
 @app.route('/api/saved-filters/<int:filter_id>', methods=['DELETE'])
-@require_auth
+@login_required
 def api_delete_filter(filter_id):
-    delete_saved_filter(g.user.id, filter_id)
+    delete_saved_filter(current_user.id, filter_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/accounts/<int:account_id>/balance', methods=['GET'])
-@require_auth
+@login_required
 def api_account_balance(account_id):
-    return jsonify(get_account_running_balance(g.user.id, account_id))
+    return jsonify(get_account_running_balance(current_user.id, account_id))
 
 
 @app.route('/api/alerts', methods=['GET'])
-@require_auth
+@login_required
 def api_alerts():
-    return jsonify(get_alerts(g.user.id))
+    return jsonify(get_alerts(current_user.id))
 
 
 @app.route('/api/search/global', methods=['GET'])
-@require_auth
+@login_required
 def api_global_search():
     """Search across transactions, case notes, and documents."""
     q = request.args.get('q', '').strip()
@@ -1362,7 +1903,7 @@ def api_global_search():
         return jsonify({'transactions': [], 'notes': [], 'documents': []})
     conn = get_db()
     cursor = conn.cursor()
-    uid = g.user.id
+    uid = current_user.id
     like = f'%{q}%'
     cursor.execute("SELECT id, trans_date, description, amount, category, cardholder_name FROM transactions WHERE user_id = ? AND (description LIKE ? OR user_notes LIKE ? OR category LIKE ?) LIMIT 20", (uid, like, like, like))
     transactions = [dict(r) for r in cursor.fetchall()]
@@ -1375,19 +1916,19 @@ def api_global_search():
 
 
 @app.route('/api/analysis/recurring')
-@require_auth
+@login_required
 def api_recurring():
     """Detect recurring/scheduled transactions."""
-    return jsonify(get_recurring_transactions(g.user.id, get_request_filters()))
+    return jsonify(get_recurring_transactions(current_user.id, get_request_filters()))
 
 
 @app.route('/api/analysis/cardholder-timeline')
-@require_auth
+@login_required
 def api_cardholder_timeline():
     """Get timeline data per cardholder for overlay comparison."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(g.user.id, get_request_filters())
+    where, params = build_filter_clause(current_user.id, get_request_filters())
     
     cursor.execute(f"""
         SELECT cardholder_name,
@@ -1416,12 +1957,12 @@ def api_cardholder_timeline():
 
 
 @app.route('/api/export/report')
-@require_auth
+@login_required
 def api_export_report():
     """Generate and download a PDF forensic report."""
     try:
         from report_generator import generate_forensic_report
-        filepath, filename = generate_forensic_report(g.user.id, get_request_filters())
+        filepath, filename = generate_forensic_report(current_user.id, get_request_filters())
         directory = os.path.dirname(filepath)
         return send_from_directory(directory, filename, as_attachment=True, download_name=filename)
     except Exception as e:

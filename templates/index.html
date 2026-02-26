@@ -1196,6 +1196,9 @@
             <a class="nav-link" href="#" data-page="documents"><i class="fas fa-folder-open"></i> Documents</a>
             <a class="nav-link" href="#" data-page="categories"><i class="fas fa-tags"></i> Rules</a>
             <a class="nav-link" href="#" data-page="audit-trail"><i class="fas fa-history"></i> Audit Trail</a>
+            {% if enable_integrations %}
+            <a class="nav-link" href="#" data-page="settings"><i class="fas fa-cog"></i> Settings</a>
+            {% endif %}
         </nav>
         <div class="sidebar-footer">
             <button class="btn btn-outline-light btn-sm w-100 mb-2" onclick="exportCSV()"><i
@@ -1214,8 +1217,15 @@
     <!-- Main Content -->
     <div class="main-content">
 
-        <!-- Global Breadcrumbs -->
-        <div id="global-breadcrumbs" style="display:none;"></div>
+        <!-- Global Navigation & Breadcrumbs -->
+        <div class="d-flex align-items-center mb-3">
+            <button id="global-back-btn" class="btn btn-sm btn-outline-info d-none me-3" onclick="goBack()"
+                title="Go Back backwards"
+                style="border-radius: 50%; width: 32px; height: 32px; padding: 0; align-items: center; justify-content: center;">
+                <i class="fas fa-arrow-left"></i>
+            </button>
+            <div id="global-breadcrumbs" style="display:none; margin-bottom: 0; flex-grow: 1;"></div>
+        </div>
 
         <!-- View Mode Toggle -->
         <div class="view-toggle-bar" id="view-toggle">
@@ -1837,6 +1847,47 @@
                 <div class="scrollable-table" style="max-height:75vh;" id="audit-trail-table"></div>
             </div>
         </div>
+
+        <!-- ========== SETTINGS ========== -->
+        {% if enable_integrations %}
+        <div class="page-section" id="page-settings">
+            <h4 class="mb-1"><i class="fas fa-cog text-info"></i> Settings & Administration</h4>
+            <ul class="nav nav-tabs mb-3" style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <li class="nav-item">
+                    <a class="nav-link active" href="#" onclick="navigateTo('settings')"
+                        style="background: transparent; color: #58a6ff; border: none; border-bottom: 2px solid #58a6ff;">General</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="#" onclick="navigateTo('integrations')"
+                        style="color: #c9d1d9; border: none;">Integrations</a>
+                </li>
+            </ul>
+            <div class="card-dark p-4 text-center">
+                <p class="text-muted">General settings panel. Ensure the Integrations route is navigated.</p>
+                <button class="btn btn-outline-info" onclick="navigateTo('integrations')">View Integrations</button>
+            </div>
+        </div>
+
+        <!-- ========== INTEGRATIONS ========== -->
+        <div class="page-section" id="page-integrations">
+            <h4 class="mb-1"><i class="fas fa-plug text-primary"></i> Data Integrations</h4>
+            <ul class="nav nav-tabs mb-3" style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <li class="nav-item">
+                    <a class="nav-link" href="#" onclick="navigateTo('settings')"
+                        style="color: #c9d1d9; border: none;">General</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link active" href="#" onclick="navigateTo('integrations')"
+                        style="background: transparent; color: #58a6ff; border: none; border-bottom: 2px solid #58a6ff;">Integrations</a>
+                </li>
+            </ul>
+            <p class="text-muted small mb-3">Connect external providers to automate forensics workflows</p>
+
+            <div class="row g-3" id="integrations-list">
+                <!-- Managed by JS loadIntegrations() -->
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Edit Transaction Modal -->
@@ -1977,12 +2028,76 @@
         window.FilterStore = new GlobalFilterStore(initialFilters);
         window.GlobalBreadcrumbs = new BreadcrumbStore();
 
+        // ===== NAVIGATION HISTORY STATE =====
+        window.NavigationHistory = [];
+        let isNavigatingBack = false;
+
+        function pushHistoryState(page, filters) {
+            if (isNavigatingBack) {
+                isNavigatingBack = false;
+                return;
+            }
+
+            // Only push if different from current top
+            const top = window.NavigationHistory[window.NavigationHistory.length - 1];
+            if (!top || top.page !== page || JSON.stringify(top.filters) !== JSON.stringify(filters)) {
+                window.NavigationHistory.push({ page, filters: JSON.parse(JSON.stringify(filters)) });
+            }
+            updateBackButton();
+        }
+
+        function popHistoryState() {
+            if (window.NavigationHistory.length > 1) {
+                window.NavigationHistory.pop(); // Remove current
+                const prevState = window.NavigationHistory[window.NavigationHistory.length - 1];
+                updateBackButton();
+                return prevState;
+            }
+            return null;
+        }
+
+        function updateBackButton() {
+            const btn = document.getElementById('global-back-btn');
+            if (btn) {
+                const top = window.NavigationHistory.length > 0 ? window.NavigationHistory[window.NavigationHistory.length - 1] : null;
+                const onDashboard = top && top.page === 'dashboard';
+
+                // Show if history > 1 OR we are deep-linked into a detail page
+                if (window.NavigationHistory.length > 1 || !onDashboard) {
+                    btn.classList.remove('d-none');
+                } else {
+                    btn.classList.add('d-none');
+                }
+            }
+        }
+
+        function goBack() {
+            if (window.NavigationHistory.length > 1) {
+                const prevState = popHistoryState();
+                if (prevState) {
+                    isNavigatingBack = true;
+                    window.FilterStore.replace(prevState.filters);
+                    navigateTo(prevState.page, true, false);
+                }
+            } else if (window.history.length > 1 && document.referrer.includes(window.location.host)) {
+                // Native browser back if it's within our app domain limits spanning tabs
+                window.history.back();
+            } else {
+                // Fallback safe route (Dashboard) for deep links
+                window.FilterStore.clear();
+                navigateTo('dashboard', true, true);
+            }
+        }
+
         // Subscribe to FilterStore to update URL and UI automatically
         window.FilterStore.subscribe((filters) => {
             const qs = serializeFilters(filters);
             const activePage = document.querySelector('.nav-link.active')?.dataset.page || 'dashboard';
             const newUrl = qs ? `/?${qs}` : '/';
             window.history.replaceState({ filters, page: activePage }, '', newUrl);
+
+            // Record standard filter changes to internal stack if not navigating back
+            pushHistoryState(activePage, filters);
 
             // Sync the UI top bar inputs
             if (typeof syncFilterUI === 'function') syncFilterUI(filters);
@@ -2160,7 +2275,7 @@
             });
         });
 
-        function navigateTo(page, triggerLoad = true) {
+        function navigateTo(page, triggerLoad = true, recordHistory = true) {
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             const link = document.querySelector(`.nav-link[data-page="${page}"]`);
             if (link) link.classList.add('active');
@@ -2170,10 +2285,15 @@
             if (section) section.classList.add('active');
 
             if (triggerLoad) {
-                loadPageData(page, window.FilterStore.getState());
+                const state = window.FilterStore.getState();
+                loadPageData(page, state);
+
+                if (recordHistory) {
+                    pushHistoryState(page, state);
+                }
 
                 // Also update the URL with the new page state (conceptually, tabs are just hash or state, we use replaceState)
-                window.history.replaceState({ filters: window.FilterStore.getState(), page }, '', window.location.search || '/');
+                window.history.replaceState({ filters: state, page }, '', window.location.search || '/');
             }
         }
 
@@ -2195,6 +2315,7 @@
             else if (page === 'documents') loadDocuments();
             else if (page === 'categories') loadCategoriesPage();
             else if (page === 'audit-trail') loadAuditTrail();
+            else if (page === 'integrations') loadIntegrations();
 
             // Close sidebar on mobile after navigation
             if (window.innerWidth <= 768) toggleSidebar(false);
@@ -3071,6 +3192,135 @@
             document.getElementById('cardholders-content').innerHTML = html;
         }
 
+        // ===== INTEGRATIONS (OAUTH) =====
+        async function loadIntegrations() {
+            const renderTiles = (connectedList, userRole = 'USER') => {
+                const envFlags = {
+                    google: "{{ 'true' if enable_google else 'false' }}" === "true",
+                    qb: "{{ 'true' if enable_qb else 'false' }}" === "true"
+                };
+
+                const providers = [];
+                if (envFlags.google) {
+                    providers.push({ id: 'google_drive', name: 'Google Drive', icon: 'fab fa-google-drive', color: '#1fa463', desc: 'Import statements directly from a Google account.' });
+                    providers.push({ id: 'google_calendar', name: 'Google Calendar', icon: 'far fa-calendar-alt', color: '#4285F4', desc: 'Correlate transaction dates with scheduled events.' });
+                    providers.push({ id: 'gmail', name: 'Gmail', icon: 'far fa-envelope', color: '#EA4335', desc: 'Scan inbox for digitized receipts and invoices.' });
+                }
+                if (envFlags.qb) {
+                    providers.push({ id: 'quickbooks', name: 'QuickBooks', icon: 'fas fa-file-invoice-dollar', color: '#2ca01c', desc: 'Sync chart of accounts and automatically categorize expenses.' });
+                }
+
+                let html = '';
+                providers.forEach(p => {
+                    const isConnected = connectedList.find(c => c.provider === p.id && c.status === 'Connected');
+                    const isWorkspace = (p.id === 'quickbooks');
+                    const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes(userRole);
+                    html += `
+                    <div class="col-md-6 mb-3">
+                        <div class="stat-card d-flex align-items-start gap-3">
+                            <div class="alert-icon" style="background: rgba(255,255,255,0.1); color: ${p.color}; font-size: 1.5rem; width: 48px; height: 48px;">
+                                <i class="${p.icon}"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-1">${p.name}</h6>
+                                <p class="text-muted small mb-2">${p.desc}</p>
+                                ${isConnected ?
+                            `<div class="d-flex justify-content-between align-items-center">
+                                <span class="badge bg-success"><i class="fas fa-check"></i> Connected</span>
+                                ${canManage ? `
+                                <div>
+                                    ${p.id === 'google_drive' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testGoogleIntegration()">Test Connection</button>` : ''}
+                                    ${p.id === 'quickbooks' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testQuickBooksIntegration()">Test Connection</button>` : ''}
+                                    <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="disconnectIntegration('${p.id}')">Disconnect</button>
+                                </div>
+                                ` : ''}
+                             </div>` :
+                            `<div class="d-flex justify-content-between align-items-center">
+                                <span class="badge bg-secondary">Not connected</span>
+                                ${canManage ?
+                                `<button class="btn btn-sm btn-outline-light py-0 px-2" onclick="connectIntegration('${p.id}')"><i class="fas fa-link me-1"></i>Connect</button>` :
+                                `<span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-lock me-1"></i>Admin setup required</span>`
+                            }
+                             </div>`
+                        }
+                            </div>
+                        </div>
+                    </div>`;
+                });
+
+                document.getElementById('integrations-list').innerHTML = html;
+            };
+
+            try {
+                const res = await api('/api/integrations/status');
+                const connected = res.integrations || [];
+                renderTiles(connected, res.role || 'USER');
+            } catch (err) {
+                console.warn("Integrations endpoint missing or disabled, gracefully falling back to Not connected", err);
+                renderTiles([]);
+            }
+        }
+
+        async function connectIntegration(provider) {
+            try {
+                toast(`Starting ${provider} connection...`, 'info');
+                // Use the dedicated google endpoint if applicable, otherwise fallback
+                let endpoint = `/api/integrations/${provider}/connect`;
+                if (['google_drive', 'google_calendar', 'gmail'].includes(provider)) {
+                    endpoint = '/api/integrations/google/connect';
+                }
+                const res = await api(endpoint, 'POST');
+                if (res && res.authorization_url) {
+                    window.location.href = res.authorization_url;
+                }
+            } catch (err) {
+                toast(`Integration ${provider} is not configured on this environment.`, 'danger');
+            }
+        }
+
+        async function testGoogleIntegration() {
+            try {
+                toast(`Testing Google connection...`, 'info');
+                const res = await api('/api/integrations/google/test', 'POST');
+                if (res && res.test_results) {
+                    let msg = "";
+                    for (const [service, result] of Object.entries(res.test_results)) {
+                        msg += `${service}: ${result.message}\n`;
+                    }
+                    toast(`Test Results:\n${msg}`, 'success');
+                }
+            } catch (err) {
+                toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function testQuickBooksIntegration() {
+            try {
+                toast(`Testing QuickBooks connection...`, 'info');
+                const res = await api('/api/integrations/quickbooks/test', 'POST');
+                if (res && res.test_results) {
+                    let msg = "";
+                    for (const [service, result] of Object.entries(res.test_results)) {
+                        msg += `${service}: ${result.message}\n`;
+                    }
+                    toast(`Test Results:\n${msg}`, 'success');
+                }
+            } catch (err) {
+                toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function disconnectIntegration(provider) {
+            if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
+            try {
+                await api(`/api/integrations/${provider}/disconnect`, 'POST');
+                toast(`Disconnected ${provider} successfully`, 'success');
+                loadIntegrations();
+            } catch (err) {
+                toast(`Failed to disconnect ${provider}`, 'danger');
+            }
+        }
+
         // ===== AUDIT TRAIL =====
         async function loadAuditTrail() {
             const trail = await api('/api/audit-trail');
@@ -3900,6 +4150,15 @@
             html += '</tbody></table></div></div>';
             document.getElementById('accounts-content').insertAdjacentHTML('beforeend', html);
         }
+
+        // ===== ON POP STATE (Browser Back/Forward) =====
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.page) {
+                isNavigatingBack = true;
+                window.FilterStore.replace(e.state.filters || {});
+                navigateTo(e.state.page, true, false);
+            }
+        });
 
         // ===== INIT =====
         (async () => {
