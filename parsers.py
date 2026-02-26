@@ -28,9 +28,11 @@ def parse_pdf_text(filepath):
     # If pdfplumber got very little text, try OCR
     total_chars = sum(len(p) for p in pages)
     if total_chars < 100:
-        ocr_pages = _ocr_pdf(filepath)
+        ocr_pages, ocr_error = _ocr_pdf(filepath)
         if ocr_pages:
             return ocr_pages
+        elif ocr_error:
+            raise Exception(f"This PDF appears to be a scanned image, but OCR failed: {ocr_error}")
 
     return pages
 
@@ -43,16 +45,22 @@ def _ocr_pdf(filepath):
 
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
+        if not os.path.exists(POPPLER_PATH):
+            return [], "Poppler binary not found at " + POPPLER_PATH
+        if not os.path.exists(TESSERACT_CMD):
+            return [], "Tesseract binary not found at " + TESSERACT_CMD
+
         images = convert_from_path(filepath, dpi=300, poppler_path=POPPLER_PATH)
         pages = []
         for img in images:
             text = pytesseract.image_to_string(img)
             if text and text.strip():
                 pages.append(text)
-        return pages
+        return pages, None
+    except ImportError:
+        return [], "Python packages 'pytesseract' or 'pdf2image' are not installed."
     except Exception as e:
-        print(f"OCR failed for {filepath}: {e}")
-        return []
+        return [], str(e)
 
 
 def compute_transaction_hash(trans_date, description, amount):
@@ -522,8 +530,8 @@ def parse_venmo_pdf(filepath):
 # --- Excel Parser (generic) ---
 
 def parse_excel_transactions(filepath):
-    """Parse transactions from Excel files. Auto-detects column structure."""
-    df = pd.read_excel(filepath)
+    """Parse transactions from Excel files. Auto-detects column structure across all sheets."""
+    all_dfs = pd.read_excel(filepath, sheet_name=None)
     transactions = []
     account_info = {
         'institution': 'Unknown',
@@ -531,73 +539,80 @@ def parse_excel_transactions(filepath):
         'account_number': '',
     }
 
-    # Auto-detect column mappings
-    col_map = {}
-    for col in df.columns:
-        col_lower = str(col).lower()
-        if 'date' in col_lower and 'post' not in col_lower:
-            col_map['trans_date'] = col
-        elif 'post' in col_lower and 'date' in col_lower:
-            col_map['post_date'] = col
-        elif 'desc' in col_lower or 'memo' in col_lower or 'narrative' in col_lower:
-            col_map['description'] = col
-        elif 'amount' in col_lower or 'total' in col_lower:
-            col_map['amount'] = col
-        elif 'debit' in col_lower:
-            col_map['debit'] = col
-        elif 'credit' in col_lower:
-            col_map['credit'] = col
-        elif 'category' in col_lower or 'type' in col_lower:
-            col_map['category'] = col
-        elif 'card' in col_lower or 'holder' in col_lower or 'name' in col_lower:
-            col_map['cardholder'] = col
-        elif 'check' in col_lower and 'num' in col_lower:
-            col_map['check_number'] = col
-
-    for _, row in df.iterrows():
-        try:
-            # Get amount
-            if 'amount' in col_map:
-                amount_val = row[col_map['amount']]
-                if pd.isna(amount_val):
-                    continue
-                amount_str = str(amount_val).replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
-                amount = float(amount_str)
-            elif 'debit' in col_map or 'credit' in col_map:
-                debit = 0
-                credit = 0
-                if 'debit' in col_map and pd.notna(row[col_map['debit']]):
-                    debit = float(str(row[col_map['debit']]).replace('$', '').replace(',', ''))
-                if 'credit' in col_map and pd.notna(row[col_map['credit']]):
-                    credit = float(str(row[col_map['credit']]).replace('$', '').replace(',', ''))
-                amount = credit - debit if credit else -debit
-            else:
-                continue
-
-            # Get description
-            desc = str(row.get(col_map.get('description', ''), 'Unknown'))
-            if desc == 'nan':
-                desc = 'Unknown'
-
-            # Get date
-            date_val = row.get(col_map.get('trans_date', ''), '')
-            if pd.notna(date_val):
-                date_str = str(date_val)
-            else:
-                date_str = ''
-
-            transactions.append({
-                'trans_date': date_str,
-                'post_date': str(row.get(col_map.get('post_date', ''), '')) if 'post_date' in col_map else date_str,
-                'description': desc,
-                'amount': amount,
-                'trans_type': 'credit' if amount > 0 else 'debit',
-                'cardholder_name': str(row.get(col_map.get('cardholder', ''), '')) if 'cardholder' in col_map else '',
-                'card_last_four': '',
-                'payment_method': '',
-            })
-        except (ValueError, TypeError):
+    for sheet_name, df in all_dfs.items():
+        if df.empty:
             continue
+
+        # Clean column names to prevent KeyErrors from trailing whitespace
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # Auto-detect column mappings
+        col_map = {}
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'date' in col_lower and 'post' not in col_lower:
+                col_map['trans_date'] = col
+            elif 'post' in col_lower and 'date' in col_lower:
+                col_map['post_date'] = col
+            elif 'desc' in col_lower or 'memo' in col_lower or 'narrative' in col_lower:
+                col_map['description'] = col
+            elif 'amount' in col_lower or 'total' in col_lower:
+                col_map['amount'] = col
+            elif 'debit' in col_lower:
+                col_map['debit'] = col
+            elif 'credit' in col_lower:
+                col_map['credit'] = col
+            elif 'category' in col_lower or 'type' in col_lower:
+                col_map['category'] = col
+            elif 'card' in col_lower or 'holder' in col_lower or 'name' in col_lower:
+                col_map['cardholder'] = col
+            elif 'check' in col_lower and 'num' in col_lower:
+                col_map['check_number'] = col
+
+        for _, row in df.iterrows():
+            try:
+                # Get amount
+                if 'amount' in col_map:
+                    amount_val = row[col_map['amount']]
+                    if pd.isna(amount_val):
+                        continue
+                    amount_str = str(amount_val).replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
+                    amount = float(amount_str)
+                elif 'debit' in col_map or 'credit' in col_map:
+                    debit = 0
+                    credit = 0
+                    if 'debit' in col_map and pd.notna(row[col_map['debit']]):
+                        debit = float(str(row[col_map['debit']]).replace('$', '').replace(',', ''))
+                    if 'credit' in col_map and pd.notna(row[col_map['credit']]):
+                        credit = float(str(row[col_map['credit']]).replace('$', '').replace(',', ''))
+                    amount = credit - debit if credit else -debit
+                else:
+                    continue
+
+                # Get description
+                desc = str(row.get(col_map.get('description', ''), 'Unknown'))
+                if desc == 'nan':
+                    desc = 'Unknown'
+
+                # Get date
+                date_val = row.get(col_map.get('trans_date', ''), '')
+                if pd.notna(date_val):
+                    date_str = str(date_val)
+                else:
+                    date_str = ''
+
+                transactions.append({
+                    'trans_date': date_str,
+                    'post_date': str(row.get(col_map.get('post_date', ''), '')) if 'post_date' in col_map else date_str,
+                    'description': desc,
+                    'amount': amount,
+                    'trans_type': 'credit' if amount > 0 else 'debit',
+                    'cardholder_name': str(row.get(col_map.get('cardholder', ''), '')) if 'cardholder' in col_map else '',
+                    'card_last_four': '',
+                    'payment_method': '',
+                })
+            except (ValueError, TypeError):
+                continue
 
     return transactions, account_info
 
@@ -797,8 +812,11 @@ def _parse_generic_csv(df):
     transactions = []
     col_map = {}
 
+    # Clean column names to prevent KeyErrors from trailing whitespace
+    df.columns = [str(c).strip() for c in df.columns]
+
     for col in df.columns:
-        cl = str(col).lower()
+        cl = col.lower()
         if 'date' in cl and 'date' not in col_map:
             col_map['date'] = col
         elif 'desc' in cl or 'memo' in cl or 'payee' in cl or 'narrative' in cl:

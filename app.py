@@ -31,7 +31,8 @@ from database import (
     add_document_categorization, get_document_categorization, get_taxonomy_config,
     add_taxonomy_config, delete_taxonomy_config,
     get_saved_filters, add_saved_filter, delete_saved_filter,
-    get_integration, get_integrations, upsert_integration, delete_integration
+    get_integration, get_integrations, upsert_integration, delete_integration,
+    find_duplicate_transactions
 )
 from shared.encryption import encrypt_token, decrypt_token
 from query_builder import QueryBuilder
@@ -168,7 +169,7 @@ def smoke_test():
     status_code = 200 if results["status"] == "pass" else 503
     return jsonify(results), status_code
 
-ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc'}
+ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc', 'zip'}
 
 # In-memory storage for upload previews (preview_id -> parsed data)
 upload_previews = {}
@@ -1291,15 +1292,47 @@ def api_upload():
 
     # Parse the document
     try:
-        transactions, account_info = parse_document(filepath, doc_type)
+        if ext.lower() == '.zip':
+            import zipfile
+            transactions = []
+            account_info = {}
+            extracted_dir = filepath + "_extracted"
+            os.makedirs(extracted_dir, exist_ok=True)
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                zip_ref.extractall(extracted_dir)
+                
+            for root, _, inner_files in os.walk(extracted_dir):
+                for f in inner_files:
+                    if allowed_file(f) and not f.lower().endswith('.zip'):
+                        f_path = os.path.join(root, f)
+                        try:
+                            t, ai = parse_document(f_path, doc_type)
+                            if t:
+                                transactions.extend(t)
+                            if not account_info and ai:
+                                account_info = ai
+                        except Exception as inner_e:
+                            app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
+                            
+            if not account_info:
+                account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
+        else:
+            transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
         return jsonify({'error': f'Failed to parse document: {str(e)}'}), 500
 
     # Handle proof/word documents (no transactions)
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
         doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', None, None, None)
+        
+        # Persist extracted text and tables for AI categorization
+        if account_info.get('content'):
+            ext_id = add_document_extraction(current_user.id, doc_id, status='completed')
+            update_document_extraction(current_user.id, ext_id, extraction_data=account_info['content'])
+            
         return jsonify({
             'status': 'ok',
+            'mode': 'proof',
             'document_id': doc_id,
             'message': f'Proof document uploaded: {filename}',
             'transactions_added': 0,
@@ -1535,14 +1568,47 @@ def api_upload_preview():
 
     # Parse the document
     try:
-        transactions, account_info = parse_document(filepath, doc_type)
+        if ext.lower() == '.zip':
+            import zipfile
+            transactions = []
+            account_info = {}
+            extracted_dir = filepath + "_extracted"
+            os.makedirs(extracted_dir, exist_ok=True)
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                zip_ref.extractall(extracted_dir)
+                
+            for root, _, inner_files in os.walk(extracted_dir):
+                for f in inner_files:
+                    if allowed_file(f) and not f.lower().endswith('.zip'):
+                        f_path = os.path.join(root, f)
+                        try:
+                            t, ai = parse_document(f_path, doc_type)
+                            if t:
+                                for trans in t:
+                                    trans['_source_file'] = f
+                                transactions.extend(t)
+                            if not account_info and ai:
+                                account_info = ai
+                        except Exception as inner_e:
+                            app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
+                            
+            if not account_info:
+                account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
+        else:
+            transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
         os.remove(filepath)
         return jsonify({'error': f'Failed to parse document: {str(e)}'}), 500
 
     # For proof/word docs, skip preview and commit directly
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(filename, filepath, ext.replace('.', ''), 'proof')
+        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof')
+        
+        # Persist extracted text and tables for AI categorization
+        if account_info.get('content'):
+            ext_id = add_document_extraction(current_user.id, doc_id, status='completed')
+            update_document_extraction(current_user.id, ext_id, extraction_data=account_info['content'])
+            
         return jsonify({
             'status': 'ok',
             'mode': 'proof',
@@ -1568,7 +1634,7 @@ def api_upload_preview():
         trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
 
     # Check for duplicates
-    duplicates = find_duplicate_transactions(transactions)
+    duplicates = find_duplicate_transactions(current_user.id, transactions)
     for dup in duplicates:
         transactions[dup['index']]['_is_duplicate'] = True
         transactions[dup['index']]['_duplicate_of'] = dup['existing']['id']
