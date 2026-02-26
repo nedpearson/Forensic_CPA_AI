@@ -140,7 +140,9 @@
                 });
 
                 if (response.ok) {
-                    window.location.href = '/';
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const next = urlParams.get('next');
+                    window.location.href = next || '/';
                 } else {
                     const data = await response.json().catch(() => ({}));
                     const errorAlert = document.getElementById('error-alert');
@@ -196,7 +198,9 @@
                 });
 
                 if (response.ok) {
-                    window.location.href = '/';
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const next = urlParams.get('next');
+                    window.location.href = next || '/';
                 } else {
                     const data = await response.json();
                     errorAlert.style.display = 'block';
