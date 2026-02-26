@@ -20,6 +20,11 @@ set FLASK_ENV=development
 echo Launching browser...
 start "" "http://127.0.0.1:5000"
 
+:: Initialize database and synchronize super admin credentials
+echo Initializing database...
+set SUPER_ADMIN_BOOTSTRAP=true
+python -c "from database import init_db; init_db()"
+
 :: Start the backend server
 echo Starting Flask server...
 python -m flask run

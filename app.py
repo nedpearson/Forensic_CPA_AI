@@ -392,7 +392,7 @@ def api_me():
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required
 def api_logout():
-    user_id = getattr(g.user, 'id', 'unknown')
+    user_id = getattr(current_user, 'id', 'unknown')
     logout_user()
     logger.info(f"Auth Event: Logout successful for user {user_id}")
     return jsonify({"status": "success"})
