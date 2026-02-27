@@ -134,9 +134,9 @@ def _normalize_bank_date(date_str, year='2026'):
     return date_str
 
 
-def parse_bank_statement(filepath):
+def parse_bank_statement(filepath, pre_extracted_pages=None):
     """Parse PDF statements using Generative AI with strict JSON schema."""
-    pages = parse_pdf_text(filepath)
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
     transactions = []
@@ -204,6 +204,8 @@ def parse_bank_statement(filepath):
             })
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"LLM Parsing failed: {e}")
         # Could fallback to regex here if heavily needed...
 
@@ -359,9 +361,9 @@ def parse_bank_statement(filepath):
 
 # --- Capital One Credit Card Statement Parser ---
 
-def parse_capital_one_statement(filepath):
+def parse_capital_one_statement(filepath, pre_extracted_pages=None):
     """Parse Capital One Spark Cash Plus credit card PDF statements."""
-    pages = parse_pdf_text(filepath)
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
     transactions = []
@@ -497,14 +499,14 @@ def parse_capital_one_statement(filepath):
 
 # --- Venmo Statement Parser ---
 
-def parse_venmo_statement(filepath):
+def parse_venmo_statement(filepath, pre_extracted_pages=None):
     """Parse Venmo CSV or PDF exports."""
     ext = os.path.splitext(filepath)[1].lower()
 
     if ext == '.csv':
         return parse_venmo_csv(filepath)
     elif ext == '.pdf':
-        return parse_venmo_pdf(filepath)
+        return parse_venmo_pdf(filepath, pre_extracted_pages=pre_extracted_pages)
     elif ext in ('.xlsx', '.xls'):
         return parse_venmo_excel(filepath)
     return [], {}
@@ -590,9 +592,9 @@ def parse_venmo_excel(filepath):
     return transactions, {'institution': 'Venmo', 'account_type': 'venmo', 'account_number': 'venmo'}
 
 
-def parse_venmo_pdf(filepath):
+def parse_venmo_pdf(filepath, pre_extracted_pages=None):
     """Parse Venmo PDF statement."""
-    pages = parse_pdf_text(filepath)
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     transactions = []
 
     for page_text in pages:
@@ -974,6 +976,8 @@ def parse_document(filepath, doc_type='auto'):
     ext = os.path.splitext(filepath)[1].lower()
     filename = os.path.basename(filepath)
 
+    pages = None
+
     if doc_type == 'auto':
         # Auto-detect based on filename and content
         if ext == '.csv':
@@ -993,11 +997,10 @@ def parse_document(filepath, doc_type='auto'):
             try:
                 pages = parse_pdf_text(filepath)
                 full_text = "\n".join(pages).upper()
-                if 'CAPITAL ONE' in full_text or 'SPARK CASH' in full_text:
+                header_text = full_text[:1000]
+                if 'SPARK CASH' in header_text or 'SPARK BUSINESS' in header_text:
                     doc_type = 'credit_card'
-                elif 'VENMO' in full_text and 'STATEMENT' in full_text:
-                    doc_type = 'venmo'
-                elif 'BANK OF ST' in full_text or 'COMMERCIAL CHECKING' in full_text:
+                elif 'BANK OF ST' in header_text or 'COMMERCIAL CHECKING' in header_text:
                     doc_type = 'bank_statement'
                 else:
                     doc_type = 'bank_statement'  # default for PDFs
@@ -1005,11 +1008,11 @@ def parse_document(filepath, doc_type='auto'):
                 doc_type = 'bank_statement'
 
     if doc_type == 'bank_statement':
-        return parse_bank_statement(filepath)
+        return parse_bank_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'credit_card':
-        return parse_capital_one_statement(filepath)
+        return parse_capital_one_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'venmo':
-        return parse_venmo_statement(filepath)
+        return parse_venmo_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'csv':
         return parse_csv_transactions(filepath)
     elif doc_type == 'excel':

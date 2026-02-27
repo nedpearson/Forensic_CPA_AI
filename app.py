@@ -32,7 +32,7 @@ from database import (
     add_taxonomy_config, delete_taxonomy_config,
     get_saved_filters, add_saved_filter, delete_saved_filter,
     get_integration, get_integrations, upsert_integration, delete_integration,
-    find_duplicate_transactions
+    find_duplicate_transactions, delete_category, delete_category_rule
 )
 from shared.encryption import encrypt_token, decrypt_token
 from query_builder import QueryBuilder
@@ -1573,6 +1573,20 @@ def api_add_rule():
     return jsonify({'status': 'ok'})
 
 
+@app.route('/api/categories/<int:category_id>', methods=['DELETE'])
+@login_required
+def api_delete_category(category_id):
+    delete_category(current_user.id, category_id)
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/categories/rules/<int:rule_id>', methods=['DELETE'])
+@login_required
+def api_delete_category_rule(rule_id):
+    delete_category_rule(current_user.id, rule_id)
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/api/recategorize', methods=['POST'])
 @login_required
 def api_recategorize():
@@ -1710,6 +1724,7 @@ def api_upload_preview():
                 zip_ref.extractall(extracted_dir)
                 
             zip_errors = []
+            skipped_duplicate_files = 0
             for root, _, inner_files in os.walk(extracted_dir):
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
@@ -1720,6 +1735,7 @@ def api_upload_preview():
                         dup_id = get_duplicate_document(current_user.id, child_hash)
                         if dup_id:
                             app.logger.info(f"Skipping duplicate zip child: {f}")
+                            skipped_duplicate_files += 1
                             continue
 
                         zip_children_info[child_hash] = f
@@ -1809,6 +1825,7 @@ def api_upload_preview():
         'account_info': account_info,
         'transaction_count': len(transactions),
         'duplicate_count': len(duplicates),
+        'skipped_duplicate_files': skipped_duplicate_files if 'skipped_duplicate_files' in locals() else 0,
     })
 
 
