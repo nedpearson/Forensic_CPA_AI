@@ -1815,6 +1815,14 @@ def api_upload_commit():
     file_hash = preview.get('file_hash')
     zip_children_info = preview.get('zip_children_info', {})
 
+    # Restore internal properties that the frontend might drop, like _source_hash
+    if data.get('transactions'):
+        # match by index assuming order is preserved
+        original_txns = preview['transactions']
+        for i, t in enumerate(transactions):
+            if i < len(original_txns) and '_source_hash' in original_txns[i]:
+                t['_source_hash'] = original_txns[i]['_source_hash']
+
     # Create/get account
     account_id = None
     if account_info.get('account_number'):
