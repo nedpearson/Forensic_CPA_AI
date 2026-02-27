@@ -115,7 +115,16 @@ def init_db():
             user_id INTEGER REFERENCES users(id),
             name TEXT NOT NULL,
             parent_category TEXT,
-            category_type TEXT,  -- 'personal', 'business', 'transfer', 'deposit', 'fee', 'other'
+            parent_category_id INTEGER REFERENCES categories(id),
+            category_type TEXT,
+            scope TEXT,
+            tax_deductible_default INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
+            keywords TEXT,
+            rules TEXT,
+            requires_receipt INTEGER DEFAULT 0,
+            reimbursable_default INTEGER DEFAULT 0,
             color TEXT DEFAULT '#6c757d',
             icon TEXT
         );
@@ -297,6 +306,22 @@ def init_db():
         cursor.execute("ALTER TABLE documents ADD COLUMN failure_reason TEXT")
     except sqlite3.OperationalError:
         pass
+    
+    # Categories dynamic migrations
+    for col, ctype in [
+        ('parent_category_id', 'INTEGER REFERENCES categories(id)'),
+        ('scope', 'TEXT'),
+        ('tax_deductible_default', 'INTEGER DEFAULT 0'),
+        ('is_active', 'INTEGER DEFAULT 1'),
+        ('sort_order', 'INTEGER DEFAULT 0'),
+        ('keywords', 'TEXT'),
+        ('rules', 'TEXT'),
+        ('requires_receipt', 'INTEGER DEFAULT 0'),
+        ('reimbursable_default', 'INTEGER DEFAULT 0')
+    ]:
+        try: cursor.execute(f"ALTER TABLE categories ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError: pass
+        
     try:
         cursor.execute("ALTER TABLE documents ADD COLUMN content_sha256 TEXT")
     except sqlite3.OperationalError:
@@ -368,43 +393,7 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
 
     # Insert default categories only for root_id to bootstrap
-    default_categories = [
-        ('Deposits', None, 'deposit', '#28a745', 'arrow-down'),
-        ('Transfers Out', None, 'transfer', '#dc3545', 'arrow-right'),
-        ('Transfers In', None, 'transfer', '#17a2b8', 'arrow-left'),
-        ('Personal - Dining', 'Personal', 'personal', '#fd7e14', 'utensils'),
-        ('Personal - Entertainment', 'Personal', 'personal', '#e83e8c', 'film'),
-        ('Personal - Shopping', 'Personal', 'personal', '#6f42c1', 'shopping-cart'),
-        ('Personal - Groceries', 'Personal', 'personal', '#20c997', 'shopping-basket'),
-        ('Personal - Utilities', 'Personal', 'personal', '#6c757d', 'bolt'),
-        ('Personal - Other', 'Personal', 'personal', '#fd7e14', 'tag'),
-        ('Business - Supplies', 'Business', 'business', '#007bff', 'box'),
-        ('Business - Services', 'Business', 'business', '#0056b3', 'briefcase'),
-        ('Business - Inventory', 'Business', 'business', '#004085', 'warehouse'),
-        ('Business - Equipment', 'Business', 'business', '#003366', 'tools'),
-        ('Business - Payroll', 'Business', 'business', '#17a2b8', 'users'),
-        ('Business - Other', 'Business', 'business', '#007bff', 'tag'),
-        ('Venmo - Payment', None, 'transfer', '#3d95ce', 'mobile'),
-        ('Venmo - Cashout', None, 'transfer', '#3d95ce', 'dollar-sign'),
-        ('Fees - NSF/Overdraft', 'Fees', 'fee', '#dc3545', 'exclamation-triangle'),
-        ('Fees - Late Payment', 'Fees', 'fee', '#dc3545', 'clock'),
-        ('Fees - Service Charge', 'Fees', 'fee', '#ffc107', 'file-invoice'),
-        ('Check Payment', None, 'other', '#795548', 'money-check'),
-        ('Capital One Payment', None, 'transfer', '#dc3545', 'credit-card'),
-        ('Wire Transfer', None, 'transfer', '#dc3545', 'exchange-alt'),
-        ('Cash Advance', None, 'other', '#dc3545', 'hand-holding-usd'),
-        ('Uncategorized', None, 'other', '#6c757d', 'question'),
-    ]
-
-    for cat in default_categories:
-        cursor.execute(
-            "SELECT id FROM categories WHERE name = ? AND user_id = ?", (cat[0], root_id)
-        )
-        if not cursor.fetchone():
-            cursor.execute(
-                "INSERT INTO categories (user_id, name, parent_category, category_type, color, icon) VALUES (?, ?, ?, ?, ?, ?)",
-                (root_id,) + cat
-            )
+    seed_taxonomy(root_id, cursor)
 
     # Insert default categorization rules
     default_rules = [
@@ -1589,3 +1578,58 @@ def delete_integration(user_id, provider):
     cursor.execute("DELETE FROM integrations WHERE user_id = ? AND provider = ?", (user_id, provider))
     conn.commit()
     conn.close()
+
+def seed_taxonomy(user_id, passed_cursor=None):
+    if passed_cursor:
+        cursor = passed_cursor
+        conn = None
+    else:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+    cursor.execute("SELECT id FROM categories WHERE user_id = ? LIMIT 1", (user_id,))
+    if cursor.fetchone():
+        if conn: conn.close()
+        return
+        
+    import os, json
+    tax_path = os.path.join(os.path.dirname(__file__), 'shared', 'default_taxonomy.json')
+    if not os.path.exists(tax_path):
+        if conn: conn.close()
+        return
+        
+    with open(tax_path, 'r') as f:
+        data = json.load(f)
+        
+    for top_idx, top_group in enumerate(data):
+        group_name = top_group['name']
+        scope = top_group.get('scope', 'system')
+        sort_order = top_group.get('sort_order', top_idx)
+        is_active = top_group.get('is_active', 1)
+        
+        cursor.execute("""
+            INSERT INTO categories (user_id, name, scope, is_active, sort_order) 
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, group_name, scope, is_active, sort_order))
+        group_id = cursor.lastrowid
+        
+        for cat in top_group.get('categories', []):
+            cat_name = cat['name']
+            tax_default = cat.get('tax_deductible_default', 0)
+            reimb_default = cat.get('reimbursable_default', 0)
+            
+            cursor.execute("""
+                INSERT INTO categories (user_id, name, parent_category_id, scope, tax_deductible_default, reimbursable_default, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, cat_name, group_id, scope, tax_default, reimb_default, 1))
+            cat_id = cursor.lastrowid
+            
+            for sub in cat.get('subcategories', []):
+                cursor.execute("""
+                    INSERT INTO categories (user_id, name, parent_category_id, scope, tax_deductible_default, reimbursable_default, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, sub, cat_id, scope, tax_default, reimb_default, 1))
+                
+    if conn:
+        conn.commit()
+        conn.close()

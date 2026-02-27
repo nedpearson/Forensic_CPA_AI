@@ -25,6 +25,7 @@ def seed_demo_environment():
         return
         
     print(f"Isolated demo tenant initialized (User ID: {user_id})")
+    database.seed_taxonomy(user_id)
     
     # 2. Add sample accounts
     accounts = scenario.get("accounts", [])
