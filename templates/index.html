@@ -1164,6 +1164,8 @@
         <div class="brand">
             <h5><i class="fas fa-search-dollar"></i> Forensic CPA AI</h5>
             <small>Your Financial Private Investigator</small>
+            <!-- User info injected via JS to bypass caching -->
+            <div id="sidebar-user-info"></div>
         </div>
         <!-- Global Search -->
         <div class="p-2">
@@ -1218,13 +1220,14 @@
     <div class="main-content">
 
         <!-- Global Navigation & Breadcrumbs -->
-        <div class="d-flex align-items-center mb-3">
+        <div class="d-flex align-items-center mb-3 w-100">
             <button id="global-back-btn" class="btn btn-sm btn-outline-info d-none me-3" onclick="goBack()"
                 title="Go Back backwards"
                 style="border-radius: 50%; width: 32px; height: 32px; padding: 0; align-items: center; justify-content: center;">
                 <i class="fas fa-arrow-left"></i>
             </button>
             <div id="global-breadcrumbs" style="display:none; margin-bottom: 0; flex-grow: 1;"></div>
+            <div id="top-user-profile" class="ms-auto" style="display:none;"></div>
         </div>
 
         <!-- View Mode Toggle -->
@@ -4263,6 +4266,41 @@
         });
 
         // ===== AUTH =====
+        async function fetchUserProfile() {
+            try {
+                const res = await fetch('/api/auth/me');
+                if (res.ok) {
+                    const user = await res.json();
+
+                    // Sidebar
+                    const sidebarInfo = document.getElementById('sidebar-user-info');
+                    if (sidebarInfo) {
+                        sidebarInfo.innerHTML = `
+                            <div class="mt-2 text-muted" style="font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.classList.replace('text-muted', 'text-light')" onmouseout="this.classList.replace('text-light', 'text-muted')" onclick="logout()" title="Click to sign out">
+                                <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${user.email}</span>
+                                <i class="fas fa-sign-out-alt ms-1"></i>
+                            </div>
+                        `;
+                    }
+
+                    // Top Bar
+                    const topProfile = document.getElementById('top-user-profile');
+                    if (topProfile) {
+                        topProfile.style.display = 'flex';
+                        topProfile.innerHTML = `
+                            <div class="text-muted d-flex align-items-center" style="font-size: 0.85rem; cursor: pointer; transition: color 0.2s;" onmouseover="this.classList.replace('text-muted', 'text-light')" onmouseout="this.classList.replace('text-light', 'text-muted')" onclick="logout()" title="Click to sign out">
+                                <i class="fas fa-user-circle me-2 fs-5"></i>
+                                <span>${user.email}</span>
+                                <i class="fas fa-sign-out-alt ms-2"></i>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to fetch user', e);
+            }
+        }
+
         async function logout() {
             try {
                 // 1. Clear local auth state entirely
@@ -4282,6 +4320,7 @@
 
         // ===== INIT =====
         (async () => {
+            fetchUserProfile();
             allCategories = await api('/api/categories');
             loadDashboard();
             updateAlertBadge();
