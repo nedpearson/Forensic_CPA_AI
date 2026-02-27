@@ -1561,7 +1561,11 @@
             <div class="row g-4">
                 <div class="col-md-4">
                     <div class="card-dark">
-                        <div class="card-header">Categories</div>
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>Categories</span>
+                            <button class="btn btn-sm btn-outline-warning" onclick="restoreCategoriesDefaults()"><i
+                                    class="fas fa-undo"></i> Restore Defaults</button>
+                        </div>
                         <div class="scrollable-table" id="categories-list"></div>
                     </div>
                 </div>
@@ -3091,6 +3095,22 @@
                 }
             } catch (e) {
                 toast('Error deleting rule', 'danger');
+            }
+        }
+
+        async function restoreCategoriesDefaults() {
+            if (!confirm('WARNING: This will permanently delete all your existing categories and rules, and replace them with the 25 standard defaults. Are you sure you want to proceed?')) return;
+            try {
+                toast("Restoring default categories...", "info");
+                const res = await api('/api/categories/restore-defaults', 'POST');
+                if (res.error) toast(res.error, "danger");
+                else {
+                    toast('Default categories and rules restored successfully.', 'success');
+                    allCategories = []; // Force reload
+                    loadCategoriesPage();
+                }
+            } catch (e) {
+                toast('Error restoring categories', 'danger');
             }
         }
 

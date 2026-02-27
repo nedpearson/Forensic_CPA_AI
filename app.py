@@ -32,7 +32,8 @@ from database import (
     add_taxonomy_config, delete_taxonomy_config,
     get_saved_filters, add_saved_filter, delete_saved_filter,
     get_integration, get_integrations, upsert_integration, delete_integration,
-    find_duplicate_transactions, delete_category, delete_category_rule
+    find_duplicate_transactions, delete_category, delete_category_rule,
+    reset_user_taxonomy
 )
 from shared.encryption import encrypt_token, decrypt_token
 from query_builder import QueryBuilder
@@ -1586,6 +1587,11 @@ def api_delete_category_rule(rule_id):
     delete_category_rule(current_user.id, rule_id)
     return jsonify({'status': 'ok'})
 
+@app.route('/api/categories/restore-defaults', methods=['POST'])
+@login_required
+def api_restore_categories_defaults():
+    reset_user_taxonomy(current_user.id)
+    return jsonify({'status': 'ok'})
 
 @app.route('/api/recategorize', methods=['POST'])
 @login_required

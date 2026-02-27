@@ -1639,3 +1639,15 @@ def delete_category_rule(user_id, rule_id):
     cursor.execute("DELETE FROM category_rules WHERE id = ? AND user_id = ?", (rule_id, user_id))
     conn.commit()
     conn.close()
+
+def reset_user_taxonomy(user_id):
+    """Wipes the user's categories and rules, then reseeds the standard 25 names."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM categories WHERE user_id = ?", (user_id,))
+    cursor.execute("DELETE FROM category_rules WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    # Now call seed_taxonomy logic to inject the default setup
+    seed_taxonomy(user_id)
