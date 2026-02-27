@@ -1359,6 +1359,8 @@ def api_upload():
             for root, _, inner_files in os.walk(extracted_dir):
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
+                        if f.startswith('._') or '__MACOSX' in root:
+                            continue
                         f_path = os.path.join(root, f)
                         child_hash = compute_file_hash(f_path)
                         dup_id = get_duplicate_document(current_user.id, child_hash)
@@ -1385,7 +1387,11 @@ def api_upload():
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
-        return jsonify({'error': f'Failed to parse document: {str(e)}'}), 500
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        return jsonify({'error': f'Failed to parse document: {str(e)}'}), 400
 
     # Handle proof/word documents (no transactions)
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
@@ -1704,9 +1710,12 @@ def api_upload_preview():
             with zipfile.ZipFile(filepath, 'r') as zip_ref:
                 zip_ref.extractall(extracted_dir)
                 
+            zip_errors = []
             for root, _, inner_files in os.walk(extracted_dir):
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
+                        if f.startswith('._') or '__MACOSX' in root:
+                            continue
                         f_path = os.path.join(root, f)
                         child_hash = compute_file_hash(f_path)
                         dup_id = get_duplicate_document(current_user.id, child_hash)
@@ -1724,15 +1733,21 @@ def api_upload_preview():
                                 account_info = ai
                             zip_children_info[child_hash] = f
                         except Exception as inner_e:
+                            zip_errors.append(f"{f}: {inner_e}")
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
+            if zip_errors and not transactions:
+                raise Exception(f"Failed to parse zip files:\n" + "\n".join(zip_errors))
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
-        os.remove(filepath)
-        return jsonify({'error': f'Failed to parse document: {str(e)}'}), 500
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        return jsonify({'error': f'Failed to parse document: {str(e)}'}), 400
 
     # For proof/word docs, skip preview and commit directly
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
