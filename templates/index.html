@@ -4276,9 +4276,9 @@
                     const sidebarInfo = document.getElementById('sidebar-user-info');
                     if (sidebarInfo) {
                         sidebarInfo.innerHTML = `
-                            <div class="mt-2 text-muted" style="font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.classList.replace('text-muted', 'text-light')" onmouseout="this.classList.replace('text-light', 'text-muted')" onclick="logout()" title="Click to sign out">
+                            <div class="mt-2" style="color: #58a6ff; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
                                 <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${user.email}</span>
-                                <i class="fas fa-sign-out-alt ms-1"></i>
+                                <i class="fas fa-sign-out-alt ms-1 text-muted hover-white"></i>
                             </div>
                         `;
                     }
@@ -4288,10 +4288,10 @@
                     if (topProfile) {
                         topProfile.style.display = 'flex';
                         topProfile.innerHTML = `
-                            <div class="text-muted d-flex align-items-center" style="font-size: 0.85rem; cursor: pointer; transition: color 0.2s;" onmouseover="this.classList.replace('text-muted', 'text-light')" onmouseout="this.classList.replace('text-light', 'text-muted')" onclick="logout()" title="Click to sign out">
+                            <div style="color: #58a6ff; font-weight: 600; font-size: 0.9rem; cursor: pointer; transition: color 0.2s; display: flex; align-items: center;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
                                 <i class="fas fa-user-circle me-2 fs-5"></i>
                                 <span>${user.email}</span>
-                                <i class="fas fa-sign-out-alt ms-2"></i>
+                                <i class="fas fa-sign-out-alt ms-2 text-muted"></i>
                             </div>
                         `;
                     }
