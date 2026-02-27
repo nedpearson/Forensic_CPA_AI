@@ -967,7 +967,22 @@ def get_accounts(user_id):
 def get_documents(user_id):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT d.*, a.account_name FROM documents d LEFT JOIN accounts a ON d.account_id = a.id WHERE d.user_id = ? ORDER BY d.upload_date DESC", (user_id,))
+    cursor.execute("""
+        SELECT 
+            d.id, d.user_id, d.filename, d.original_path, d.file_type, 
+            d.upload_date, d.status, 
+            COALESCE(d.parsed_transaction_count, 0) + COALESCE(SUM(c.parsed_transaction_count), 0) as parsed_transaction_count,
+            COALESCE(d.import_transaction_count, 0) + COALESCE(SUM(c.import_transaction_count), 0) as import_transaction_count,
+            COALESCE(d.deduped_skipped_count, 0) + COALESCE(SUM(c.deduped_skipped_count), 0) as deduped_skipped_count,
+            d.failure_reason, d.doc_category, d.account_id, d.content_sha256, d.parent_document_id,
+            a.account_name 
+        FROM documents d 
+        LEFT JOIN accounts a ON d.account_id = a.id 
+        LEFT JOIN documents c ON c.parent_document_id = d.id AND c.user_id = d.user_id
+        WHERE d.user_id = ? 
+        GROUP BY d.id
+        ORDER BY d.upload_date DESC
+    """, (user_id,))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
