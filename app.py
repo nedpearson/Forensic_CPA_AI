@@ -1367,6 +1367,8 @@ def api_upload():
                         if dup_id:
                             app.logger.info(f"Skipping duplicate zip child: {f}")
                             continue
+                            
+                        zip_children_info[child_hash] = f
                         try:
                             t, ai = parse_document(f_path, doc_type)
                             if t:
@@ -1375,15 +1377,12 @@ def api_upload():
                                 transactions.extend(t)
                             if not account_info and ai:
                                 account_info = ai
-                            zip_children_info[child_hash] = f
                         except Exception as inner_e:
                             zip_errors.append(f"{f}: {inner_e}")
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
-            if zip_errors and not transactions:
-                raise Exception(f"Failed to parse zip files:\n" + "\n".join(zip_errors))
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
@@ -1437,6 +1436,20 @@ def api_upload():
     )
     
     child_doc_map = {}
+    if ext.lower() == '.zip':
+        for child_hash, c_filename in zip_children_info.items():
+            c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+            c_id = add_document(
+                user_id=current_user.id,
+                filename=c_filename,
+                original_path=None,
+                file_type=c_ext,
+                doc_category=doc_category,
+                account_id=account_id,
+                content_sha256=child_hash,
+                parent_document_id=parent_doc_id
+            )
+            child_doc_map[child_hash] = c_id
 
     # Save transactions with auto-categorization
     added = 0
@@ -1444,21 +1457,7 @@ def api_upload():
     for trans in transactions:
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
-        if child_hash:
-            if child_hash not in child_doc_map:
-                c_filename = zip_children_info.get(child_hash, 'extracted_pdf')
-                c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
-                c_id = add_document(
-                    user_id=current_user.id,
-                    filename=c_filename,
-                    original_path=None,
-                    file_type=c_ext,
-                    doc_category=doc_category,
-                    account_id=account_id,
-                    content_sha256=child_hash,
-                    parent_document_id=parent_doc_id
-                )
-                child_doc_map[child_hash] = c_id
+        if child_hash and child_hash in child_doc_map:
             target_doc_id = child_doc_map[child_hash]
 
         # Auto-categorize
@@ -1722,6 +1721,8 @@ def api_upload_preview():
                         if dup_id:
                             app.logger.info(f"Skipping duplicate zip child: {f}")
                             continue
+
+                        zip_children_info[child_hash] = f
                         try:
                             t, ai = parse_document(f_path, doc_type)
                             if t:
@@ -1731,15 +1732,12 @@ def api_upload_preview():
                                 transactions.extend(t)
                             if not account_info and ai:
                                 account_info = ai
-                            zip_children_info[child_hash] = f
                         except Exception as inner_e:
                             zip_errors.append(f"{f}: {inner_e}")
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
-            if zip_errors and not transactions:
-                raise Exception(f"Failed to parse zip files:\n" + "\n".join(zip_errors))
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
