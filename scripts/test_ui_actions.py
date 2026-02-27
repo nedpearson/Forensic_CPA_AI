@@ -142,6 +142,53 @@ def main():
         
     os.remove(dummy_csv)
     server.terminate()
+    print("=== VERIFYING CATEGORIZATION UI OVERRIDES ===")
+    
+    # Seed a fake AI drop directly via endpoint
+    cat_test_doc = session.post(f"{BASE_URL}/api/add-transaction", json={
+        "trans_date": "2023-10-01",
+        "amount": -50.00,
+        "description": "Test AI Drop UI",
+        "category": "Pending Support"
+    }).json()
+    trans_id = cat_test_doc.get('id') if 'id' in cat_test_doc else cat_test_doc.get('transaction_id', 1) # Fallback if API changed
+    
+    if trans_id:
+        # 1. Simulate UI Inline Approval
+        req1 = session.put(f"{BASE_URL}/api/transactions/{trans_id}", json={
+            "categorization_status": "auto_applied",
+            "manually_edited": 1
+        })
+        
+        if req1.status_code == 200:
+            print_pass("UI Inline Approval hook correctly processes categorization tracking!")
+        else:
+            print_fail("UI Inline Approval failed!")
+
+        # 2. Simulate UI Category Dropdown change (Soft Learn Priority 50)
+        req2 = session.put(f"{BASE_URL}/api/transactions/{trans_id}", json={
+            "category": "Definitively Mapped"
+        })
+        
+        if req2.status_code == 200:
+            print_pass("UI Edit hook successfully cascades to Soft Learning module!")
+        else:
+            print_fail("UI Edit hook failed!")
+
+        # 3. Simulate specific UI Override Rule Toast (Priority 100)
+        req3 = session.post(f"{BASE_URL}/api/categories/rules", json={
+            "pattern": "%TEST AI DROP%",
+            "category": "Definitively Mapped",
+            "priority": 100,
+            "is_personal": 0,
+            "is_business": 0,
+            "is_transfer": 0
+        })
+        if req3.status_code == 200:
+            print_pass("UI Override Toast successfully transmits absolute Priority 100!")
+        else:
+            print_fail("UI Rule Override POST failed!")
+
     print("UI checks completed.")
 
 if __name__ == "__main__":

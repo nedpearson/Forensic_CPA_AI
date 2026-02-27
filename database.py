@@ -104,6 +104,10 @@ def init_db():
             manually_edited INTEGER DEFAULT 0,
             txn_fingerprint TEXT,
             is_approved INTEGER DEFAULT 1,
+            categorization_status TEXT DEFAULT 'pending',
+            categorization_source TEXT,
+            categorization_confidence REAL,
+            categorization_explanation TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES documents(id),
@@ -270,6 +274,37 @@ def init_db():
             UNIQUE(user_id, provider)
         );
 
+        CREATE TABLE IF NOT EXISTS merchants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            canonical_name TEXT NOT NULL,
+            default_category_id INTEGER REFERENCES categories(id),
+            is_transfer INTEGER DEFAULT 0,
+            is_personal INTEGER DEFAULT 0,
+            is_business INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS merchant_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            merchant_id INTEGER REFERENCES merchants(id) ON DELETE CASCADE,
+            raw_pattern TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS lookup_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lookup_key TEXT NOT NULL UNIQUE,
+            category_signal TEXT,
+            confidence REAL,
+            source TEXT,
+            raw_response TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_trans_date ON transactions(trans_date);
         CREATE INDEX IF NOT EXISTS idx_trans_category ON transactions(category);
         CREATE INDEX IF NOT EXISTS idx_trans_cardholder ON transactions(cardholder_name);
@@ -342,6 +377,17 @@ def init_db():
         cursor.execute("ALTER TABLE transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+
+    # Add advanced categorization foundation columns
+    for col, ctype in [
+        ('merchant_id', 'INTEGER REFERENCES merchants(id)'),
+        ('categorization_confidence', 'REAL'),
+        ('categorization_source', 'TEXT'),
+        ('categorization_status', 'TEXT'),
+        ('categorization_explanation', 'TEXT')
+    ]:
+        try: cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError: pass
 
     try:
         # Backfill transaction_sources for existing transactions
@@ -736,8 +782,9 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
         INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
             subcategory, cardholder_name, card_last_four, payment_method, check_number,
             is_transfer, transfer_to_account, transfer_from_account,
-            is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved,
+            merchant_id, categorization_confidence, categorization_source, categorization_status, categorization_explanation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
         kwargs.get('subcategory'), kwargs.get('cardholder_name'), kwargs.get('card_last_four'),
@@ -745,7 +792,9 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
         kwargs.get('is_transfer', 0), kwargs.get('transfer_to_account'), kwargs.get('transfer_from_account'),
         kwargs.get('is_personal', 0), kwargs.get('is_business', 0),
         kwargs.get('is_flagged', 0), kwargs.get('flag_reason'),
-        kwargs.get('auto_categorized', 1), kwargs.get('manually_edited', 0), txn_fingerprint, kwargs.get('is_approved', 1)
+        kwargs.get('auto_categorized', 1), kwargs.get('manually_edited', 0), txn_fingerprint, kwargs.get('is_approved', 1),
+        kwargs.get('merchant_id'), kwargs.get('categorization_confidence'), kwargs.get('categorization_source'),
+        kwargs.get('categorization_status'), kwargs.get('categorization_explanation')
     ))
     trans_id = cursor.lastrowid
     
@@ -789,7 +838,10 @@ def update_transaction(user_id, trans_id, **fields):
 
     set_clauses.append("updated_at = ?")
     values.append(datetime.now().isoformat())
-    set_clauses.append("manually_edited = 1")
+    
+    # Only flag as manually edited if explicitly told to, or by default for legacy
+    if fields.get('manually_edited', 1) == 1:
+        set_clauses.append("manually_edited = 1")
     
     values.append(trans_id)
     values.append(user_id)
@@ -1076,10 +1128,41 @@ def get_summary_stats(user_id, filters=None):
 def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=0, is_business=0, is_transfer=0, priority=50):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
-    )
+    
+    # Check if a rule for this pattern already exists for the user
+    cursor.execute("SELECT id, category, priority FROM category_rules WHERE user_id = ? AND pattern = ?", (user_id, pattern))
+    existing_rule = cursor.fetchone()
+    
+    if existing_rule:
+        rule_id = existing_rule['id']
+        existing_category = existing_rule['category']
+        existing_priority = existing_rule['priority']
+        
+        if existing_category == category:
+            # Strengthening: Same category, bump priority
+            new_priority = min(100, existing_priority + 5)
+            # If the incoming priority is already higher, use that directly
+            new_priority = max(new_priority, priority)
+            
+            cursor.execute(
+                "UPDATE category_rules SET subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ? WHERE id = ?",
+                (subcategory, is_personal, is_business, is_transfer, new_priority, rule_id)
+            )
+        else:
+            # Correction: Different category. Only overwrite if new priority is >= existing
+            if priority >= existing_priority:
+                cursor.execute(
+                    "UPDATE category_rules SET category = ?, subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ? WHERE id = ?",
+                    (category, subcategory, is_personal, is_business, is_transfer, priority, rule_id)
+                )
+            # Else: The existing rule is stronger, we ignore this weak AI override attempt
+    else:
+        # Insert a fresh rule
+        cursor.execute(
+            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
+        )
+        
     conn.commit()
     conn.close()
 
@@ -1651,3 +1734,31 @@ def reset_user_taxonomy(user_id):
     
     # Now call seed_taxonomy logic to inject the default setup
     seed_taxonomy(user_id)
+
+# --- Internet Lookup Cache ---
+
+def get_lookup_cache(lookup_key):
+    """Retrieves an internet lookup cached result for a given merchant/key."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT raw_response FROM lookup_cache WHERE lookup_key = ?", (lookup_key,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row['raw_response']
+    return None
+
+def set_lookup_cache(lookup_key, raw_response, source='wikipedia'):
+    """Caches an internet lookup result."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO lookup_cache (lookup_key, raw_response, source, updated_at) 
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(lookup_key) DO UPDATE SET 
+            raw_response = excluded.raw_response,
+            source = excluded.source,
+            updated_at = excluded.updated_at
+    """, (lookup_key, raw_response, source))
+    conn.commit()
+    conn.close()

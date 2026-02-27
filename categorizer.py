@@ -10,48 +10,20 @@ from database import get_db, get_category_rules, build_filter_clause
 
 def categorize_transaction(user_id, description, amount, trans_type='', payment_method=''):
     """
-    Apply categorization rules to a transaction.
+    Apply deterministic categorization rules to a transaction using Phase 3 pipeline logic.
     Returns dict with category, subcategory, is_personal, is_business, is_transfer, is_flagged, flag_reason.
     """
-    rules = get_category_rules(user_id)
+    from categorization_pipeline import CategorizationPipeline
+    result = CategorizationPipeline.process_transaction(user_id, description, amount, trans_type)
+    
+    # Back-fill legacy fields expected by app.py
+    result.setdefault('is_flagged', 0)
+    result.setdefault('flag_reason', None)
+    result.setdefault('payment_method', payment_method)
+
     desc_upper = description.upper()
-    result = {
-        'category': 'Uncategorized',
-        'subcategory': None,
-        'is_personal': 0,
-        'is_business': 0,
-        'is_transfer': 0,
-        'is_flagged': 0,
-        'flag_reason': None,
-        'payment_method': payment_method,
-    }
 
-    best_match = None
-    best_priority = -1
-
-    for rule in rules:
-        pattern = rule['pattern'].upper()
-        # Convert SQL LIKE pattern to regex-compatible check
-        # % = any chars, _ = single char
-        if '%' in pattern or '_' in pattern:
-            regex_pattern = pattern.replace('%', '.*').replace('_', '.')
-            if re.search(regex_pattern, desc_upper):
-                if rule['priority'] > best_priority:
-                    best_priority = rule['priority']
-                    best_match = rule
-        elif pattern in desc_upper:
-            if rule['priority'] > best_priority:
-                best_priority = rule['priority']
-                best_match = rule
-
-    if best_match:
-        result['category'] = best_match['category']
-        result['subcategory'] = best_match['subcategory']
-        result['is_personal'] = best_match['is_personal']
-        result['is_business'] = best_match['is_business']
-        result['is_transfer'] = best_match['is_transfer']
-
-    # Additional heuristic rules
+    # Additional heuristic rules (safe to keep on top of rules)
 
     # Detect transfers
     transfer_keywords = [
@@ -119,36 +91,173 @@ def recategorize_all(user_id):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, description, amount, trans_type, payment_method FROM transactions WHERE user_id = ? AND manually_edited = 0", (user_id,))
+    cursor.execute("SELECT id, description, amount, trans_date, trans_type, payment_method FROM transactions WHERE user_id = ? AND manually_edited = 0", (user_id,))
     rows = cursor.fetchall()
 
     updated = 0
+    uncategorized = []
     for row in rows:
         result = categorize_transaction(
             user_id,
             row['description'], row['amount'],
             row['trans_type'], row['payment_method']
         )
+        
+        if result['category'] == 'Uncategorized':
+            uncategorized.append({
+                'id': row['id'],
+                'description': row['description'],
+                'amount': row['amount'],
+                'trans_date': row['trans_date']
+            })
+            
         cursor.execute("""
             UPDATE transactions SET
                 category = ?, subcategory = ?,
                 is_personal = ?, is_business = ?, is_transfer = ?,
                 is_flagged = ?, flag_reason = ?,
                 payment_method = COALESCE(?, payment_method),
+                categorization_confidence = ?, categorization_source = ?,
+                categorization_status = ?, categorization_explanation = ?,
                 auto_categorized = 1
             WHERE id = ?
         """, (
-            result['category'], result['subcategory'],
+            result['category'], result.get('subcategory'),
             result['is_personal'], result['is_business'], result['is_transfer'],
-            result['is_flagged'], result['flag_reason'],
-            result['payment_method'],
+            result['is_flagged'], result.get('flag_reason'),
+            result.get('payment_method'),
+            result.get('categorization_confidence'),
+            result.get('categorization_source'),
+            result.get('categorization_status'),
+            result.get('categorization_explanation'),
             row['id']
         ))
         updated += 1
 
     conn.commit()
     conn.close()
+    
+    if uncategorized:
+        run_bulk_ai_categorization(user_id, uncategorized)
+        
     return updated
+
+
+def run_bulk_ai_categorization(user_id, transactions_list):
+    """
+    Background job to bulk-categorize unrecognized transactions
+    using the LLM and auto-learn new rules.
+    """
+    import threading
+    import os
+    if not os.environ.get('OPENAI_API_KEY') and not os.environ.get('ANTHROPIC_API_KEY'):
+        return
+
+    def _job():
+        try:
+            from auto_categorizer import AutoCategorizer
+            from database import get_categories, update_transaction, add_category_rule, get_db
+            
+            cats = get_categories(user_id)
+            tax_ref = [{'name': c['name']} for c in cats]
+            
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT description, amount, category, is_personal, is_business 
+                FROM transactions 
+                WHERE user_id = ? AND is_approved = 1 AND category != 'Uncategorized'
+                ORDER BY trans_date DESC LIMIT 40
+            """, (user_id,))
+            few_shot_context = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            
+            categorizer = AutoCategorizer()
+            chunk_size = 50
+            
+            for i in range(0, len(transactions_list), chunk_size):
+                chunk = transactions_list[i:i+chunk_size]
+                results = categorizer.categorize_transaction_batch(chunk, tax_ref, few_shot_examples=few_shot_context)
+                
+                # Update DB
+                for r in results:
+                    score = r.confidence_score if hasattr(r, 'confidence_score') else 0.5
+                    
+                    # --- Phase 5: Internet Lookup Fallback Trigger ---
+                    lookup_used = False
+                    if score < 0.85 and r.suggested_pattern:
+                        # 1. We have low confidence and a clean merchant string
+                        from internet_lookup import InternetLookupProvider
+                        from database import get_lookup_cache, set_lookup_cache
+                        
+                        lookup_key = r.suggested_pattern.replace('%', '').strip()
+                        cached_result = get_lookup_cache(lookup_key)
+                        
+                        if cached_result is None:
+                            # 2. Reach out to public API safely
+                            cached_result = InternetLookupProvider.search_business_entity(lookup_key)
+                            set_lookup_cache(lookup_key, cached_result)
+                            
+                        if cached_result:
+                            lookup_used = True
+                            # 3. Re-run inference WITH the new internet context
+                            # We hack the description to append the lookup snippet so the LLM prompt sees it
+                            cloned_txn = {
+                                'id': r.txn_id, 
+                                'description': next((t['description'] for t in chunk if t['id'] == r.txn_id), '') + f" (WEB CONTEXT: {cached_result[:300]})", 
+                                'amount': next((t['amount'] for t in chunk if t['id'] == r.txn_id), 0),
+                                'trans_date': next((t['trans_date'] for t in chunk if t['id'] == r.txn_id), '')
+                            }
+                            
+                            second_pass = categorizer.categorize_transaction_batch([cloned_txn], tax_ref, few_shot_examples=few_shot_context)
+                            if second_pass:
+                                r = second_pass[0]
+                                score = r.confidence_score if hasattr(r, 'confidence_score') else 0.5
+                                
+                    if score >= 0.85:
+                        status = 'auto_applied'
+                    elif score >= 0.5:
+                        status = 'suggested'
+                    else:
+                        status = 'review_required'
+                        
+                    explanation = getattr(r, 'reasoning', '')
+                    flags = getattr(r, 'explanation_flags', '')
+                    if flags:
+                        explanation += f" [Flags: {flags}]"
+                        
+                    update_transaction(
+                        user_id, r.txn_id,
+                        category=r.category,
+                        subcategory=r.subcategory,
+                        is_personal=1 if r.is_personal else 0,
+                        is_business=1 if r.is_business else 0,
+                        is_transfer=1 if r.is_transfer else 0,
+                        categorization_confidence=score,
+                        categorization_source='internet_lookup' if lookup_used else 'ai_inference',
+                        categorization_status=status,
+                        categorization_explanation=explanation,
+                        manually_edited=0
+                    )
+                    
+                    # Learn new rule
+                    if r.suggested_pattern and status == 'auto_applied':
+                        add_category_rule(
+                            user_id, 
+                            r.suggested_pattern, 
+                            r.category, 
+                            r.subcategory, 
+                            1 if r.is_personal else 0, 
+                            1 if r.is_business else 0, 
+                            1 if r.is_transfer else 0, 
+                            40
+                        )
+        except Exception as e:
+            print(f"Background AI Categorization Error: {e}")
+
+    thread = threading.Thread(target=_job)
+    thread.daemon = True
+    thread.start()
 
 
 def detect_deposit_transfer_patterns(user_id, filters=None):

@@ -1244,7 +1244,8 @@ def api_update_transaction(trans_id):
     allowed_fields = [
         'category', 'subcategory', 'is_personal', 'is_business', 'is_transfer',
         'is_flagged', 'flag_reason', 'user_notes', 'cardholder_name', 'card_last_four',
-        'payment_method', 'trans_type', 'description', 'amount', 'trans_date'
+        'payment_method', 'trans_type', 'description', 'amount', 'trans_date',
+        'categorization_status', 'categorization_source', 'categorization_confidence', 'manually_edited'
     ]
     fields = {k: v for k, v in data.items() if k in allowed_fields}
     if 'amount' in fields:
@@ -1263,6 +1264,18 @@ def api_update_transaction(trans_id):
         suggestion = suggest_rule_from_edit(current_user.id, trans_id)
         if suggestion:
             result['rule_suggestion'] = suggestion
+            
+            # Phase 6: Automatic soft-learning
+            add_category_rule(
+                user_id=current_user.id,
+                pattern=suggestion['pattern'],
+                category=suggestion['category'],
+                subcategory=suggestion.get('subcategory'),
+                is_personal=suggestion.get('is_personal', 0),
+                is_business=suggestion.get('is_business', 0),
+                is_transfer=suggestion.get('is_transfer', 0),
+                priority=50
+            )
     return jsonify(result)
 
 
@@ -1282,12 +1295,26 @@ def api_bulk_update():
     fields = data.get('fields', {})
     allowed_fields = [
         'category', 'subcategory', 'is_personal', 'is_business', 'is_transfer',
-        'is_flagged', 'flag_reason', 'user_notes'
+        'is_flagged', 'flag_reason', 'user_notes',
+        'categorization_status', 'categorization_source', 'categorization_confidence', 'manually_edited'
     ]
     fields = {k: v for k, v in fields.items() if k in allowed_fields}
     for tid in ids:
         if fields:
             update_transaction(current_user.id, tid, **fields)
+            if 'category' in fields:
+                suggestion = suggest_rule_from_edit(current_user.id, tid)
+                if suggestion:
+                    add_category_rule(
+                        user_id=current_user.id,
+                        pattern=suggestion['pattern'],
+                        category=suggestion['category'],
+                        subcategory=suggestion.get('subcategory'),
+                        is_personal=suggestion.get('is_personal', 0),
+                        is_business=suggestion.get('is_business', 0),
+                        is_transfer=suggestion.get('is_transfer', 0),
+                        priority=50 
+                    )
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
 
@@ -1455,6 +1482,7 @@ def api_upload():
     # Save transactions with auto-categorization
     added = 0
     skipped = 0
+    uncategorized_txns = []
     for trans in transactions:
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
@@ -1499,15 +1527,30 @@ def api_upload():
             flag_reason=cat_result['flag_reason'],
             txn_fingerprint=txn_fingerprint,
             is_approved=0,
+            merchant_id=cat_result.get('merchant_id'),
+            categorization_confidence=cat_result.get('categorization_confidence'),
+            categorization_source=cat_result.get('categorization_source'),
+            categorization_status=cat_result.get('categorization_status'),
+            categorization_explanation=cat_result.get('categorization_explanation')
         )
         if is_new:
             added += 1
+            if cat_result['category'] == 'Uncategorized':
+                uncategorized_txns.append({
+                    'id': trans_id,
+                    'description': trans['description'],
+                    'amount': trans['amount'],
+                    'trans_date': trans['trans_date']
+                })
         else:
             skipped += 1
 
     from database import update_document_status
     update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
 
+    if uncategorized_txns:
+        from categorizer import run_bulk_ai_categorization
+        run_bulk_ai_categorization(current_user.id, uncategorized_txns)
 
     return jsonify({
         'status': 'ok',
@@ -1569,7 +1612,7 @@ def api_add_rule():
         is_personal=data.get('is_personal', 0),
         is_business=data.get('is_business', 0),
         is_transfer=data.get('is_transfer', 0),
-        priority=data.get('priority', 50),
+        priority=data.get('priority', 100),
     )
     return jsonify({'status': 'ok'})
 
@@ -2128,6 +2171,30 @@ def api_add_manual_transaction():
             post_date=data.get('post_date', data['trans_date']),
             check_number=data.get('check_number')
         )
+
+        # System Integration: Run categorize on manual additions if they don't explicitly pass one
+        category_payload = data.get('category')
+        if not category_payload or category_payload == 'Uncategorized':
+            from categorizer import categorize_transaction
+            cat_result = categorize_transaction(
+                current_user.id,
+                data['description'], amount,
+                data.get('trans_type', ''), data.get('payment_method', '')
+            )
+            final_cat = cat_result['category']
+            final_sub = cat_result['subcategory']
+            conf = cat_result.get('categorization_confidence')
+            src = cat_result.get('categorization_source')
+            stat = cat_result.get('categorization_status')
+            exp = cat_result.get('categorization_explanation')
+        else:
+            final_cat = category_payload
+            final_sub = data.get('subcategory')
+            conf = None
+            src = 'user_rule'
+            stat = 'auto_applied'
+            exp = 'Manually provided upon creation.'
+
         trans_id, _ = add_transaction(
             user_id=current_user.id,
             doc_id=None,
@@ -2137,16 +2204,21 @@ def api_add_manual_transaction():
             description=data['description'],
             amount=amount,
             trans_type=data.get('trans_type', 'debit'),
-            category=data.get('category', 'Uncategorized'),
+            category=final_cat,
+            subcategory=final_sub,
             cardholder_name=data.get('cardholder_name', ''),
             card_last_four=data.get('card_last_four', ''),
             payment_method=data.get('payment_method', ''),
             is_transfer=data.get('is_transfer', 0),
             is_personal=data.get('is_personal', 0),
             is_business=data.get('is_business', 0),
-            auto_categorized=0,
-            manually_edited=1,
+            auto_categorized=1 if conf else 0,
+            manually_edited=0 if conf else 1,
             txn_fingerprint=txn_fingerprint,
+            categorization_confidence=conf,
+            categorization_source=src,
+            categorization_status=stat,
+            categorization_explanation=exp
         )
     except Exception as e:
         return jsonify({'error': f'Failed to add transaction: {str(e)}'}), 500

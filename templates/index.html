@@ -2550,12 +2550,28 @@
                 if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason || '')}">FLAG</span>`;
                 if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
 
+                // Confidences and UI Overrides
+                let catUI = `<select class="category-select" style="max-width:200px;" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select>`;
+
+                if (t.categorization_status === 'review_required' || t.categorization_status === 'suggested') {
+                    const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                    catUI += `<div class="mt-1 d-flex align-items-center gap-1">`;
+                    catUI += `<span class="badge bg-warning text-dark" style="font-size:0.6rem;" ${tip}><i class="fas fa-exclamation-triangle me-1"></i>Review</span>`;
+                    catUI += `<button class="btn btn-sm btn-success py-0 px-1 ms-1" style="font-size:0.65rem;" onclick="approveCategory(${t.id})" title="Approve"><i class="fas fa-check"></i></button>`;
+                    catUI += `</div>`;
+                } else if (t.categorization_source === 'internet_lookup') {
+                    catUI += `<div class="mt-1"><span class="badge bg-info text-dark" style="font-size:0.6rem;" title="Assisted by Web Search"><i class="fas fa-globe me-1"></i>Web Search</span></div>`;
+                } else if (t.categorization_source === 'ai_high_conf') {
+                    const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                    catUI += `<div class="mt-1"><span class="badge bg-success" style="font-size:0.6rem;" ${tip}><i class="fas fa-robot me-1"></i>AI Applied</span></div>`;
+                }
+
                 html += `<tr>
                 <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
                 <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
                 <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: ' + esc(t.user_notes) : ''}">${esc(t.description)}</td>
                 <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
-                <td><select class="category-select" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select></td>
+                <td>${catUI}</td>
                 <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
                 <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
                 <td style="font-size:0.75rem;">${t.payment_method || ''}</td>
@@ -2587,7 +2603,14 @@
         });
         function updateBulkButtons() { const show = selectedIds.size > 0; document.getElementById('bulk-delete-btn').style.display = show ? '' : 'none'; document.getElementById('bulk-edit-btn').style.display = show ? '' : 'none'; }
 
-        async function quickCategory(id, cat) { await api(`/api/transactions/${id}`, 'PUT', { category: cat }); toast('Updated'); }
+        async function quickCategory(id, cat) {
+            const res = await api(`/api/transactions/${id}`, 'PUT', { category: cat });
+            if (res.error) toast(res.error, "danger");
+            else {
+                toast('Updated');
+                if (res.rule_suggestion) showRuleSuggestion(res.rule_suggestion);
+            }
+        }
 
         function inlineEditNote(el, id) {
             const current = allTransactions.find(t => t.id === id)?.user_notes || '';
@@ -2613,6 +2636,16 @@
             input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = current; input.blur(); } });
         }
         async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged ? 0 : 1 }); loadTransactions(); toast(t.is_flagged ? 'Unflagged' : 'Flagged'); }
+
+        async function approveCategory(id) {
+            const res = await api(`/api/transactions/${id}`, 'PUT', { categorization_status: 'auto_applied', manually_edited: 1 });
+            if (res.error) toast(res.error, "danger");
+            else {
+                toast('Category Approved');
+                // The item is now manually_edited=1, meaning explicit Rank 1 override is technically formed here on next AI pass
+                loadTransactions();
+            }
+        }
 
         async function editTransaction(id) {
             // Find in current list or fetch
@@ -2645,7 +2678,36 @@
             }
             proofsHtml += '</div>';
 
+            let aiReasoningHtml = '';
+            if (t.categorization_status || t.categorization_source || t.categorization_explanation) {
+                let sBadge = t.categorization_status === 'auto_applied' ? '<span class="badge bg-success ms-2">Applied</span>' :
+                    t.categorization_status === 'suggested' ? '<span class="badge bg-warning text-dark ms-2">Suggested</span>' :
+                        t.categorization_status === 'review_required' ? '<span class="badge bg-danger ms-2">Needs Review</span>' : '';
+
+                let srcInfo = t.categorization_source === 'internet_lookup' ? 'Web Assisted AI' :
+                    t.categorization_source === 'ai_high_conf' ? 'AI Inference' :
+                        t.categorization_source === 'user_rule' ? 'Explicit Rule' :
+                            t.categorization_source === 'learned_rule' ? 'Soft-Learned Rule' :
+                                t.categorization_source === 'merchant_mapping' ? 'Known Merchant' : t.categorization_source || 'Unknown';
+
+                aiReasoningHtml = `
+                    <div class="card bg-dark border-secondary mb-3 mt-2">
+                        <div class="card-header py-1 small fw-bold text-info"><i class="fas fa-brain me-2"></i>Categorization Context</div>
+                        <div class="card-body py-2 small">
+                            <div class="row">
+                                <div class="col-6 mb-1"><strong>Source:</strong> ${srcInfo}</div>
+                                <div class="col-6 mb-1"><strong>Status:</strong> ${t.categorization_status || 'N/A'} ${sBadge}</div>
+                                <div class="col-6 mb-1"><strong>Confidence:</strong> ${t.categorization_confidence ? (t.categorization_confidence * 100).toFixed(0) + '%' : 'N/A'}</div>
+                                <div class="col-6 mb-1"><strong>Manual Override:</strong> ${t.manually_edited ? 'Yes' : 'No'}</div>
+                                ${t.categorization_explanation ? `<div class="col-12 mt-1"><strong>Reasoning:</strong><br><span class="text-muted" style="white-space:pre-wrap;">${esc(t.categorization_explanation)}</span></div>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
             document.getElementById('edit-form-body').innerHTML = `
+            ${aiReasoningHtml}
             <div class="row g-2">
                 <div class="col-6 mb-2"><label class="form-label small">Date</label><input type="text" class="form-control form-control-sm" id="edit-date" value="${t.trans_date || ''}"></div>
                 <div class="col-6 mb-2"><label class="form-label small">Amount</label><input type="number" step="0.01" class="form-control form-control-sm" id="edit-amount" value="${t.amount}"></div>
@@ -2720,12 +2782,12 @@
             el.className = 'rule-suggestion';
             el.innerHTML = `
             <div class="d-flex justify-content-between align-items-start mb-2">
-                <strong><i class="fas fa-lightbulb text-warning me-1"></i> Create Rule?</strong>
+                <strong class="text-info"><i class="fas fa-lock me-1"></i> Remember this Choice (Override)?</strong>
                 <button class="btn btn-sm btn-outline-light py-0 px-1 rule-dismiss"><i class="fas fa-times fa-xs"></i></button>
             </div>
             <div class="mb-2">Pattern: <code>${esc(suggestion.pattern)}</code> &rarr; <strong>${esc(suggestion.category)}</strong></div>
-            <div class="small text-muted mb-2">From: "${esc(suggestion.source_description?.substring(0, 60))}"</div>
-            <button class="btn btn-sm btn-info rule-accept"><i class="fas fa-check me-1"></i>Create Rule</button>
+            <div class="small text-muted mb-2">Protects this vendor from future AI re-classifications.</div>
+            <button class="btn btn-sm btn-info rule-accept"><i class="fas fa-check me-1"></i>Save Override</button>
             <button class="btn btn-sm btn-outline-light rule-dismiss">Dismiss</button>
         `;
             el.querySelectorAll('.rule-dismiss').forEach(b => b.addEventListener('click', () => el.remove()));
@@ -2733,13 +2795,13 @@
                 await api('/api/categories/rules', 'POST', {
                     pattern: suggestion.pattern,
                     category: suggestion.category,
-                    priority: 50,
+                    priority: 100,
                     is_personal: suggestion.is_personal,
                     is_business: suggestion.is_business,
                     is_transfer: suggestion.is_transfer
                 });
                 el.remove();
-                toast('Rule created! Run Re-categorize to apply.');
+                toast('Override Rule created! Run Re-categorize to apply.');
             });
             c.appendChild(el);
             setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);

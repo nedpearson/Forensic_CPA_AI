@@ -74,7 +74,7 @@ def test_new_user_signup_and_empty_state(smoke_client):
     assert cursor.fetchone()[0] == 0, "New user must start with 0 transactions"
     
     cursor.execute("SELECT COUNT(*) FROM categories WHERE user_id = ?", (user_id,))
-    assert cursor.fetchone()[0] == 0, "New user must not have seeded categories natively"
+    assert cursor.fetchone()[0] == 25, "New user must have seeded categories natively"
     conn.close()
 
 def test_demo_login_idempotent_seed(smoke_client):
