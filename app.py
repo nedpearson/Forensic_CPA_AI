@@ -1854,30 +1854,33 @@ def api_upload_commit():
     )
 
     child_doc_map = {}
+    doc_stats = {} # track counts per doc id: {doc_id: {'added': 0, 'skipped': 0, 'total': 0}}
+    
+    # Pre-register all child documents dynamically provided by preview state
+    # This ensures they show up as independent 0-tx files if AI parsing returned nothing
+    for child_hash, c_filename in zip_children_info.items():
+        c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+        c_id = add_document(
+            user_id=current_user.id,
+            filename=c_filename,
+            original_path=None,
+            file_type=c_ext,
+            doc_category=doc_category,
+            account_id=account_id,
+            content_sha256=child_hash,
+            parent_document_id=parent_doc_id
+        )
+        child_doc_map[child_hash] = c_id
+        doc_stats[c_id] = {'added': 0, 'skipped': 0, 'total': 0}
 
     # Save transactions
     added = 0
     skipped = 0
-    doc_stats = {} # track counts per doc id: {doc_id: {'added': 0, 'skipped': 0, 'total': 0}}
 
     for trans in transactions:
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
-        if child_hash:
-            if child_hash not in child_doc_map:
-                c_filename = zip_children_info.get(child_hash, 'extracted_pdf')
-                c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
-                c_id = add_document(
-                    user_id=current_user.id,
-                    filename=c_filename,
-                    original_path=None,
-                    file_type=c_ext,
-                    doc_category=doc_category,
-                    account_id=account_id,
-                    content_sha256=child_hash,
-                    parent_document_id=parent_doc_id
-                )
-                child_doc_map[child_hash] = c_id
+        if child_hash and child_hash in child_doc_map:
             target_doc_id = child_doc_map[child_hash]
 
         if target_doc_id not in doc_stats:
@@ -1942,10 +1945,10 @@ def api_upload_commit():
         update_document_status(
             current_user.id, 
             parent_doc_id, 
-            status='pending_approval', 
-            parsed_count=len(transactions), 
-            import_count=added, 
-            skipped_count=skipped
+            status='pending_approval' if transactions else 'completed', 
+            parsed_count=0, 
+            import_count=0, 
+            skipped_count=0
         )
 
     return jsonify({

@@ -2974,8 +2974,20 @@
         async function loadDocuments() {
             const docs = await api('/api/documents');
             let html = '';
-            for (const d of docs) {
-                const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : 'fa-file text-info';
+
+            const roots = [];
+            const childrenMap = {};
+            docs.forEach(d => {
+                if (d.parent_document_id) {
+                    if (!childrenMap[d.parent_document_id]) childrenMap[d.parent_document_id] = [];
+                    childrenMap[d.parent_document_id].push(d);
+                } else {
+                    roots.push(d);
+                }
+            });
+
+            function renderDoc(d, isChild = false) {
+                const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : d.file_type === 'zip' ? 'fa-file-archive text-warning' : 'fa-file text-info';
 
                 let sClass = 'secondary';
                 if (d.status === 'processing' || d.status === 'queued') sClass = 'warning text-dark';
@@ -2988,8 +3000,10 @@
                 }
                 actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteDocument('${d.id}')" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
 
-                html += `<tr class="clickable-row" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
-                <td><a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
+                const indent = isChild ? '<span style="margin-left: 1.5rem; border-left: 2px solid #4a5568; padding-left: 10px;"></span>' : '';
+
+                let tr = `<tr class="clickable-row ${isChild ? 'child-doc' : 'parent-doc'}" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
+                <td>${indent}<a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
                 <td>${d.file_type}</td><td>${d.doc_category || ''}</td><td>${d.account_name || ''}</td>
                 <td><span class="badge bg-${sClass}">${d.status || 'queued'}</span></td>
                 <td>${d.parsed_transaction_count || 0}</td>
@@ -2997,8 +3011,14 @@
                 <td class="text-warning">${d.deduped_skipped_count || 0}</td>
                 <td>${(d.upload_date || '').substring(0, 16)}</td>
                 <td>${actionHtml}</td>
-            </tr>`;
+                </tr>`;
+
+                const children = Object.values(childrenMap[d.id] || []).sort((a, b) => (a.filename > b.filename) ? 1 : -1);
+                children.forEach(c => { tr += renderDoc(c, true); });
+                return tr;
             }
+
+            roots.forEach(d => { html += renderDoc(d, false); });
             document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="10" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
         }
 
