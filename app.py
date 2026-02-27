@@ -1355,6 +1355,7 @@ def api_upload():
             with zipfile.ZipFile(filepath, 'r') as zip_ref:
                 zip_ref.extractall(extracted_dir)
                 
+            zip_errors = []
             for root, _, inner_files in os.walk(extracted_dir):
                 for f in inner_files:
                     if allowed_file(f) and not f.lower().endswith('.zip'):
@@ -1374,10 +1375,13 @@ def api_upload():
                                 account_info = ai
                             zip_children_info[child_hash] = f
                         except Exception as inner_e:
+                            zip_errors.append(f"{f}: {inner_e}")
                             app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
+            if zip_errors and not transactions:
+                raise Exception(f"Failed to parse zip files:\n" + "\n".join(zip_errors))
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
