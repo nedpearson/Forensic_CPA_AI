@@ -46,7 +46,15 @@ def seed_demo_environment():
             (user_id, topic['name'], topic['description'], topic['category_type'], topic['severity'])
         )
         
-    # 4. Generate some realistic transactions over the last 6 months
+    # 4. Generate rules
+    rules = scenario.get("category_rules", [])
+    for rule in rules:
+        cursor.execute(
+            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, rule['pattern'], rule['category'], rule.get('subcategory', ''), rule.get('is_personal', 0), rule.get('is_business', 0), rule.get('is_transfer', 0), rule.get('priority', 0))
+        )
+
+    # 5. Generate some realistic transactions over the last 6 months
     transactions = scenario.get("base_transactions", [])
     
     today = datetime.now()
@@ -61,9 +69,17 @@ def seed_demo_environment():
             # Use query builder directly
             cursor.execute("""
                 INSERT INTO transactions (
-                    user_id, account_id, trans_date, description, amount, trans_type
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """, (user_id, account_ids[tx["acc"]], tx_date, tx["desc"], tx["amount"], tx["type"]))
+                    user_id, account_id, trans_date, description, amount, trans_type, 
+                    category, subcategory, payment_method, is_business, is_personal, 
+                    is_transfer, cardholder_name, user_notes, is_flagged, flag_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                user_id, account_ids[tx["acc"]], tx_date, tx["desc"], tx["amount"], tx["type"],
+                tx.get('category', 'Uncategorized'), tx.get('subcategory', ''), tx.get('payment_method', ''),
+                tx.get('is_business', 0), tx.get('is_personal', 0), tx.get('is_transfer', 0),
+                tx.get('cardholder_name', ''), tx.get('user_notes', ''),
+                tx.get('is_flagged', 0), tx.get('flag_reason')
+            ))
             records_inserted += 1
             
     # Add a specifically flagged anomaly
@@ -71,10 +87,18 @@ def seed_demo_environment():
     if flagged:
         cursor.execute("""
             INSERT INTO transactions (
-                user_id, account_id, trans_date, description, amount, trans_type, is_flagged, flag_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, account_ids.get(flagged["acc"], account_ids['bank']), today.strftime('%Y-%m-%d'), 
-              flagged["desc"], flagged["amount"], flagged["type"], 1, flagged["flag_reason"]))
+                user_id, account_id, trans_date, description, amount, trans_type, 
+                category, subcategory, payment_method, is_business, is_personal, 
+                is_transfer, cardholder_name, user_notes, is_flagged, flag_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id, account_ids.get(flagged["acc"], account_ids.get('bank')), today.strftime('%Y-%m-%d'), 
+            flagged["desc"], flagged["amount"], flagged["type"],
+            flagged.get('category', 'Uncategorized'), flagged.get('subcategory', ''), flagged.get('payment_method', ''),
+            flagged.get('is_business', 0), flagged.get('is_personal', 0), flagged.get('is_transfer', 0),
+            flagged.get('cardholder_name', ''), flagged.get('user_notes', ''),
+            1, flagged.get("flag_reason", "")
+        ))
 
     # Free the write lock so add_document can use its own connection
     conn.commit()

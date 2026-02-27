@@ -1,22 +1,34 @@
 {
     "accounts": [
         {
-            "name": "Chase Checking",
+            "name": "Chase Corporate Checking",
             "number": "1234",
             "type": "bank",
             "institution": "Chase"
         },
         {
-            "name": "Amex Platinum",
+            "name": "Amex Platinum Business",
             "number": "9012",
             "type": "credit_card",
             "institution": "American Express"
         },
         {
-            "name": "Business Venmo",
+            "name": "Corporate Venmo",
             "number": "business-venmo",
             "type": "venmo",
             "institution": "Venmo"
+        },
+        {
+            "name": "PayPal Master Account",
+            "number": "paypal-master",
+            "type": "paypal",
+            "institution": "PayPal"
+        },
+        {
+            "name": "Square POS Systems",
+            "number": "sq-pos-001",
+            "type": "square",
+            "institution": "Square"
         }
     ],
     "taxonomy": [
@@ -31,6 +43,53 @@
             "description": "Entities violating procurement policies",
             "category_type": "entity",
             "severity": "medium"
+        },
+        {
+            "name": "Executive Entertainment",
+            "description": "Exceeding daily per-diem limitations",
+            "category_type": "topic",
+            "severity": "medium"
+        },
+        {
+            "name": "Offshore Transfer",
+            "description": "International outgoing wires without prior authorization",
+            "category_type": "topic",
+            "severity": "high"
+        },
+        {
+            "name": "Crypto Exchange",
+            "description": "Transfers to Coinbase, Binance, Gemini, etc.",
+            "category_type": "entity",
+            "severity": "high"
+        }
+    ],
+    "category_rules": [
+        {
+            "pattern": "UBER EATS",
+            "category": "Meals & Entertainment",
+            "subcategory": "Delivery",
+            "is_personal": 1,
+            "is_business": 0,
+            "is_transfer": 0,
+            "priority": 10
+        },
+        {
+            "pattern": "AMAZON WEB SERVICES",
+            "category": "Software / Subscriptions",
+            "subcategory": "Cloud Hosting",
+            "is_personal": 0,
+            "is_business": 1,
+            "is_transfer": 0,
+            "priority": 5
+        },
+        {
+            "pattern": "VENMO CASHOUT",
+            "category": "Transfers",
+            "subcategory": "Venmo Deposit",
+            "is_personal": 0,
+            "is_business": 1,
+            "is_transfer": 1,
+            "priority": 15
         }
     ],
     "base_transactions": [
@@ -38,81 +97,257 @@
             "desc": "DIRECT DEP PAYROLL",
             "amount": 4200.50,
             "type": "deposit",
-            "acc": "bank"
+            "acc": "bank",
+            "category": "Payroll",
+            "subcategory": "Salary",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "ACH",
+            "cardholder_name": ""
         },
         {
             "desc": "SUPERIOR GRILL BATON ROUGE",
             "amount": -145.20,
             "type": "debit",
-            "acc": "bank"
+            "acc": "bank",
+            "category": "Meals & Entertainment",
+            "subcategory": "Restaurant",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Debit Card",
+            "cardholder_name": "Ned Pearson",
+            "user_notes": "Client dinner with XYZ Corp"
         },
         {
             "desc": "INTERNET TRANSFER TO AMEX",
             "amount": -1500.00,
             "type": "transfer_out",
-            "acc": "bank"
+            "acc": "bank",
+            "category": "Inter-Account Transfer",
+            "subcategory": "Credit Card Payment",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 1,
+            "payment_method": "Internal Transfer",
+            "cardholder_name": ""
         },
         {
             "desc": "COX COMMUNICATIONS RETAIL",
             "amount": -119.99,
             "type": "debit",
-            "acc": "bank"
+            "acc": "bank",
+            "category": "Utilities",
+            "subcategory": "Internet",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "ACH",
+            "cardholder_name": ""
         },
         {
             "desc": "VENMO CASHOUT",
             "amount": 800.00,
             "type": "deposit",
-            "acc": "bank"
+            "acc": "bank",
+            "category": "Transfers",
+            "subcategory": "Venmo Deposit",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 1,
+            "payment_method": "ACH",
+            "cardholder_name": ""
         },
         {
             "desc": "AMAZON WEB SERVICES",
             "amount": -840.12,
             "type": "debit",
-            "acc": "credit_card"
+            "acc": "credit_card",
+            "category": "Software / Subscriptions",
+            "subcategory": "Cloud Hosting",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Credit Card",
+            "cardholder_name": "Ned Pearson"
         },
         {
             "desc": "TST* 601 RESTAURANT",
             "amount": -89.43,
             "type": "debit",
-            "acc": "credit_card"
+            "acc": "credit_card",
+            "category": "Meals & Entertainment",
+            "subcategory": "Restaurant",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Credit Card",
+            "cardholder_name": "Jane Doe"
         },
         {
             "desc": "PAYMENT THANK YOU",
             "amount": 1500.00,
             "type": "deposit",
-            "acc": "credit_card"
+            "acc": "credit_card",
+            "category": "Credit Card Payment",
+            "subcategory": "",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 1,
+            "payment_method": "ACH",
+            "cardholder_name": ""
         },
         {
             "desc": "DELTA AIRLINES REDEEM",
             "amount": -450.00,
             "type": "debit",
-            "acc": "credit_card"
+            "acc": "credit_card",
+            "category": "Travel",
+            "subcategory": "Airfare",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Credit Card",
+            "cardholder_name": "Ned Pearson"
         },
         {
             "desc": "PAYMENT TO JANE DOE - DINNER",
             "amount": -45.00,
             "type": "debit",
-            "acc": "venmo"
+            "acc": "venmo",
+            "category": "Meals & Entertainment",
+            "subcategory": "",
+            "is_personal": 1,
+            "is_business": 0,
+            "is_transfer": 0,
+            "payment_method": "Venmo",
+            "cardholder_name": ""
         },
         {
             "desc": "PAYMENT FROM JOHN SMITH",
             "amount": 100.00,
             "type": "deposit",
-            "acc": "venmo"
+            "acc": "venmo",
+            "category": "Consulting Income",
+            "subcategory": "",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Venmo",
+            "cardholder_name": "",
+            "user_notes": "Ad-hoc hourly consulting"
         },
         {
             "desc": "TRANSFER TO BANK",
             "amount": -800.00,
             "type": "transfer_out",
-            "acc": "venmo"
+            "acc": "venmo",
+            "category": "Inter-Account Transfer",
+            "subcategory": "",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 1,
+            "payment_method": "Venmo",
+            "cardholder_name": ""
+        },
+        {
+            "desc": "UBER EATS *CHIPOTLE",
+            "amount": -22.50,
+            "type": "debit",
+            "acc": "credit_card",
+            "category": "Meals & Entertainment",
+            "subcategory": "Delivery",
+            "is_personal": 1,
+            "is_business": 0,
+            "is_transfer": 0,
+            "payment_method": "Apple Pay",
+            "cardholder_name": "Ned Pearson"
+        },
+        {
+            "desc": "BELLAGIO HOTEL LAS VEGAS",
+            "amount": -1204.50,
+            "type": "debit",
+            "acc": "credit_card",
+            "category": "Travel",
+            "subcategory": "Lodging",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "is_flagged": 1,
+            "flag_reason": "High cost hotel in casino location",
+            "payment_method": "Credit Card",
+            "cardholder_name": "Jane Doe"
+        },
+        {
+            "desc": "STRIPE PAYOUT",
+            "amount": 12500.00,
+            "type": "deposit",
+            "acc": "bank",
+            "category": "Sales Revenue",
+            "subcategory": "E-Commerce",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "ACH",
+            "cardholder_name": ""
+        },
+        {
+            "desc": "SQUARE INC DES:PYOUT ID:XXXXXXX",
+            "amount": 3450.75,
+            "type": "deposit",
+            "acc": "square",
+            "category": "Sales Revenue",
+            "subcategory": "Point of Sale",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Direct Deposit",
+            "cardholder_name": ""
+        },
+        {
+            "desc": "OFFICE DEPOT #1029",
+            "amount": -84.21,
+            "type": "debit",
+            "acc": "credit_card",
+            "category": "Office Supplies",
+            "subcategory": "",
+            "is_business": 1,
+            "is_personal": 0,
+            "is_transfer": 0,
+            "payment_method": "Credit Card",
+            "cardholder_name": "Ned Pearson"
+        },
+        {
+            "desc": "WIRE TRANSFER TO COINBASE",
+            "amount": -50000.00,
+            "type": "transfer_out",
+            "acc": "bank",
+            "category": "Uncategorized",
+            "subcategory": "",
+            "is_flagged": 1,
+            "flag_reason": "Transfer to unregulated crypto exchange. Board approval missing.",
+            "is_business": 0,
+            "is_personal": 1,
+            "is_transfer": 1,
+            "payment_method": "Wire Transfer",
+            "cardholder_name": ""
         }
     ],
     "flagged_transaction": {
-        "desc": "WIRE TRANSFER OFFSHORE LLC",
-        "amount": -25000.00,
+        "desc": "WIRE TRANSFER OFFSHORE LLC CAYMAN",
+        "amount": -150000.00,
         "type": "transfer_out",
         "acc": "bank",
-        "flag_reason": "High volume outgoing transfer to unknown entity"
+        "category": "Legal & Professional",
+        "subcategory": "Vendor Payment",
+        "is_business": 1,
+        "is_personal": 0,
+        "is_transfer": 0,
+        "is_flagged": 1,
+        "flag_reason": "Extraordinarily large offshore wire transfer to unknown shell company immediately following VC funding round.",
+        "payment_method": "Wire Transfer",
+        "user_notes": "Needs immediate board review."
     },
     "document": {
         "filename": "Demo_Bank_Statement_Oct_2023.pdf",
