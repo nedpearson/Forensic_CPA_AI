@@ -5,16 +5,16 @@ Applies rule-based matching to classify transactions.
 import re
 from datetime import datetime, timedelta
 from collections import defaultdict
-from database import get_db, get_category_rules, build_filter_clause
+from database import get_db, get_category_rules, build_filter_clause, update_transaction
 
 
-def categorize_transaction(user_id, description, amount, trans_type='', payment_method=''):
+def categorize_transaction(user_id, description, amount, trans_type='', payment_method='', trans_date=None, account_id=None):
     """
-    Apply deterministic categorization rules to a transaction using Phase 3 pipeline logic.
+    Apply deterministic categorization rules to a transaction using Phase 9 multi-signal weighted logic.
     Returns dict with category, subcategory, is_personal, is_business, is_transfer, is_flagged, flag_reason.
     """
     from categorization_pipeline import CategorizationPipeline
-    result = CategorizationPipeline.process_transaction(user_id, description, amount, trans_type)
+    result = CategorizationPipeline.process_transaction(user_id, description, amount, trans_type, trans_date, account_id)
     
     # Back-fill legacy fields expected by app.py
     result.setdefault('is_flagged', 0)
@@ -111,30 +111,27 @@ def recategorize_all(user_id):
                 'trans_date': row['trans_date']
             })
             
-        cursor.execute("""
-            UPDATE transactions SET
-                category = ?, subcategory = ?,
-                is_personal = ?, is_business = ?, is_transfer = ?,
-                is_flagged = ?, flag_reason = ?,
-                payment_method = COALESCE(?, payment_method),
-                categorization_confidence = ?, categorization_source = ?,
-                categorization_status = ?, categorization_explanation = ?,
-                auto_categorized = 1
-            WHERE id = ?
-        """, (
-            result['category'], result.get('subcategory'),
-            result['is_personal'], result['is_business'], result['is_transfer'],
-            result['is_flagged'], result.get('flag_reason'),
-            result.get('payment_method'),
-            result.get('categorization_confidence'),
-            result.get('categorization_source'),
-            result.get('categorization_status'),
-            result.get('categorization_explanation'),
-            row['id']
-        ))
+        update_args = {
+            'category': result['category'],
+            'subcategory': result.get('subcategory'),
+            'is_personal': result['is_personal'],
+            'is_business': result['is_business'],
+            'is_transfer': result['is_transfer'],
+            'is_flagged': result['is_flagged'],
+            'flag_reason': result.get('flag_reason'),
+            'categorization_confidence': result.get('categorization_confidence'),
+            'categorization_source': result.get('categorization_source'),
+            'categorization_status': result.get('categorization_status'),
+            'categorization_explanation': result.get('categorization_explanation'),
+            'auto_categorized': 1,
+            'manually_edited': 0
+        }
+        if result.get('payment_method'):
+            update_args['payment_method'] = result.get('payment_method')
+            
+        update_transaction(user_id, row['id'], **update_args)
         updated += 1
 
-    conn.commit()
     conn.close()
     
     if uncategorized:
@@ -183,7 +180,7 @@ def run_bulk_ai_categorization(user_id, transactions_list):
                 for r in results:
                     score = r.confidence_score if hasattr(r, 'confidence_score') else 0.5
                     
-                    # --- Phase 5: Internet Lookup Fallback Trigger ---
+                    # --- Phase 5 & 10: Low Confidence Internet Lookup Eligibility ---
                     lookup_used = False
                     if score < 0.85 and r.suggested_pattern:
                         # 1. We have low confidence and a clean merchant string
@@ -214,12 +211,16 @@ def run_bulk_ai_categorization(user_id, transactions_list):
                                 r = second_pass[0]
                                 score = r.confidence_score if hasattr(r, 'confidence_score') else 0.5
                                 
-                    if score >= 0.85:
+                    # Phase 10: Precision-Safe Status Applied Bounds
+                    if score >= 0.90:
                         status = 'auto_applied'
-                    elif score >= 0.5:
+                    elif score >= 0.65:
                         status = 'suggested'
                     else:
                         status = 'review_required'
+                        # Phase 10 Safety Escalation: Wipe out the rule suggestion entirely if the LLM couldn't break 0.30 even after lookup.
+                        if score < 0.30:
+                            r.suggested_pattern = None
                         
                     explanation = getattr(r, 'reasoning', '')
                     flags = getattr(r, 'explanation_flags', '')

@@ -126,8 +126,12 @@ You are an expert AI Forensic Bookkeeper. Categorize the following batch of bank
 ### INSTRUCTIONS
 1. Analyze the transaction using Chain-of-Thought. Write down your `reasoning` explicitly: does it look like a known vendor? Is it a transfer? Does it resemble prior approved examples?
 2. Pick the single most accurate Category.
-3. Provide a `confidence_score` (0.0 to 1.0). Be highly confident (>0.85) ONLY if the merchant is extremely well-known, matches prior examples exactly, or is obvious (like a bank transfer).
-4. Provide `explanation_flags` if confidence < 0.85 (e.g., 'Unknown local vendor', 'Generic ACH name').
+3. Provide an optional `suggested_pattern` if returning `auto_applied` or `suggested`, dropping the noise.
+4. Phase 11: Provide an optional `parent_merchant` (e.g. `CHEVRON`) if this transaction looks like a specific local branch of a major chain (e.g. `CHEVRON 012489`).
+5. Provide a `confidence_score` (0.0 to 1.0). 
+   - **CRITICAL Phase 10 Safety Rule**: Be highly confident (>0.85) ONLY if the merchant is extremely well-known, matches prior examples exactly, or is obvious (like a bank transfer). 
+   - If the merchant name is ambiguous, extremely short (e.g., "SQ *", "UBER"), or generic, your confidence MUST BE < 0.85. Do not hallucinate safety.
+6. Provide `explanation_flags` if confidence < 0.85 (e.g., 'Unknown local vendor', 'Generic ACH name', 'Reckless inference penalty').
 
 ### TRANSACTIONS TO CATEGORIZE
 {batch_text}

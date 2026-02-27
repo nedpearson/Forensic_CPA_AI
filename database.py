@@ -142,7 +142,9 @@ def init_db():
             is_personal INTEGER DEFAULT 0,
             is_business INTEGER DEFAULT 0,
             is_transfer INTEGER DEFAULT 0,
-            priority INTEGER DEFAULT 0
+            priority INTEGER DEFAULT 0,
+            hit_count INTEGER DEFAULT 1,
+            last_applied TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -279,11 +281,24 @@ def init_db():
             user_id INTEGER REFERENCES users(id),
             canonical_name TEXT NOT NULL,
             default_category_id INTEGER REFERENCES categories(id),
+            parent_merchant_id INTEGER REFERENCES merchants(id),
             is_transfer INTEGER DEFAULT 0,
             is_personal INTEGER DEFAULT 0,
             is_business INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS merchant_context_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            merchant_id INTEGER REFERENCES merchants(id) ON DELETE CASCADE,
+            context_type TEXT NOT NULL,  -- e.g., 'account_type'
+            context_value TEXT NOT NULL, -- e.g., 'credit_card'
+            mapped_category_id INTEGER REFERENCES categories(id),
+            priority INTEGER DEFAULT 60,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, merchant_id, context_type, context_value)
         );
 
         CREATE TABLE IF NOT EXISTS merchant_aliases (
@@ -341,6 +356,11 @@ def init_db():
         cursor.execute("ALTER TABLE documents ADD COLUMN failure_reason TEXT")
     except sqlite3.OperationalError:
         pass
+        
+    try:
+        cursor.execute("ALTER TABLE merchants ADD COLUMN parent_merchant_id INTEGER REFERENCES merchants(id)")
+    except sqlite3.OperationalError:
+        pass
     
     # Categories dynamic migrations
     for col, ctype in [
@@ -387,6 +407,13 @@ def init_db():
         ('categorization_explanation', 'TEXT')
     ]:
         try: cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError: pass
+
+    for col, ctype in [
+        ('hit_count', 'INTEGER DEFAULT 1'),
+        ('last_applied', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+    ]:
+        try: cursor.execute(f"ALTER TABLE category_rules ADD COLUMN {col} {ctype}")
         except sqlite3.OperationalError: pass
 
     try:
@@ -1129,8 +1156,11 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
     conn = get_db()
     cursor = conn.cursor()
     
+    # Enforce case-insensitive uniqueness globally to stop duplicate fragment rules
+    pattern = pattern.upper()
+    
     # Check if a rule for this pattern already exists for the user
-    cursor.execute("SELECT id, category, priority FROM category_rules WHERE user_id = ? AND pattern = ?", (user_id, pattern))
+    cursor.execute("SELECT id, category, priority, hit_count FROM category_rules WHERE user_id = ? AND pattern = ?", (user_id, pattern))
     existing_rule = cursor.fetchone()
     
     if existing_rule:
@@ -1138,28 +1168,64 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
         existing_category = existing_rule['category']
         existing_priority = existing_rule['priority']
         
+        hit_count = 1
+        if 'hit_count' in existing_rule.keys() and existing_rule['hit_count'] is not None:
+            hit_count = existing_rule['hit_count']
+        
         if existing_category == category:
-            # Strengthening: Same category, bump priority
-            new_priority = min(100, existing_priority + 5)
-            # If the incoming priority is already higher, use that directly
-            new_priority = max(new_priority, priority)
+            # Strengthening: Same category
+            new_hit_count = hit_count + 1
+            
+            if priority == 100:
+                new_priority = 100
+            elif priority <= 40:
+                # Weak AI suggestion doesn't actively push up high priority rules
+                new_priority = max(existing_priority, priority)
+            else:
+                # Accelerate Priority scaling for loyal rules (User confirmed again)
+                if new_hit_count >= 5: new_priority = 95
+                elif new_hit_count >= 4: new_priority = 85
+                elif new_hit_count >= 3: new_priority = 80
+                elif new_hit_count >= 2: new_priority = 65
+                else: new_priority = max(existing_priority, priority + 5)
+            
+            new_priority = min(100, max(existing_priority, new_priority))
             
             cursor.execute(
-                "UPDATE category_rules SET subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ? WHERE id = ?",
-                (subcategory, is_personal, is_business, is_transfer, new_priority, rule_id)
+                "UPDATE category_rules SET subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ?, hit_count = ?, last_applied = CURRENT_TIMESTAMP WHERE id = ?",
+                (subcategory, is_personal, is_business, is_transfer, new_priority, new_hit_count, rule_id)
             )
         else:
-            # Correction: Different category. Only overwrite if new priority is >= existing
-            if priority >= existing_priority:
+            # Correction: Different category
+            if priority == 100:
+                # Explicit override bypasses safeguards
                 cursor.execute(
-                    "UPDATE category_rules SET category = ?, subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ? WHERE id = ?",
-                    (category, subcategory, is_personal, is_business, is_transfer, priority, rule_id)
+                    "UPDATE category_rules SET category = ?, subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ?, hit_count = 1, last_applied = CURRENT_TIMESTAMP WHERE id = ?",
+                    (category, subcategory, is_personal, is_business, is_transfer, 100, rule_id)
                 )
-            # Else: The existing rule is stronger, we ignore this weak AI override attempt
+            elif priority <= 40:
+                # AI weak suggestion bouncing off an existing rule. Ignore.
+                pass
+            else:
+                # Passive User Edit correcting a past rule
+                if existing_priority >= 80:
+                    # Stability Safeguard & Active Decay Penalty
+                    # Demote the old rule heavily but do not flip the category yet
+                    demoted_priority = existing_priority - 20
+                    cursor.execute(
+                        "UPDATE category_rules SET priority = ? WHERE id = ?",
+                        (demoted_priority, rule_id)
+                    )
+                else:
+                    # Faster Correction Recovery: Overwrite and rapidly jump priority
+                    cursor.execute(
+                        "UPDATE category_rules SET category = ?, subcategory = ?, is_personal = ?, is_business = ?, is_transfer = ?, priority = ?, hit_count = 1, last_applied = CURRENT_TIMESTAMP WHERE id = ?",
+                        (category, subcategory, is_personal, is_business, is_transfer, max(priority, 60), rule_id)
+                    )
     else:
         # Insert a fresh rule
         cursor.execute(
-            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)",
             (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
         )
         
@@ -1762,3 +1828,38 @@ def set_lookup_cache(lookup_key, raw_response, source='wikipedia'):
     """, (lookup_key, raw_response, source))
     conn.commit()
     conn.close()
+
+def add_merchant_context_rule(user_id: int, merchant_id: int, context_type: str, context_value: str, mapped_category_id: int, priority: int = 60) -> int:
+    """
+    Phase 11: Adds a context-specific rule for a merchant (e.g., categorizing by 'account_type').
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO merchant_context_rules 
+        (user_id, merchant_id, context_type, context_value, mapped_category_id, priority) 
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, merchant_id, context_type, context_value) DO UPDATE SET
+        mapped_category_id=excluded.mapped_category_id, priority=excluded.priority
+    """, (user_id, merchant_id, context_type, str(context_value), mapped_category_id, priority))
+    conn.commit()
+    rule_id = cursor.lastrowid
+    conn.close()
+    return rule_id
+
+def get_merchant_context_rules(user_id: int, merchant_id: int) -> list:
+    """
+    Retrieves all contextual classification rules for a specific merchant.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT mcr.*, c.name as category_name
+        FROM merchant_context_rules mcr
+        JOIN categories c ON mcr.mapped_category_id = c.id
+        WHERE mcr.user_id = ? AND mcr.merchant_id = ?
+        ORDER BY mcr.priority DESC
+    """, (user_id, merchant_id))
+    rules = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rules

@@ -42,13 +42,14 @@ class MerchantNormalizer:
         return desc.strip()[:60] # Cap length
 
     @staticmethod
-    def resolve_merchant(user_id: int, raw_desc: str) -> tuple[int, str, int] | tuple[None, None, None]:
+    def resolve_merchant(user_id: int, raw_desc: str) -> dict | None:
         """
         Looks up a raw transaction description in the `merchant_aliases` table.
-        Returns (merchant_id, canonical_name, default_category_id) if found, else None.
+        Phase 11: If the merchant has a parent_merchant_id and lacks its own default_category_id,
+        it inherits the parent's default_category_id silently.
         """
         if not raw_desc:
-            return None, None, None
+            return None
             
         cleaned = MerchantNormalizer.clean_raw_string(raw_desc)
         
@@ -57,7 +58,7 @@ class MerchantNormalizer:
         
         # We check for exact alias match on the cleaned string first
         cursor.execute('''
-            SELECT m.id, m.canonical_name, m.default_category_id, m.is_personal, m.is_business, m.is_transfer
+            SELECT m.id, m.canonical_name, m.default_category_id, m.parent_merchant_id, m.is_personal, m.is_business, m.is_transfer
             FROM merchant_aliases a
             JOIN merchants m ON a.merchant_id = m.id
             WHERE a.user_id = ? AND a.raw_pattern = ?
@@ -68,23 +69,32 @@ class MerchantNormalizer:
         if not row:
             # Fallback: check if the canonical name itself matches exactly
             cursor.execute('''
-                SELECT id, canonical_name, default_category_id, is_personal, is_business, is_transfer
+                SELECT id, canonical_name, default_category_id, parent_merchant_id, is_personal, is_business, is_transfer
                 FROM merchants 
                 WHERE user_id = ? AND canonical_name = ?
             ''', (user_id, cleaned))
             row = cursor.fetchone()
             
-        conn.close()
-        
         if row:
-            return dict(row)
+            res = dict(row)
+            # Phase 11: Hierarchical Inheritence
+            if not res['default_category_id'] and res.get('parent_merchant_id'):
+                cursor.execute("SELECT default_category_id FROM merchants WHERE id = ?", (res['parent_merchant_id'],))
+                p_row = cursor.fetchone()
+                if p_row and p_row['default_category_id']:
+                    res['default_category_id'] = p_row['default_category_id']
+                    
+            conn.close()
+            return res
             
+        conn.close()
         return None
 
     @staticmethod
-    def learn_merchant_alias(user_id: int, raw_desc: str, canonical_name: str, category_id: int = None, is_transfer=0, is_personal=0, is_business=0):
+    def learn_merchant_alias(user_id: int, raw_desc: str, canonical_name: str, category_id: int = None, is_transfer=0, is_personal=0, is_business=0, parent_merchant_id: int = None):
         """
         Creates or updates a merchant identity and links the raw string as an alias.
+        Phase 11: Accepts optional `parent_merchant_id` to link store variants to a global brand.
         """
         if not raw_desc or not canonical_name:
             return None
@@ -102,17 +112,27 @@ class MerchantNormalizer:
         if m_row:
             merchant_id = m_row['id']
             # Optionally update defaults if explicitly provided
-            if category_id is not None:
-                cursor.execute("""
-                    UPDATE merchants 
-                    SET default_category_id = ?, is_transfer = ?, is_personal = ?, is_business = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (category_id, is_transfer, is_personal, is_business, merchant_id))
+            if category_id is not None or parent_merchant_id is not None:
+                updates = []
+                params = []
+                if category_id is not None:
+                    updates.append("default_category_id = ?")
+                    params.append(category_id)
+                if parent_merchant_id is not None:
+                    updates.append("parent_merchant_id = ?")
+                    params.append(parent_merchant_id)
+                
+                # Append standard updates
+                updates.extend(["is_transfer = ?", "is_personal = ?", "is_business = ?", "updated_at = CURRENT_TIMESTAMP"])
+                params.extend([is_transfer, is_personal, is_business, merchant_id])
+                
+                query = f"UPDATE merchants SET {', '.join(updates)} WHERE id = ?"
+                cursor.execute(query, params)
         else:
             cursor.execute("""
-                INSERT INTO merchants (user_id, canonical_name, default_category_id, is_transfer, is_personal, is_business)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (user_id, canonical_name, category_id, is_transfer, is_personal, is_business))
+                INSERT INTO merchants (user_id, canonical_name, default_category_id, is_transfer, is_personal, is_business, parent_merchant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, canonical_name, category_id, is_transfer, is_personal, is_business, parent_merchant_id))
             merchant_id = cursor.lastrowid
             
         # 2. Add Alias if not exists
