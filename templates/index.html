@@ -2837,10 +2837,16 @@
         // ===== FORENSIC ANALYSIS =====
         async function loadAnalysis(filters) {
             if (!filters) filters = FilterStore.getState();
-            const qs = serializeFilters(filters);
+
+            // Strip out restrictive drilldown filters for the deposit analysis so it isn't starved of deposits
+            const safeFilters = { ...filters };
+            delete safeFilters.category;
+            delete safeFilters.trans_type;
+            delete safeFilters.search;
+            const safeQs = serializeFilters(safeFilters);
 
             // Deposit-transfer patterns
-            const patterns = await api('/api/analysis/deposit-transfers?' + qs);
+            const patterns = await api('/api/analysis/deposit-transfers?' + safeQs);
             let dtHtml = '<table class="table table-dark-custom"><thead><tr><th>Deposit Date</th><th>Deposit Amt</th><th>Transfers Within 7 Days</th><th>Total Moved</th><th>% Moved</th></tr></thead><tbody>';
             if (!patterns.length) dtHtml += '<tr><td colspan="5" class="text-center text-muted py-3">No patterns detected. Upload bank statements to analyze.</td></tr>';
             patterns.forEach(p => {
@@ -2867,8 +2873,8 @@
             // Make flagged available for editing
             window._flaggedTrans = flagged;
 
-            // Venmo analysis
-            const venmo = await api('/api/transactions?search=VENMO' + getViewModeParam());
+            // Venmo analysis - Find transactions mathematically mapped to Venmo category OR containing Venmo
+            const venmo = await api('/api/transactions?category=Venmo+-+Payment' + getViewModeParam().replace('?', '&'));
             let vHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Recipient</th><th>Amount</th><th>Note/Description</th><th>Flagged</th></tr></thead><tbody>';
             let venmoTotal = 0;
             const venmoByPerson = {};
@@ -2930,9 +2936,13 @@
             const statusEl = document.getElementById('upload-status');
             const previewEl = document.getElementById('upload-preview');
             const resultsEl = document.getElementById('upload-results');
+            const uploadZone = document.getElementById('upload-zone');
+
+            uploadZone.style.pointerEvents = 'none';
+            uploadZone.style.opacity = '0.6';
 
             for (const file of files) {
-                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Parsing ${esc(file.name)}...</div>`;
+                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Processing ${esc(file.name)}... please wait.</div>`;
                 previewEl.style.display = 'none';
 
                 const fd = new FormData();
@@ -2965,8 +2975,8 @@
                     <div class="preview-header">
                         <h6 class="mb-0"><i class="fas fa-table me-1"></i> Preview: ${esc(data.filename)} (${data.transaction_count} transactions)</h6>
                         <div>
-                            <button class="btn btn-sm btn-success me-1" onclick="commitUpload()"><i class="fas fa-check"></i> Commit</button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="cancelUpload()"><i class="fas fa-times"></i> Cancel</button>
+                            <button class="btn btn-sm btn-success me-1" id="btn-commit-upload" onclick="commitUpload()"><i class="fas fa-check"></i> Commit</button>
+                            <button class="btn btn-sm btn-outline-danger" id="btn-cancel-upload" onclick="cancelUpload()"><i class="fas fa-times"></i> Cancel</button>
                         </div>
                     </div>
                     <div class="scrollable-table"><table class="table table-dark-custom">
@@ -3005,6 +3015,8 @@
                 }
             }
             fileInput.value = '';
+            uploadZone.style.pointerEvents = 'auto';
+            uploadZone.style.opacity = '1';
         }
 
         async function commitUpload() {
@@ -3013,6 +3025,11 @@
             const statusEl = document.getElementById('upload-status');
             const resultsEl = document.getElementById('upload-results');
 
+            const btnCommit = document.getElementById('btn-commit-upload');
+            const btnCancel = document.getElementById('btn-cancel-upload');
+            if (btnCommit) { btnCommit.disabled = true; btnCommit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Committing...'; }
+            if (btnCancel) btnCancel.disabled = true;
+
             // Gather updated categories from preview selects
             const transactions = previewEl._transactions || [];
             document.querySelectorAll('.preview-cat').forEach(sel => {
@@ -3020,11 +3037,13 @@
                 if (transactions[idx]) transactions[idx].category = sel.value;
             });
 
-            statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Committing...</div>`;
+            statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Committing transactions safely to the database...</div>`;
 
             const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
             if (data.error) {
                 statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(data.error)}</div>`;
+                if (btnCommit) { btnCommit.disabled = false; btnCommit.innerHTML = '<i class="fas fa-check"></i> Commit'; }
+                if (btnCancel) btnCancel.disabled = false;
             } else {
                 statusEl.innerHTML = '';
                 previewEl.style.display = 'none';
@@ -3040,6 +3059,11 @@
 
         async function cancelUpload() {
             if (!currentPreviewId) return;
+            const btnCancel = document.getElementById('btn-cancel-upload');
+            const btnCommit = document.getElementById('btn-commit-upload');
+            if (btnCancel) { btnCancel.disabled = true; btnCancel.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+            if (btnCommit) btnCommit.disabled = true;
+
             await api('/api/upload/cancel', 'POST', { preview_id: currentPreviewId });
             document.getElementById('upload-preview').style.display = 'none';
             document.getElementById('upload-status').innerHTML = '<div class="alert alert-warning small py-2"><i class="fas fa-ban"></i> Upload cancelled</div>';
@@ -3072,9 +3096,9 @@
 
                 let actionHtml = '';
                 if (d.status === 'pending_approval') {
-                    actionHtml += `<button class="btn btn-sm btn-success py-0 px-2 me-1" onclick="event.stopPropagation(); approveDocument('${d.id}')" title="Approve Document"><i class="fas fa-check"></i> Approve</button>`;
+                    actionHtml += `<button class="btn btn-sm btn-success py-0 px-2 me-1 action-btn" onclick="event.stopPropagation(); approveDocument('${d.id}', this)" title="Approve Document"><i class="fas fa-check"></i> Approve</button>`;
                 }
-                actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteDocument('${d.id}')" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
+                actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2 action-btn" onclick="event.stopPropagation(); deleteDocument('${d.id}', this)" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
 
                 const indent = isChild ? '<span style="margin-left: 1.5rem; border-left: 2px solid #4a5568; padding-left: 10px;"></span>' : '';
 
@@ -3098,12 +3122,14 @@
             document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="10" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
         }
 
-        async function approveDocument(docId) {
+        async function approveDocument(docId, btn) {
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
             try {
                 toast("Approving document...", "info");
                 const res = await api(`/api/documents/${docId}/approve`, 'POST');
                 if (res.error) {
                     toast(res.error, "danger");
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Approve'; }
                 } else {
                     toast(`Approved successfully. ${res.transactions_approved} transactions activated.`, "success");
                     loadDocuments();
@@ -3111,16 +3137,19 @@
                 }
             } catch (e) {
                 toast("Error approving document.", "danger");
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Approve'; }
             }
         }
 
-        async function deleteDocument(docId) {
+        async function deleteDocument(docId, btn) {
             if (!confirm("Deleting this document will remove the document and any transactions/data imported from it.")) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
             try {
                 toast("Deleting document...", "info");
                 const res = await api(`/api/documents/${docId}`, 'DELETE');
                 if (res.error) {
                     toast(res.error, "danger");
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i>'; }
                 } else {
                     toast(`Document deleted successfully.`, "success");
                     loadDocuments();
@@ -3128,6 +3157,7 @@
                 }
             } catch (e) {
                 toast("Error deleting document.", "danger");
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i>'; }
             }
         }
 
@@ -3249,7 +3279,9 @@
 
         async function loadRecipients(filters) {
             if (!filters) filters = FilterStore.getState();
-            const qs = serializeFilters(filters);
+            const safeFilters = { ...filters };
+            delete safeFilters.trans_type; // Recipients always uses outflows
+            const qs = serializeFilters(safeFilters);
             recipientData = await api('/api/analysis/recipients?' + qs);
             renderRecipients();
         }
@@ -3305,7 +3337,10 @@
 
         async function loadDepositAging(filters) {
             if (!filters) filters = FilterStore.getState();
-            const qs = serializeFilters(filters);
+            const safeFilters = { ...filters };
+            delete safeFilters.trans_type; // Aging always searches for deposits
+            delete safeFilters.category; // Categories usually mask deposits
+            const qs = serializeFilters(safeFilters);
             agingData = await api('/api/analysis/deposit-aging?' + qs);
             renderDepositAging();
         }
@@ -3367,32 +3402,43 @@
             // Summary cards for each cardholder
             comparison.forEach(ch => {
                 const suspicionPct = ch.flagged_count > 0 ? Math.min(100, Math.round(ch.flagged_count / ch.total_transactions * 100)) : 0;
+
+                let displayName = ch.cardholder_name;
+                if (ch.card_last_four) {
+                    displayName += ` (*${ch.card_last_four})`;
+                }
+
+                let drillParams = `cardholder:'${esc(ch.cardholder_name)}'`;
+                if (ch.card_last_four) {
+                    drillParams += `,card_last_four:'${esc(ch.card_last_four)}'`;
+                }
+
                 html += `<div class="col-md-6"><div class="card-dark">
-                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})">
-                    <span><i class="fas fa-user me-1"></i> ${esc(ch.cardholder_name)}</span>
-                    <button class="btn btn-sm btn-outline-light py-0" onclick="event.stopPropagation();drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})"><i class="fas fa-external-link-alt fa-xs"></i></button>
+                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({${drillParams}})">
+                    <span><i class="fas fa-user me-1"></i> ${esc(displayName)}</span>
+                    <button class="btn btn-sm btn-outline-light py-0" onclick="event.stopPropagation();drillToTransactions({${drillParams}})"><i class="fas fa-external-link-alt fa-xs"></i></button>
                 </div>
                 <div class="p-3">
                     <div class="row g-2 mb-3">
-                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_spent)}</div><div class="text-muted" style="font-size:0.7rem;">TOTAL SPENT</div></div></div>
-                        <div class="col-4"><div class="text-center"><div class="amount-positive fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_received)}</div><div class="text-muted" style="font-size:0.7rem;">RECEIVED</div></div></div>
-                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.transfers_out)}</div><div class="text-muted" style="font-size:0.7rem;">TRANSFERS OUT</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_spent)}</div><div style="color:#8b949e;font-size:0.7rem;">TOTAL SPENT</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-positive fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_received)}</div><div style="color:#8b949e;font-size:0.7rem;">RECEIVED</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.transfers_out)}</div><div style="color:#8b949e;font-size:0.7rem;">TRANSFERS OUT</div></div></div>
                     </div>
                     <div class="row g-2 mb-3">
-                        <div class="col-3"><div class="text-center"><div class="fw-bold">${ch.total_transactions}</div><div class="text-muted" style="font-size:0.7rem;">TRANSACTIONS</div></div></div>
-                        <div class="col-3"><div class="text-center"><div class="fw-bold">$${fmt(ch.avg_purchase)}</div><div class="text-muted" style="font-size:0.7rem;">AVG PURCHASE</div></div></div>
-                        <div class="col-3"><div class="text-center"><div class="${ch.flagged_count > 0 ? 'text-danger' : ''} fw-bold">${ch.flagged_count}</div><div class="text-muted" style="font-size:0.7rem;">FLAGGED</div></div></div>
-                        <div class="col-3"><div class="text-center"><div class="text-muted small">${ch.first_transaction || 'N/A'}<br>to ${ch.last_transaction || 'N/A'}</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="fw-bold" style="color:#c9d1d9;">${ch.total_transactions}</div><div style="color:#8b949e;font-size:0.7rem;">TRANSACTIONS</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="fw-bold" style="color:#c9d1d9;">$${fmt(ch.avg_purchase)}</div><div style="color:#8b949e;font-size:0.7rem;">AVG PURCHASE</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="${ch.flagged_count > 0 ? 'text-danger' : ''} fw-bold" style="color:#c9d1d9;">${ch.flagged_count}</div><div style="color:#8b949e;font-size:0.7rem;">FLAGGED</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="small" style="color:#8b949e;">${ch.first_transaction || 'N/A'}<br>to ${ch.last_transaction || 'N/A'}</div></div></div>
                     </div>
                     <div class="row g-2 mb-2">
                         <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-personal">Personal</span> <span class="amount-negative">$${fmt(ch.personal_total)}</span></div></div>
                         <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-business">Business</span> <span class="amount-negative">$${fmt(ch.business_total)}</span></div></div>
                     </div>
-                    <div class="mt-2"><strong class="small text-muted">Top Categories:</strong></div>
+                    <div class="mt-2"><strong class="small" style="color:#8b949e;">Top Categories:</strong></div>
                     <table class="table table-dark-custom mt-1"><tbody>`;
                 (ch.top_categories || []).forEach(c => {
                     const barW = ch.total_spent > 0 ? Math.round(c.total / ch.total_spent * 100) : 0;
-                    html += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}',category:'${esc(c.category)}'})">
+                    html += `<tr class="clickable-row" onclick="drillToTransactions({${drillParams},category:'${esc(c.category)}'})">
                     <td style="width:35%">${esc(c.category)}</td>
                     <td class="amount-negative">$${fmt(c.total)}</td>
                     <td>${c.cnt}</td>

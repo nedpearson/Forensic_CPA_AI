@@ -33,7 +33,7 @@ function hydrateFilters(queryString) {
 
     // Known schema keys (for safety, ignoring malicious or unknown keys)
     const allowedKeys = [
-        'search', 'category', 'cardholder', 'trans_type', 'date_from', 'date_to',
+        'search', 'category', 'cardholder', 'card_last_four', 'trans_type', 'date_from', 'date_to',
         'min_amount', 'max_amount', 'flags', 'view_mode', 'date_preset',
         'is_transfer', 'is_personal', 'is_business', 'is_flagged', 'account_id', 'payment_method'
     ];

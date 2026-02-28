@@ -430,6 +430,21 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        # Backfill missing cardholder_name from account_name for legacy transactions
+        cursor.executescript("""
+            UPDATE transactions 
+            SET cardholder_name = (SELECT account_name FROM accounts WHERE accounts.id = transactions.account_id)
+            WHERE cardholder_name IS NULL OR cardholder_name IN ('', 'checking', 'credit', 'depository');
+            
+            UPDATE transactions
+            SET card_last_four = (SELECT card_last_four FROM accounts WHERE accounts.id = transactions.account_id)
+            WHERE card_last_four IS NULL OR card_last_four = '';
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Create uniqueness constraints after all columns are confirmed to exist
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_user_sha ON documents(user_id, content_sha256) WHERE content_sha256 IS NOT NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_trans_fingerprint ON transactions(user_id, txn_fingerprint) WHERE txn_fingerprint IS NOT NULL")
@@ -696,36 +711,42 @@ def delete_document(user_id, doc_id):
     # Create placeholders
     placeholders = ','.join('?' for _ in doc_ids_to_delete)
     
-    # 3. Delete from transaction_sources
-    cursor.execute(f"DELETE FROM transaction_sources WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
-    
-    # 4. Remove orphan transactions
-    cursor.execute("""
-        DELETE FROM transactions 
-        WHERE user_id = ? 
-        AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
-    """, (user_id, user_id))
-    
-    # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
-    cursor.execute(f"""
-        UPDATE transactions 
-        SET document_id = NULL
-        WHERE document_id IN ({placeholders}) AND user_id = ?
-    """, (*doc_ids_to_delete, user_id))
-    
-    # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
-    cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
-    cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+    try:
+        # 3. Delete from transaction_sources
+        cursor.execute(f"DELETE FROM transaction_sources WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+        
+        # 4. Remove orphan transactions
+        cursor.execute("""
+            DELETE FROM transactions 
+            WHERE user_id = ? 
+            AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
+        """, (user_id, user_id))
+        
+        # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
+        cursor.execute(f"""
+            UPDATE transactions 
+            SET document_id = NULL
+            WHERE document_id IN ({placeholders}) AND user_id = ?
+        """, (*doc_ids_to_delete, user_id))
+        
+        # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
+        cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+        cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
 
-    # 6. Nullify parent_document_id on any document referencing these before they are deleted
-    cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+        # 6. Nullify parent_document_id on any document referencing these before they are deleted
+        cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
 
-    # 7. Delete documents
-    cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
-    
-    conn.commit()
+        # 7. Delete documents
+        cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error during document deletion: {e}")
+        conn.close()
+        return False
+        
     conn.close()
-    
     return True
 
 
@@ -770,15 +791,42 @@ def find_duplicate_transactions(user_id, transactions):
     conn = get_db()
     cursor = conn.cursor()
     duplicates = []
+    dates = set()
     for i, t in enumerate(transactions):
-        cursor.execute("""
+        t_date = t.get('trans_date')
+        if t_date:
+            dates.add(t_date)
+
+    if not dates:
+        conn.close()
+        return duplicates
+
+    # Batch fetch all transactions on these dates
+    date_list = list(dates)
+    existing_map = {}
+    batch_size = 900
+
+    for idx in range(0, len(date_list), batch_size):
+        batch = date_list[idx:idx+batch_size]
+        placeholders = ','.join('?' for _ in batch)
+        cursor.execute(f"""
             SELECT id, trans_date, description, amount FROM transactions
-            WHERE user_id = ? AND trans_date = ? AND ABS(amount - ?) < 0.01
-            AND UPPER(description) = UPPER(?)
-        """, (user_id, t.get('trans_date', ''), t.get('amount', 0), t.get('description', '')))
-        existing = cursor.fetchone()
-        if existing:
-            duplicates.append({'index': i, 'existing': dict(existing)})
+            WHERE user_id = ? AND trans_date IN ({placeholders})
+        """, (user_id, *batch))
+        
+        for row in cursor.fetchall():
+            key = (row['trans_date'], row['description'].upper() if row['description'] else '', round(float(row['amount']), 2))
+            existing_map[key] = dict(row)
+
+    for i, t in enumerate(transactions):
+        t_date = t.get('trans_date', '')
+        t_desc = t.get('description', '').upper()
+        t_amt = round(float(t.get('amount', 0)), 2)
+        key = (t_date, t_desc, t_amt)
+        
+        if key in existing_map:
+            duplicates.append({'index': i, 'existing': existing_map[key]})
+            
     conn.close()
     return duplicates
 
@@ -838,6 +886,115 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
     conn.close()
     return trans_id, True
 
+
+def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_doc_ids):
+    """
+    Bulk insert transactions within a single transaction boundary for performance and reliability.
+    transactions_with_hashes: list of dicts with 'trans' (the transaction dictionary) and 'txn_fingerprint' (the deduplication hash)
+    target_doc_ids: list of document_ids corresponding to each transaction.
+    Returns (added_count, skipped_count, doc_stats)
+    Where doc_stats is {doc_id: {'added': count, 'skipped': count, 'total': count}}
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. First, check which ones already exist
+        fingerprints = [t['txn_fingerprint'] for t in transactions_with_hashes]
+        # We can fetch existing in batches to avoid large IN clauses, but SQLite handles up to 32766 parameters.
+        # We'll just do one query if it's < 30000, else we batch it.
+        existing_map = {}
+        batch_size = 999
+        
+        for i in range(0, len(fingerprints), batch_size):
+            batch = fingerprints[i:i+batch_size]
+            placeholders = ','.join('?' for _ in batch)
+            cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, *batch))
+            for row in cursor.fetchall():
+                existing_map[row['txn_fingerprint']] = row['id']
+                
+        insertions = []
+        source_insertions = []
+        
+        added_count = 0
+        skipped_count = 0
+        doc_stats = {}
+        
+        for i, item in enumerate(transactions_with_hashes):
+            t = item['trans']
+            fp = item['txn_fingerprint']
+            target_doc_id = target_doc_ids[i]
+            
+            if target_doc_id not in doc_stats:
+                doc_stats[target_doc_id] = {'added': 0, 'skipped': 0, 'total': 0}
+                
+            doc_stats[target_doc_id]['total'] += 1
+            
+            if fp in existing_map:
+                # Transaction already exists
+                trans_id = existing_map[fp]
+                if target_doc_id:
+                    # Still need to record the source mapping
+                    source_insertions.append((user_id, trans_id, target_doc_id))
+                skipped_count += 1
+                doc_stats[target_doc_id]['skipped'] += 1
+            else:
+                # Prepare for insertion
+                insertions.append((
+                    user_id, target_doc_id, account_id, t['trans_date'], t.get('post_date', t['trans_date']), 
+                    t['description'], t['amount'], t.get('trans_type', 'debit'), t.get('category', 'Uncategorized'),
+                    t.get('subcategory'), t.get('cardholder_name', ''), t.get('card_last_four', ''),
+                    t.get('payment_method', ''), t.get('check_number'),
+                    t.get('is_transfer', 0), t.get('transfer_to_account'), t.get('transfer_from_account'),
+                    t.get('is_personal', 0), t.get('is_business', 0),
+                    t.get('is_flagged', 0), t.get('flag_reason'),
+                    t.get('auto_categorized', 1), t.get('manually_edited', 0), fp, t.get('is_approved', 1),
+                    t.get('merchant_id'), t.get('categorization_confidence'), t.get('categorization_source'),
+                    t.get('categorization_status'), t.get('categorization_explanation')
+                ))
+                
+        # Execute insertions
+        if insertions:
+            cursor.executemany("""
+                INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+                    subcategory, cardholder_name, card_last_four, payment_method, check_number,
+                    is_transfer, transfer_to_account, transfer_from_account,
+                    is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved,
+                    merchant_id, categorization_confidence, categorization_source, categorization_status, categorization_explanation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, insertions)
+            
+            new_fps = [row[23] for row in insertions] # txn_fingerprint is index 23
+            for i in range(0, len(new_fps), batch_size):
+                batch = new_fps[i:i+batch_size]
+                placeholders = ','.join('?' for _ in batch)
+                cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, *batch))
+                for row in cursor.fetchall():
+                    existing_map[row['txn_fingerprint']] = row['id']
+                    
+            # Now construct source insertions for new IDs
+            for i, item in enumerate(transactions_with_hashes):
+                fp = item['txn_fingerprint']
+                target_doc_id = target_doc_ids[i]
+                if fp in new_fps and fp in existing_map:
+                    source_insertions.append((user_id, existing_map[fp], target_doc_id))
+                    added_count += 1
+                    doc_stats[target_doc_id]['added'] += 1
+                    
+        if source_insertions:
+            cursor.executemany("""
+                INSERT OR IGNORE INTO transaction_sources (user_id, transaction_id, document_id)
+                VALUES (?, ?, ?)
+            """, source_insertions)
+            
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+        
+    return added_count, skipped_count, doc_stats
 
 def update_transaction(user_id, trans_id, **fields):
     """Update a transaction and log the changes."""
@@ -1022,6 +1179,9 @@ def build_filter_clause(user_id, filters=None, table_alias=''):
     if filters.get('cardholder'):
         where += f" AND {prefix}cardholder_name LIKE ?"
         params.append(f"%{filters['cardholder']}%")
+    if filters.get('card_last_four'):
+        where += f" AND {prefix}card_last_four = ?"
+        params.append(filters['card_last_four'])
     if filters.get('account_id'):
         where += f" AND {prefix}account_id = ?"
         params.append(filters['account_id'])

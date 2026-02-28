@@ -6,7 +6,7 @@ from collections import defaultdict
 class CategorizationPipeline:
     
     @staticmethod
-    def process_transaction(user_id: int, raw_desc: str, amount: float, trans_type: str = 'debit', trans_date: str = None, account_id: int = None) -> dict:
+    def process_transaction(user_id: int, raw_desc: str, amount: float, trans_type: str = 'debit', trans_date: str = None, account_id: int = None, cache: dict = None) -> dict:
         """
         Phase 9: Multi-Signal Weighted Categorization Pipeline.
         Evaluates explicit rules, learned aliases, and historical quantitative signals to form a confidence score.
@@ -40,14 +40,20 @@ class CategorizationPipeline:
         cursor = conn.cursor()
         
         # --- Signal 1: Merchant Identity & Alias (Weight: 0.8) ---
-        merchant_dict = MerchantNormalizer.resolve_merchant(user_id, raw_desc)
+        merchant_dict = MerchantNormalizer.resolve_merchant(user_id, raw_desc, cache=cache)
         merchant_id = merchant_dict['id'] if merchant_dict else None
         
         if merchant_dict and merchant_dict.get('default_category_id'):
-            cursor.execute("SELECT name FROM categories WHERE id = ?", (merchant_dict['default_category_id'],))
-            cat_row = cursor.fetchone()
-            if cat_row:
-                cat_name = cat_row['name']
+            cat_name = None
+            if cache is not None and 'categories' in cache:
+                cat_name = cache['categories'].get(merchant_dict['default_category_id'])
+            else:
+                cursor.execute("SELECT name FROM categories WHERE id = ?", (merchant_dict['default_category_id'],))
+                cat_row = cursor.fetchone()
+                if cat_row:
+                    cat_name = cat_row['name']
+                    
+            if cat_name:
                 candidates[cat_name]['score'] += 0.8
                 candidates[cat_name]['signals'].append("Matched learned merchant identity (+0.8)")
                 candidates[cat_name]['merchant_id'] = merchant_id
@@ -59,22 +65,31 @@ class CategorizationPipeline:
         # --- Phase 11: Merchant Contextual Overrides ---
         if merchant_id and account_id:
             # Look up account type context
-            cursor.execute("SELECT account_type FROM accounts WHERE id = ?", (account_id,))
-            acct_row = cursor.fetchone()
-            if acct_row:
-                acct_type = acct_row['account_type']
-                
+            acct_type = None
+            if cache is not None and 'account_type' in cache:
+                acct_type = cache['account_type']
+            else:
+                cursor.execute("SELECT account_type FROM accounts WHERE id = ?", (account_id,))
+                acct_row = cursor.fetchone()
+                if acct_row:
+                    acct_type = acct_row['account_type']
+                    
+            if acct_type:
                 # Check for an active Context Rule
-                cursor.execute("""
-                    SELECT mcr.mapped_category_id, mcr.priority, c.name as category_name
-                    FROM merchant_context_rules mcr
-                    JOIN categories c ON mcr.mapped_category_id = c.id
-                    WHERE mcr.user_id = ? AND mcr.merchant_id = ? 
-                          AND mcr.context_type = 'account_type' AND mcr.context_value = ?
-                    ORDER BY mcr.priority DESC LIMIT 1
-                """, (user_id, merchant_id, acct_type))
-                
-                context_rule = cursor.fetchone()
+                context_rule = None
+                if cache is not None and 'context_rules' in cache:
+                    context_rule = cache['context_rules'].get((merchant_id, acct_type))
+                else:
+                    cursor.execute("""
+                        SELECT mcr.mapped_category_id, mcr.priority, c.name as category_name
+                        FROM merchant_context_rules mcr
+                        JOIN categories c ON mcr.mapped_category_id = c.id
+                        WHERE mcr.user_id = ? AND mcr.merchant_id = ? 
+                              AND mcr.context_type = 'account_type' AND mcr.context_value = ?
+                        ORDER BY mcr.priority DESC LIMIT 1
+                    """, (user_id, merchant_id, acct_type))
+                    context_rule = cursor.fetchone()
+                    
                 if context_rule:
                     ctx_cat = context_rule['category_name']
                     base_bonus = context_rule['priority'] / 100.0
@@ -101,11 +116,14 @@ class CategorizationPipeline:
                     candidates[ctx_cat]['merchant_id'] = merchant_id
 
         # --- Signal 2: Deterministic Rules (Weight: priority / 100) ---
-        try:
-            rules = get_category_rules(user_id)
-        except Exception:
-            cursor.execute("SELECT * FROM category_rules WHERE user_id = ? ORDER BY priority DESC", (user_id,))
-            rules = [dict(r) for r in cursor.fetchall()]
+        if cache is not None and 'rules' in cache:
+            rules = cache['rules']
+        else:
+            try:
+                rules = get_category_rules(user_id)
+            except Exception:
+                cursor.execute("SELECT * FROM category_rules WHERE user_id = ? ORDER BY priority DESC", (user_id,))
+                rules = [dict(r) for r in cursor.fetchall()]
 
         for rule in rules:
             pattern = rule['pattern']
@@ -153,25 +171,32 @@ class CategorizationPipeline:
 
         # --- Signal 3: Historical Amounts & Frequency (Weight: +0.1 to +0.3) ---
         tx_count = 0
+        
+        hist_rows = []
         if merchant_id or cleaned_desc:
-            if cleaned_desc:
-                cursor.execute("""
-                    SELECT category, AVG(amount) as avg_amt, COUNT(*) as tx_count 
-                    FROM transactions 
-                    WHERE user_id = ? AND is_approved = 1 AND category != 'Uncategorized' 
-                    AND (merchant_id = ? OR UPPER(description) LIKE ?)
-                    GROUP BY category
-                """, (user_id, merchant_id, f"%{cleaned_desc}%"))
+            if cache is not None and 'history_merchant' in cache:
+                if merchant_id and merchant_id in cache['history_merchant']:
+                    hist_rows = cache['history_merchant'][merchant_id]
             else:
-                cursor.execute("""
-                    SELECT category, AVG(amount) as avg_amt, COUNT(*) as tx_count 
-                    FROM transactions 
-                    WHERE user_id = ? AND is_approved = 1 AND category != 'Uncategorized' 
-                    AND merchant_id = ?
-                    GROUP BY category
-                """, (user_id, merchant_id))
+                if cleaned_desc:
+                    cursor.execute("""
+                        SELECT category, AVG(amount) as avg_amt, COUNT(*) as tx_count 
+                        FROM transactions 
+                        WHERE user_id = ? AND is_approved = 1 AND category != 'Uncategorized' 
+                        AND (merchant_id = ? OR UPPER(description) LIKE ?)
+                        GROUP BY category
+                    """, (user_id, merchant_id, f"%{cleaned_desc}%"))
+                else:
+                    cursor.execute("""
+                        SELECT category, AVG(amount) as avg_amt, COUNT(*) as tx_count 
+                        FROM transactions 
+                        WHERE user_id = ? AND is_approved = 1 AND category != 'Uncategorized' 
+                        AND merchant_id = ?
+                        GROUP BY category
+                    """, (user_id, merchant_id))
+                hist_rows = cursor.fetchall()
             
-            for row in cursor.fetchall():
+            for row in hist_rows:
                 cat_name = row['category']
                 avg_amt = row['avg_amt']
                 tx_count += row['tx_count'] # Accumulate total history

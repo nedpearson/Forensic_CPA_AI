@@ -164,6 +164,8 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
             amount: float = Field(description="Signed float. Negative for debits/withdrawals/fees, positive for credits/deposits.")
             type: str = Field(description="'debit' or 'credit'")
             balance: Optional[float] = Field(None, description="Running balance if shown")
+            cardholder_name: Optional[str] = Field(None, description="The specific person's name associated with this debit card swipe or POS transaction, if present.")
+            card_last_four: Optional[str] = Field(None, description="The last 4 digits of the specific debit/credit card used for this POS transaction, if present.")
 
         class AccountInfoSchema(BaseModel):
             institution: str = Field(description="Name of the bank or institution")
@@ -179,7 +181,7 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
         response = client.beta.chat.completions.parse(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a financial parsing assistant. Extract all transactions and account information from the given bank statement text. Ensure the amount is always negative for debits (withdrawals, fees) and positive for credits (deposits). Include all explicit line-item transactions, overdraft fees, service charges, or other fees that affect the balance."},
+                {"role": "system", "content": "You are a financial parsing assistant. Extract all transactions and account information. Ensure amount is negative for debits and positive for credits. IMPORTANT: If a transaction description indicates a POS PURCHASE, DEBIT CARD swipe, or explicitly mentions a person's name or card number (e.g. '*1234' or 'Jane Doe'), you MUST extract those into cardholder_name and card_last_four."},
                 {"role": "user", "content": full_text[:100000]} # Limit to 100k chars for safety
             ],
             response_format=StatementExtractionSchema,
@@ -198,8 +200,8 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
                 'amount': trans.amount,
                 'trans_type': trans.type,
                 'balance': trans.balance,
-                'cardholder_name': '',
-                'card_last_four': '',
+                'cardholder_name': trans.cardholder_name or '',
+                'card_last_four': trans.card_last_four or '',
                 'payment_method': ''
             })
 

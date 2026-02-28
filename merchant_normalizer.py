@@ -42,7 +42,7 @@ class MerchantNormalizer:
         return desc.strip()[:60] # Cap length
 
     @staticmethod
-    def resolve_merchant(user_id: int, raw_desc: str) -> dict | None:
+    def resolve_merchant(user_id: int, raw_desc: str, cache: dict = None) -> dict | None:
         """
         Looks up a raw transaction description in the `merchant_aliases` table.
         Phase 11: If the merchant has a parent_merchant_id and lacks its own default_category_id,
@@ -52,6 +52,15 @@ class MerchantNormalizer:
             return None
             
         cleaned = MerchantNormalizer.clean_raw_string(raw_desc)
+        
+        if cache is not None and 'merchants' in cache:
+            if cleaned in cache['merchants']:
+                return cache['merchants'][cleaned]
+            # Fallback to canonical name
+            for m in cache['merchants'].values():
+                if m.get('canonical_name') == cleaned:
+                    return m
+            return None
         
         conn = get_db()
         cursor = conn.cursor()

@@ -1265,7 +1265,7 @@ def api_update_transaction(trans_id):
         if suggestion:
             result['rule_suggestion'] = suggestion
             
-            # Phase 6: Automatic soft-learning
+            # Phase 6 & 16: Automatic soft-learning and background ledger sweep
             add_category_rule(
                 user_id=current_user.id,
                 pattern=suggestion['pattern'],
@@ -1276,6 +1276,10 @@ def api_update_transaction(trans_id):
                 is_transfer=suggestion.get('is_transfer', 0),
                 priority=50
             )
+            
+        # Phase 16: Trigger asynchronous ledger sweep so the UI reflects the new learning immediately
+        threading.Thread(target=recategorize_all, args=(current_user.id,)).start()
+
     return jsonify(result)
 
 
@@ -1315,6 +1319,11 @@ def api_bulk_update():
                         is_transfer=suggestion.get('is_transfer', 0),
                         priority=50 
                     )
+                    
+    if 'category' in fields:
+        # Phase 16: Trigger asynchronous ledger sweep so the UI reflects bulk learning immediately
+        threading.Thread(target=recategorize_all, args=(current_user.id,)).start()
+
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
 
@@ -1376,39 +1385,128 @@ def api_upload():
     try:
         if ext.lower() == '.zip':
             import zipfile
+            import hashlib
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from database import get_db
+            
             transactions = []
             account_info = {}
             extracted_dir = filepath + "_extracted"
             os.makedirs(extracted_dir, exist_ok=True)
-            with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                zip_ref.extractall(extracted_dir)
-                
             zip_errors = []
-            for root, _, inner_files in os.walk(extracted_dir):
-                for f in inner_files:
-                    if allowed_file(f) and not f.lower().endswith('.zip'):
-                        if f.startswith('._') or '__MACOSX' in root:
-                            continue
-                        f_path = os.path.join(root, f)
-                        child_hash = compute_file_hash(f_path)
-                        dup_id = get_duplicate_document(current_user.id, child_hash)
-                        if dup_id:
-                            app.logger.info(f"Skipping duplicate zip child: {f}")
+            
+            # Zip bomb & slip limits
+            MAX_FILES = 500
+            MAX_ARCHIVE_SIZE = 200 * 1024 * 1024  # 200 MB
+            MAX_FILE_SIZE = 50 * 1024 * 1024      # 50 MB
+            
+            try:
+                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                    total_size = 0
+                    file_count = 0
+                    
+                    files_to_extract = []
+                    
+                    for zinfo in zip_ref.infolist():
+                        # Skip directories
+                        if zinfo.is_dir():
                             continue
                             
-                        zip_children_info[child_hash] = f
-                        try:
-                            t, ai = parse_document(f_path, doc_type)
+                        # Zip slip protection
+                        if '..' in zinfo.filename or zinfo.filename.startswith('/') or zinfo.filename.startswith('\\'):
+                            continue
+                            
+                        # Skip Mac metadata
+                        basename = os.path.basename(zinfo.filename)
+                        if basename.startswith('._') or '__MACOSX' in zinfo.filename:
+                            continue
+                            
+                        if not allowed_file(basename) or basename.lower().endswith('.zip'):
+                            continue
+                        
+                        file_count += 1
+                        if file_count > MAX_FILES:
+                            raise Exception("Zip file contains too many entries (exceeds 500 max).")
+                            
+                        # Hash the file in-memory using streaming to avoid extracting duplicates to disk
+                        file_hash_obj = hashlib.sha256()
+                        file_size = 0
+                        with zip_ref.open(zinfo) as zf:
+                            while chunk := zf.read(8192):
+                                file_hash_obj.update(chunk)
+                                file_size += len(chunk)
+                                total_size += len(chunk)
+                                if file_size > MAX_FILE_SIZE:
+                                    raise Exception(f"File {zinfo.filename} exceeds 50MB size limit.")
+                                if total_size > MAX_ARCHIVE_SIZE:
+                                    raise Exception("Zip bomb detected: exceeded 200MB uncompressed limit.")
+                                    
+                        child_hash = file_hash_obj.hexdigest()
+                        
+                        # Check duplicate
+                        dup_id = get_duplicate_document(current_user.id, child_hash)
+                        if dup_id:
+                            app.logger.info(f"Linking existing duplicate zip child: {basename}")
+                            zip_children_info[child_hash] = basename
+                            
+                            # Load missing transactions directly to pass to bulk committer
+                            conn = get_db()
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT t.* FROM transactions t
+                                JOIN transaction_sources ts ON ts.transaction_id = t.id
+                                WHERE ts.document_id = ? AND ts.user_id = ?
+                            """, (dup_id, current_user.id))
+                            for row in cursor.fetchall():
+                                trans_dict = dict(row)
+                                trans_dict['_source_hash'] = child_hash
+                                transactions.append(trans_dict)
+                            conn.close()
+                            continue
+                            
+                        # If not duplicate, queue for extraction and parsing
+                        zip_children_info[child_hash] = basename
+                        files_to_extract.append((zinfo, child_hash, basename))
+
+                    # Safely extract the unknown validated files
+                    extracted_paths = []
+                    for zinfo, child_hash, basename in files_to_extract:
+                        safe_path = os.path.abspath(os.path.join(extracted_dir, basename))
+                        # Final path validation against slip
+                        if not safe_path.startswith(os.path.abspath(extracted_dir)):
+                            continue
+                        with open(safe_path, 'wb') as f_out:
+                            with zip_ref.open(zinfo) as f_in:
+                                shutil.copyfileobj(f_in, f_out)
+                        extracted_paths.append((safe_path, child_hash))
+
+                    # Parallelize parsing
+                    def parse_task(args):
+                        f_path, c_hash = args
+                        t, ai = parse_document(f_path, doc_type)
+                        return c_hash, t, ai
+
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        future_to_file = {executor.submit(parse_task, item): item for item in extracted_paths}
+                        for future in as_completed(future_to_file):
+                            c_hash, t, ai = future.result()
                             if t:
                                 for trans in t:
-                                    trans['_source_hash'] = child_hash
+                                    trans['_source_hash'] = c_hash
                                 transactions.extend(t)
                             if not account_info and ai:
                                 account_info = ai
-                        except Exception as inner_e:
-                            zip_errors.append(f"{f}: {inner_e}")
-                            app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
-                            
+
+            except Exception as e:
+                zip_errors.append(str(e))
+                app.logger.error(f"Zip extraction failed: {e}")
+            finally:
+                # Cleanup temp directory holding the extracted copies
+                shutil.rmtree(extracted_dir, ignore_errors=True)
+                
+            if zip_errors and not transactions:
+                raise Exception(f"Failed to process zip archive: {'; '.join(zip_errors)}")
+
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
         else:
@@ -1479,23 +1577,52 @@ def api_upload():
             )
             child_doc_map[child_hash] = c_id
 
+    # Cascade account-level cardholder information to individual transactions if missing
+    global_cardholder = account_info.get('account_name', '')
+    global_last_four = str(account_info.get('account_number', ''))[-4:] if account_info.get('account_number') else ''
+
     # Save transactions with auto-categorization
     added = 0
     skipped = 0
     uncategorized_txns = []
     for trans in transactions:
+        if not trans.get('cardholder_name'):
+            trans['cardholder_name'] = global_cardholder
+        if not trans.get('card_last_four'):
+            trans['card_last_four'] = global_last_four
+
+    from categorizer import categorize_transactions_bulk
+    categorized_results = categorize_transactions_bulk(current_user.id, transactions, account_id)
+
+    transactions_with_hashes = []
+    target_doc_ids = []
+
+    for i, trans in enumerate(transactions):
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
         if child_hash and child_hash in child_doc_map:
             target_doc_id = child_doc_map[child_hash]
 
-        # Auto-categorize
-        cat_result = categorize_transaction(
-            current_user.id,
-            trans['description'], trans['amount'],
-            trans.get('trans_type', ''), trans.get('payment_method', '')
-        )
+        # Auto-categorize securely bypassing DB locking
+        cat_result = categorized_results[i]
         
+        # Merge categorization results directly into the transaction object
+        trans['category'] = cat_result['category']
+        trans['subcategory'] = cat_result['subcategory']
+        trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
+        trans['is_transfer'] = cat_result['is_transfer']
+        trans['is_personal'] = cat_result['is_personal']
+        trans['is_business'] = cat_result['is_business']
+        trans['is_flagged'] = cat_result['is_flagged']
+        trans['flag_reason'] = cat_result['flag_reason']
+        trans['merchant_id'] = cat_result.get('merchant_id')
+        trans['categorization_confidence'] = cat_result.get('categorization_confidence')
+        trans['categorization_source'] = cat_result.get('categorization_source')
+        trans['categorization_status'] = cat_result.get('categorization_status')
+        trans['categorization_explanation'] = cat_result.get('categorization_explanation')
+        trans['is_approved'] = 0
+        trans['auto_categorized'] = 1
+
         # Deduplication Fingerprint
         txn_fingerprint = compute_transaction_hash(
             account_scope_id=account_id,
@@ -1506,44 +1633,37 @@ def api_upload():
             check_number=trans.get('check_number')
         )
 
-        trans_id, is_new = add_transaction(
-            user_id=current_user.id,
-            doc_id=target_doc_id,
-            account_id=account_id,
-            trans_date=trans['trans_date'],
-            post_date=trans.get('post_date', trans['trans_date']),
-            description=trans['description'],
-            amount=trans['amount'],
-            trans_type=trans.get('trans_type', 'debit'),
-            category=cat_result['category'],
-            subcategory=cat_result['subcategory'],
-            cardholder_name=trans.get('cardholder_name', ''),
-            card_last_four=trans.get('card_last_four', ''),
-            payment_method=cat_result.get('payment_method', trans.get('payment_method', '')),
-            is_transfer=cat_result['is_transfer'],
-            is_personal=cat_result['is_personal'],
-            is_business=cat_result['is_business'],
-            is_flagged=cat_result['is_flagged'],
-            flag_reason=cat_result['flag_reason'],
-            txn_fingerprint=txn_fingerprint,
-            is_approved=0,
-            merchant_id=cat_result.get('merchant_id'),
-            categorization_confidence=cat_result.get('categorization_confidence'),
-            categorization_source=cat_result.get('categorization_source'),
-            categorization_status=cat_result.get('categorization_status'),
-            categorization_explanation=cat_result.get('categorization_explanation')
-        )
-        if is_new:
-            added += 1
-            if cat_result['category'] == 'Uncategorized':
-                uncategorized_txns.append({
-                    'id': trans_id,
-                    'description': trans['description'],
-                    'amount': trans['amount'],
-                    'trans_date': trans['trans_date']
-                })
-        else:
-            skipped += 1
+        transactions_with_hashes.append({
+            'trans': trans,
+            'txn_fingerprint': txn_fingerprint
+        })
+        target_doc_ids.append(target_doc_id)
+
+    from database import add_transactions_bulk
+    added, skipped, trans_doc_stats = add_transactions_bulk(
+        user_id=current_user.id,
+        account_id=account_id,
+        transactions_with_hashes=transactions_with_hashes,
+        target_doc_ids=target_doc_ids
+    )
+
+    uncategorized_txns = []
+    # If we need uncategorized_txns for bulk AI run background process:
+    # `add_transactions_bulk` does not natively return individual inserted IDs back to the scope 
+    # easily without an architectural redesign of bulk returning. We will do a bulk fetch for uncategorized.
+    if added > 0:
+        from database import get_db
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, description, amount, trans_date 
+            FROM transactions 
+            WHERE user_id = ? AND account_id = ? AND category = 'Uncategorized' 
+            AND is_approved = 0 ORDER BY id DESC LIMIT ?
+        """, (current_user.id, account_id, added))
+        for row in cursor.fetchall():
+            uncategorized_txns.append(dict(row))
+        conn.close()
 
     from database import update_document_status
     update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
@@ -1614,6 +1734,10 @@ def api_add_rule():
         is_transfer=data.get('is_transfer', 0),
         priority=data.get('priority', 100),
     )
+    
+    # Phase 16: Trigger asynchronous ledger sweep so the UI reflects explicit mappings immediately
+    threading.Thread(target=recategorize_all, args=(current_user.id,)).start()
+    
     return jsonify({'status': 'ok'})
 
 
@@ -1760,6 +1884,26 @@ def api_upload_preview():
                 'duplicate_count': 0,
             })
 
+    # Zero-Cost Active Memory Cache
+    with _preview_lock:
+        for p_id, p_data in upload_previews.items():
+            if p_data.get('file_hash') == file_hash and p_data.get('ext') == ext:
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
+                return jsonify({
+                    'status': 'ok',
+                    'mode': 'preview',
+                    'preview_id': p_id,
+                    'filename': p_data['filename'],
+                    'transactions': p_data['transactions'],
+                    'account_info': p_data['account_info'],
+                    'transaction_count': len(p_data['transactions']),
+                    'duplicate_count': len([t for t in p_data['transactions'] if t.get('_is_duplicate')]),
+                    'skipped_duplicate_files': 0,
+                })
+
     # Parse the document
     zip_children_info = {}
     try:
@@ -1769,38 +1913,110 @@ def api_upload_preview():
             account_info = {}
             extracted_dir = filepath + "_extracted"
             os.makedirs(extracted_dir, exist_ok=True)
-            with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                zip_ref.extractall(extracted_dir)
-                
             zip_errors = []
             skipped_duplicate_files = 0
-            for root, _, inner_files in os.walk(extracted_dir):
-                for f in inner_files:
-                    if allowed_file(f) and not f.lower().endswith('.zip'):
-                        if f.startswith('._') or '__MACOSX' in root:
+            
+            # Zip bomb & slip limits
+            MAX_FILES = 500
+            MAX_ARCHIVE_SIZE = 200 * 1024 * 1024  # 200 MB
+            MAX_FILE_SIZE = 50 * 1024 * 1024      # 50 MB
+            
+            try:
+                import hashlib
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                
+                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                    total_size = 0
+                    file_count = 0
+                    files_to_extract = []
+                    
+                    for zinfo in zip_ref.infolist():
+                        if zinfo.is_dir():
                             continue
-                        f_path = os.path.join(root, f)
-                        child_hash = compute_file_hash(f_path)
+                            
+                        if '..' in zinfo.filename or zinfo.filename.startswith('/') or zinfo.filename.startswith('\\'):
+                            continue
+                            
+                        basename = os.path.basename(zinfo.filename)
+                        if basename.startswith('._') or '__MACOSX' in zinfo.filename:
+                            continue
+                            
+                        if not allowed_file(basename) or basename.lower().endswith('.zip'):
+                            continue
+                            
+                        file_count += 1
+                        if file_count > MAX_FILES:
+                            raise Exception("Zip file contains too many entries (exceeds 500 max).")
+                            
+                        # Hash the file in-memory
+                        file_hash_obj = hashlib.sha256()
+                        file_size = 0
+                        with zip_ref.open(zinfo) as zf:
+                            while chunk := zf.read(8192):
+                                file_hash_obj.update(chunk)
+                                file_size += len(chunk)
+                                total_size += len(chunk)
+                                if file_size > MAX_FILE_SIZE:
+                                    raise Exception(f"File {zinfo.filename} exceeds 50MB size limit.")
+                                if total_size > MAX_ARCHIVE_SIZE:
+                                    raise Exception("Zip bomb detected: exceeded 200MB uncompressed limit.")
+                                    
+                        child_hash = file_hash_obj.hexdigest()
+                        
+                        # Check duplicate
                         dup_id = get_duplicate_document(current_user.id, child_hash)
                         if dup_id:
-                            app.logger.info(f"Skipping duplicate zip child: {f}")
+                            app.logger.info(f"Skipping duplicate zip child: {basename}")
                             skipped_duplicate_files += 1
                             continue
-
-                        zip_children_info[child_hash] = f
-                        try:
-                            t, ai = parse_document(f_path, doc_type)
-                            if t:
-                                for trans in t:
-                                    trans['_source_file'] = f
-                                    trans['_source_hash'] = child_hash
-                                transactions.extend(t)
-                            if not account_info and ai:
-                                account_info = ai
-                        except Exception as inner_e:
-                            zip_errors.append(f"{f}: {inner_e}")
-                            app.logger.warning(f"Failed to parse inner zip file {f}: {inner_e}")
                             
+                        zip_children_info[child_hash] = basename
+                        files_to_extract.append((zinfo, child_hash, basename))
+
+                    # Safely extract the unknown files
+                    extracted_paths = []
+                    for zinfo, child_hash, basename in files_to_extract:
+                        safe_path = os.path.abspath(os.path.join(extracted_dir, basename))
+                        if not safe_path.startswith(os.path.abspath(extracted_dir)):
+                            continue
+                        with open(safe_path, 'wb') as f_out:
+                            with zip_ref.open(zinfo) as f_in:
+                                import shutil
+                                shutil.copyfileobj(f_in, f_out)
+                        extracted_paths.append((safe_path, child_hash, basename))
+                        
+                    # Parallel processing
+                    def parse_task(args):
+                        f_path, c_hash, b_name = args
+                        t, ai = parse_document(f_path, doc_type)
+                        return c_hash, b_name, t, ai
+
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        future_to_file = {executor.submit(parse_task, item): item for item in extracted_paths}
+                        for future in as_completed(future_to_file):
+                            try:
+                                c_hash, b_name, t, ai = future.result()
+                                if t:
+                                    for trans in t:
+                                        trans['_source_file'] = b_name
+                                        trans['_source_hash'] = c_hash
+                                    transactions.extend(t)
+                                if not account_info and ai:
+                                    account_info = ai
+                            except Exception as inner_e:
+                                zip_errors.append(f"{future_to_file[future][2]}: {inner_e}")
+                                app.logger.warning(f"Failed to parse inner zip file: {inner_e}")
+
+            except Exception as e:
+                zip_errors.append(str(e))
+                app.logger.error(f"Zip extraction failed: {e}")
+            finally:
+                import shutil
+                shutil.rmtree(extracted_dir, ignore_errors=True)
+                
+            if zip_errors and not transactions:
+                raise Exception(f"Failed to process zip archive: {'; '.join(zip_errors)}")
+
             if not account_info:
                 account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
         else:
@@ -1829,13 +2045,22 @@ def api_upload_preview():
             'transactions_added': 0,
         })
 
-    # Auto-categorize for preview
+    # Cascade account-level cardholder information to individual transactions if missing
+    global_cardholder = account_info.get('account_name', '')
+    global_last_four = str(account_info.get('account_number', ''))[-4:] if account_info.get('account_number') else ''
+
+    # Auto-categorize for preview using O(1) Bulk Evaluator
     for trans in transactions:
-        cat_result = categorize_transaction(
-            current_user.id,
-            trans['description'], trans['amount'],
-            trans.get('trans_type', ''), trans.get('payment_method', '')
-        )
+        if not trans.get('cardholder_name'):
+            trans['cardholder_name'] = global_cardholder
+        if not trans.get('card_last_four'):
+            trans['card_last_four'] = global_last_four
+
+    from categorizer import categorize_transactions_bulk
+    categorized_results = categorize_transactions_bulk(current_user.id, transactions, account_info.get('account_id'))
+
+    for i, trans in enumerate(transactions):
+        cat_result = categorized_results[i]
         trans['category'] = cat_result['category']
         trans['subcategory'] = cat_result['subcategory']
         trans['is_personal'] = cat_result['is_personal']
@@ -1953,18 +2178,14 @@ def api_upload_commit():
         doc_stats[c_id] = {'added': 0, 'skipped': 0, 'total': 0}
 
     # Save transactions
-    added = 0
-    skipped = 0
+    transactions_with_hashes = []
+    target_doc_ids = []
 
     for trans in transactions:
         target_doc_id = parent_doc_id
         child_hash = trans.get('_source_hash')
         if child_hash and child_hash in child_doc_map:
             target_doc_id = child_doc_map[child_hash]
-
-        if target_doc_id not in doc_stats:
-            doc_stats[target_doc_id] = {'added': 0, 'skipped': 0, 'total': 0}
-        doc_stats[target_doc_id]['total'] += 1
 
         # Deduplication Fingerprint
         txn_fingerprint = compute_transaction_hash(
@@ -1976,35 +2197,26 @@ def api_upload_commit():
             check_number=trans.get('check_number')
         )
 
-        trans_id, is_new = add_transaction(
-            user_id=current_user.id,
-            doc_id=target_doc_id,
-            account_id=account_id,
-            trans_date=trans['trans_date'],
-            post_date=trans.get('post_date', trans['trans_date']),
-            description=trans['description'],
-            amount=trans['amount'],
-            trans_type=trans.get('trans_type', 'debit'),
-            category=trans.get('category', 'Uncategorized'),
-            subcategory=trans.get('subcategory'),
-            cardholder_name=trans.get('cardholder_name', ''),
-            card_last_four=trans.get('card_last_four', ''),
-            payment_method=trans.get('payment_method', ''),
-            is_transfer=trans.get('is_transfer', 0),
-            is_personal=trans.get('is_personal', 0),
-            is_business=trans.get('is_business', 0),
-            is_flagged=trans.get('is_flagged', 0),
-            flag_reason=trans.get('flag_reason'),
-            user_notes=trans.get('user_notes', ''),
-            txn_fingerprint=txn_fingerprint,
-            is_approved=0,
-        )
-        if is_new:
-            added += 1
-            doc_stats[target_doc_id]['added'] += 1
-        else:
-            skipped += 1
-            doc_stats[target_doc_id]['skipped'] += 1
+        transactions_with_hashes.append({
+            'trans': trans,
+            'txn_fingerprint': txn_fingerprint
+        })
+        target_doc_ids.append(target_doc_id)
+
+    from database import add_transactions_bulk
+    added, skipped, trans_doc_stats = add_transactions_bulk(
+        user_id=current_user.id,
+        account_id=account_id,
+        transactions_with_hashes=transactions_with_hashes,
+        target_doc_ids=target_doc_ids
+    )
+
+    for d_id, stats in trans_doc_stats.items():
+        if d_id not in doc_stats:
+            doc_stats[d_id] = {'added': 0, 'skipped': 0, 'total': 0}
+        doc_stats[d_id]['added'] += stats['added']
+        doc_stats[d_id]['skipped'] += stats['skipped']
+        doc_stats[d_id]['total'] += stats['total']
 
     from database import update_document_status
 
@@ -2062,23 +2274,33 @@ def api_document_approve(doc_id):
         conn.close()
         return jsonify({'status': 'ok', 'message': 'Document already approved', 'transactions_approved': 0})
         
-    # Update document status to approved
-    update_document_status(current_user.id, doc_id, status='approved')
     
-    # Also approve any child documents
-    cursor.execute("UPDATE documents SET status = 'approved' WHERE parent_document_id = ? AND user_id = ?", (doc_id, current_user.id))
-    
-    # Update all linked transactions to is_approved = 1 (for this doc and its children)
-    cursor.execute("""
-        UPDATE transactions 
-        SET is_approved = 1 
-        WHERE (document_id = ? OR document_id IN (SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?))
-        AND user_id = ?
-    """, (doc_id, doc_id, current_user.id, current_user.id))
-    transactions_approved = cursor.rowcount
-    
-    conn.commit()
-    conn.close()
+    try:
+        if doc_status not in ('pending_approval', 'completed'):
+            return jsonify({'error': 'Document cannot be approved from its current state'}), 400
+
+        # Update document status to approved directly bypassing implicit closures
+        cursor.execute("UPDATE documents SET status = 'approved' WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
+        
+        # Also approve any child documents
+        cursor.execute("UPDATE documents SET status = 'approved' WHERE parent_document_id = ? AND user_id = ?", (doc_id, current_user.id))
+        
+        # Update all linked transactions to is_approved = 1 (for this doc and its children)
+        cursor.execute("""
+            UPDATE transactions 
+            SET is_approved = 1 
+            WHERE (document_id = ? OR document_id IN (SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?))
+            AND user_id = ?
+        """, (doc_id, doc_id, current_user.id, current_user.id))
+        transactions_approved = cursor.rowcount
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"Approval Transaction Failed, rolled back state: {e}")
+        return jsonify({'error': 'Failed to process approval workflow cleanly.'}), 500
+    finally:
+        conn.close()
     
     return jsonify({
         'status': 'ok',
@@ -2179,7 +2401,8 @@ def api_add_manual_transaction():
             cat_result = categorize_transaction(
                 current_user.id,
                 data['description'], amount,
-                data.get('trans_type', ''), data.get('payment_method', '')
+                data.get('trans_type', ''), data.get('payment_method', ''),
+                account_id=data.get('account_id')
             )
             final_cat = cat_result['category']
             final_sub = cat_result['subcategory']
