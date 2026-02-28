@@ -3066,6 +3066,13 @@
                         continue;
                     }
 
+                    if (data.mode === 'async_zip') {
+                        statusEl.innerHTML = '';
+                        resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-cogs"></i> ${esc(file.name)}: ${esc(data.message)}</div>`;
+                        if (typeof loadDocuments === 'function') loadDocuments();
+                        continue;
+                    }
+
                     // Show preview
                     currentPreviewId = data.preview_id;
                     let dupWarning = data.duplicate_count > 0 ? ` <span class="text-warning fw-bold">WARNING: ${data.duplicate_count} potential duplicate(s) detected (shown struck-through).</span>` : '';
@@ -3191,9 +3198,20 @@
                 const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : d.file_type === 'zip' ? 'fa-file-archive text-warning' : 'fa-file text-info';
 
                 let sClass = 'secondary';
-                if (d.status === 'processing' || d.status === 'queued') sClass = 'warning text-dark';
-                else if (d.status === 'approved' || d.status === 'imported' || d.status === 'completed') sClass = 'success';
-                else if (d.status === 'failed') sClass = 'danger';
+                let spinner = '';
+                if (['uploading', 'extracting', 'generating_previews', 'processing', 'queued'].includes(d.status)) {
+                    sClass = 'warning text-dark';
+                    spinner = `<i class="fas fa-spinner fa-spin me-1"></i>`;
+                } else if (d.status === 'parsing') {
+                    sClass = 'info text-dark';
+                    spinner = `<i class="fas fa-cog fa-spin me-1"></i>`;
+                } else if (['approved', 'imported', 'completed', 'extracted'].includes(d.status)) {
+                    sClass = 'success';
+                } else if (d.status === 'failed') {
+                    sClass = 'danger';
+                }
+
+                let badgeHtml = `<span class="badge bg-${sClass}">${spinner}${(d.status || 'queued').replace('_', ' ')}</span>`;
 
                 let actionHtml = '';
                 if (d.status === 'pending_approval') {
@@ -3206,7 +3224,7 @@
                 let tr = `<tr class="clickable-row ${isChild ? 'child-doc' : 'parent-doc'}" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
                 <td>${indent}<a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
                 <td>${d.file_type}</td><td>${d.doc_category || ''}</td><td>${d.account_name || ''}</td>
-                <td><span class="badge bg-${sClass}">${d.status || 'queued'}</span></td>
+                <td>${badgeHtml}</td>
                 <td>${d.parsed_transaction_count || 0}</td>
                 <td class="text-success fw-bold">${d.import_transaction_count || 0}</td>
                 <td class="text-warning">${d.deduped_skipped_count || 0}</td>

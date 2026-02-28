@@ -86,8 +86,20 @@ def main():
         
         # 1. Upload Document 1
         with open(dummy_csv_1, "rb") as f:
-            prev1 = session.post(f"{BASE_URL}/api/upload/preview", files={"file": f}, data={'doc_category': 'test'}).json()
-        doc_resp_1 = session.post(f"{BASE_URL}/api/upload/commit", json={"preview_id": prev1['preview_id']}).json()
+            r1 = session.post(f"{BASE_URL}/api/upload/preview", files={"file": f}, data={'doc_category': 'test'})
+            try:
+                prev1 = r1.json()
+            except Exception:
+                print(f"Failed to parse JSON. Raw response: {r1.text}")
+                return
+
+        r2 = session.post(f"{BASE_URL}/api/upload/commit", json={"preview_id": prev1.get('preview_id')})
+        try:
+            doc_resp_1 = r2.json()
+        except Exception:
+            print(f"Failed to parse JSON. Raw response: {r2.text}")
+            return
+            
         doc_id_1 = doc_resp_1.get('document_id')
         print_pass(f"Doc 1 uploaded (ID: {doc_id_1})")
         

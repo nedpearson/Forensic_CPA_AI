@@ -652,32 +652,37 @@ def clear_all_data(user_id):
 
 # --- CRUD Operations ---
 
-def add_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None):
-    conn = get_db()
-    cursor = conn.cursor()
+def add_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None, conn=None):
+    is_external_conn = conn is not None
+    db_conn = conn or get_db()
+    cursor = db_conn.cursor()
     cursor.execute(
         "INSERT INTO accounts (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
     )
     account_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    if not is_external_conn:
+        db_conn.commit()
+        db_conn.close()
     return account_id
 
 
-def get_or_create_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None):
-    conn = get_db()
-    cursor = conn.cursor()
+def get_or_create_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, conn=None):
+    is_external_conn = conn is not None
+    db_conn = conn or get_db()
+    cursor = db_conn.cursor()
     cursor.execute(
         "SELECT id FROM accounts WHERE user_id = ? AND account_number = ? AND account_type = ? AND (cardholder_name = ? OR cardholder_name IS NULL)",
         (user_id, account_number, account_type, cardholder_name)
     )
     row = cursor.fetchone()
     if row:
-        conn.close()
+        if not is_external_conn:
+            db_conn.close()
         return row['id']
-    conn.close()
-    return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four)
+    if not is_external_conn:
+        db_conn.close()
+    return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn)
 
 def get_duplicate_document(user_id, content_sha256):
     if not content_sha256:
@@ -690,7 +695,7 @@ def get_duplicate_document(user_id, content_sha256):
     return row['id'] if row else None
 
 
-def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None, conn=None):
+def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None, status='queued', conn=None):
     is_external_conn = conn is not None
     db_conn = conn or get_db()
     cursor = db_conn.cursor()
@@ -704,8 +709,8 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
             return row['id']
 
     cursor.execute(
-        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id)
+        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id, status)
     )
     doc_id = cursor.lastrowid
     
@@ -795,13 +800,18 @@ def delete_document(user_id, doc_id, conn=None):
 
 
 VALID_TRANSITIONS = {
+    'uploaded': ['extracting', 'failed'],
+    'extracting': ['extracted', 'failed'],
+    'extracted': ['generating_previews', 'parsing', 'pending_approval', 'completed', 'failed'],
+    'generating_previews': ['parsing', 'pending_approval', 'completed', 'failed'],
     'queued': ['processing', 'completed', 'failed', 'pending_approval'], 
     'processing': ['parsed', 'completed', 'failed'],
+    'parsing': ['completed', 'pending_approval', 'failed'],
     'parsed': ['completed', 'pending_approval', 'approved', 'failed'],
     'completed': ['pending_approval', 'approved', 'failed'],
     'pending_approval': ['approved', 'failed'],
     'approved': [], # Terminal
-    'failed': ['queued'] # Retry
+    'failed': ['queued', 'uploaded', 'extracting'] # Retry
 }
 
 def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None):
