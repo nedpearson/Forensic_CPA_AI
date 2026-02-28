@@ -123,6 +123,13 @@ def main():
         doc_id = commit_data.get('document_id')
         print_pass(f"Document committed (ID: {doc_id})")
         
+        # 3.5 Approve the document
+        approve_resp = session.post(f"{BASE_URL}/api/documents/{doc_id}/approve")
+        if approve_resp.status_code != 200:
+            print_fail(f"Could not approve document: {approve_resp.text}")
+            return
+        print_pass(f"Document explicitly approved.")
+        
         # 4. Verify Document Status
         docs_resp = session.get(f"{BASE_URL}/api/docs/{doc_id}")
         if docs_resp.status_code == 200:

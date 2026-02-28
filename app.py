@@ -175,6 +175,7 @@ ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc', 'zip'}
 # In-memory storage for upload previews (preview_id -> parsed data)
 upload_previews = {}
 _preview_lock = threading.Lock()
+_recent_commits = {}  # LRU cache for idempotency tracking of preview_ids
 
 
 def allowed_file(filename):
@@ -2111,8 +2112,12 @@ def api_upload_commit():
     preview_id = data.get('preview_id')
 
     with _preview_lock:
+        if preview_id in _recent_commits:
+            return jsonify(_recent_commits[preview_id])
+            
         if preview_id not in upload_previews:
             return jsonify({'error': 'Preview not found or expired'}), 404
+            
         preview = upload_previews.pop(preview_id)
     transactions = data.get('transactions', preview['transactions'])
     account_info = preview['account_info']
@@ -2131,182 +2136,219 @@ def api_upload_commit():
             if i < len(original_txns) and '_source_hash' in original_txns[i]:
                 t['_source_hash'] = original_txns[i]['_source_hash']
 
-    # Create/get account
-    account_id = None
-    if account_info.get('account_number'):
-        account_id = get_or_create_account(
-            user_id=current_user.id,
-            account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
-            account_number=account_info['account_number'],
-            account_type=account_info.get('account_type', 'bank'),
-            institution=account_info.get('institution', 'Unknown'),
-            cardholder_name=account_info.get('account_name'),
-            card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
-        )
+    conn = get_db()
+    try:
+        # Create/get account
+        account_id = None
+        if account_info.get('account_number'):
+            account_id = get_or_create_account(
+                user_id=current_user.id,
+                account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
+                account_number=account_info['account_number'],
+                account_type=account_info.get('account_type', 'bank'),
+                institution=account_info.get('institution', 'Unknown'),
+                cardholder_name=account_info.get('account_name'),
+                card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
+                conn=conn
+            )
 
-    # Save document record
-    parent_doc_id = add_document(
-        user_id=current_user.id,
-        filename=filename,
-        original_path=filepath,
-        file_type=ext.replace('.', ''),
-        doc_category=doc_category,
-        account_id=account_id,
-        statement_start=account_info.get('statement_start'),
-        statement_end=account_info.get('statement_end'),
-        content_sha256=file_hash
-    )
-
-    child_doc_map = {}
-    doc_stats = {} # track counts per doc id: {doc_id: {'added': 0, 'skipped': 0, 'total': 0}}
-    
-    # Pre-register all child documents dynamically provided by preview state
-    # This ensures they show up as independent 0-tx files if AI parsing returned nothing
-    for child_hash, c_filename in zip_children_info.items():
-        c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
-        c_id = add_document(
+        # Save document record
+        parent_doc_id = add_document(
             user_id=current_user.id,
-            filename=c_filename,
-            original_path=None,
-            file_type=c_ext,
+            filename=filename,
+            original_path=filepath,
+            file_type=ext.replace('.', ''),
             doc_category=doc_category,
             account_id=account_id,
-            content_sha256=child_hash,
-            parent_document_id=parent_doc_id
-        )
-        child_doc_map[child_hash] = c_id
-        doc_stats[c_id] = {'added': 0, 'skipped': 0, 'total': 0}
-
-    # Save transactions
-    transactions_with_hashes = []
-    target_doc_ids = []
-
-    for trans in transactions:
-        target_doc_id = parent_doc_id
-        child_hash = trans.get('_source_hash')
-        if child_hash and child_hash in child_doc_map:
-            target_doc_id = child_doc_map[child_hash]
-
-        # Deduplication Fingerprint
-        txn_fingerprint = compute_transaction_hash(
-            account_scope_id=account_id,
-            trans_date=trans['trans_date'],
-            amount=trans['amount'],
-            description=trans['description'],
-            post_date=trans.get('post_date', trans.get('trans_date')),
-            check_number=trans.get('check_number')
+            statement_start=account_info.get('statement_start'),
+            statement_end=account_info.get('statement_end'),
+            content_sha256=file_hash,
+            conn=conn
         )
 
-        transactions_with_hashes.append({
-            'trans': trans,
-            'txn_fingerprint': txn_fingerprint
-        })
-        target_doc_ids.append(target_doc_id)
+        child_doc_map = {}
+        doc_stats = {} # track counts per doc id: {doc_id: {'added': 0, 'skipped': 0, 'total': 0}}
+        
+        # Pre-register all child documents dynamically provided by preview state
+        # This ensures they show up as independent 0-tx files if AI parsing returned nothing
+        for child_hash, c_filename in zip_children_info.items():
+            c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+            c_id = add_document(
+                user_id=current_user.id,
+                filename=c_filename,
+                original_path=None,
+                file_type=c_ext,
+                doc_category=doc_category,
+                account_id=account_id,
+                content_sha256=child_hash,
+                parent_document_id=parent_doc_id,
+                conn=conn
+            )
+            child_doc_map[child_hash] = c_id
+            doc_stats[c_id] = {'added': 0, 'skipped': 0, 'total': 0}
 
-    from database import add_transactions_bulk
-    added, skipped, trans_doc_stats = add_transactions_bulk(
-        user_id=current_user.id,
-        account_id=account_id,
-        transactions_with_hashes=transactions_with_hashes,
-        target_doc_ids=target_doc_ids
-    )
+        # Save transactions
+        transactions_with_hashes = []
+        target_doc_ids = []
 
-    for d_id, stats in trans_doc_stats.items():
-        if d_id not in doc_stats:
-            doc_stats[d_id] = {'added': 0, 'skipped': 0, 'total': 0}
-        doc_stats[d_id]['added'] += stats['added']
-        doc_stats[d_id]['skipped'] += stats['skipped']
-        doc_stats[d_id]['total'] += stats['total']
+        for trans in transactions:
+            target_doc_id = parent_doc_id
+            child_hash = trans.get('_source_hash')
+            if child_hash and child_hash in child_doc_map:
+                target_doc_id = child_doc_map[child_hash]
 
-    from database import update_document_status
+            # Deduplication Fingerprint
+            txn_fingerprint = compute_transaction_hash(
+                account_scope_id=account_id,
+                trans_date=trans['trans_date'],
+                amount=trans['amount'],
+                description=trans['description'],
+                post_date=trans.get('post_date', trans.get('trans_date')),
+                check_number=trans.get('check_number')
+            )
 
-    # Update all child documents (if any) and the parent
-    for d_id, stats in doc_stats.items():
-        update_document_status(
-            current_user.id, 
-            d_id, 
-            status='pending_approval', 
-            parsed_count=stats['total'], 
-            import_count=stats['added'], 
-            skipped_count=stats['skipped']
+            transactions_with_hashes.append({
+                'trans': trans,
+                'txn_fingerprint': txn_fingerprint
+            })
+            target_doc_ids.append(target_doc_id)
+
+        from database import add_transactions_bulk
+        added, skipped, trans_doc_stats = add_transactions_bulk(
+            user_id=current_user.id,
+            account_id=account_id,
+            transactions_with_hashes=transactions_with_hashes,
+            target_doc_ids=target_doc_ids,
+            conn=conn
         )
-    
-    # If the parent ZIP itself had no direct transactions (only children did), mark it approved or pending
-    if parent_doc_id not in doc_stats:
-        update_document_status(
-            current_user.id, 
-            parent_doc_id, 
-            status='pending_approval' if transactions else 'completed', 
-            parsed_count=0, 
-            import_count=0, 
-            skipped_count=0
-        )
 
-    return jsonify({
+        for d_id, stats in trans_doc_stats.items():
+            if d_id not in doc_stats:
+                doc_stats[d_id] = {'added': 0, 'skipped': 0, 'total': 0}
+            doc_stats[d_id]['added'] += stats['added']
+            doc_stats[d_id]['skipped'] += stats['skipped']
+            doc_stats[d_id]['total'] += stats['total']
+
+        from database import update_document_status
+
+        # Update all child documents (if any) and the parent
+        for d_id, stats in doc_stats.items():
+            update_document_status(
+                current_user.id, 
+                d_id, 
+                status='pending_approval', 
+                parsed_count=stats['total'], 
+                import_count=stats['added'], 
+                skipped_count=stats['skipped'],
+                conn=conn
+            )
+        
+        # If the parent ZIP itself had no direct transactions (only children did), mark it approved or pending
+        if parent_doc_id not in doc_stats:
+            update_document_status(
+                current_user.id, 
+                parent_doc_id, 
+                status='pending_approval' if transactions else 'completed', 
+                parsed_count=0, 
+                import_count=0, 
+                skipped_count=0,
+                conn=conn
+            )
+            
+        conn.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        conn.rollback()
+        app.logger.error(f"Upload Commit Failed, rolled back database state: {str(e)}")
+        return jsonify({'error': f'Failed to save transactions. Action was safely rolled back. {str(e)}'}), 500
+    finally:
+        conn.close()
+
+    success_payload = {
         'status': 'ok',
-        'document_id': parent_doc_id,
-        'filename': filename,
+        'message': 'Transactions imported successfully',
+        'document_id': parent_doc_id, 
         'transactions_added': added,
         'transactions_skipped': skipped,
-    })
+        'doc_stats': doc_stats
+    }
+    
+    with _preview_lock:
+        _recent_commits[preview_id] = success_payload
+        if len(_recent_commits) > 1000:
+            oldest_key = next(iter(_recent_commits))
+            _recent_commits.pop(oldest_key, None)
+
+    return jsonify(success_payload)
 
 
 @app.route('/api/documents/<int:doc_id>/approve', methods=['POST'])
 @login_required
 def api_document_approve(doc_id):
     """Approve a document and its parsed transactions."""
-    from database import get_db, update_document_status
+    from database import get_db, update_document_status, document_lock
     
-    conn = get_db()
-    cursor = conn.cursor()
+    with document_lock(doc_id):
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Verify ownership
+        cursor.execute("SELECT id, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
+        doc = cursor.fetchone()
+        if not doc:
+            conn.close()
+            return jsonify({'error': 'Document not found or unauthorized'}), 404
+            
+        doc_status = doc['status']
+        
+        # If already approved, handle idempotency
+        if doc_status == 'approved':
+            conn.close()
+            return jsonify({'status': 'ok', 'message': 'Document already approved', 'transactions_approved': 0})
+            
+        
+        try:
+            # Attempt to update the document status to 'approved' only if it's in a 'pending_approval' or 'completed' state.
+            # This also serves as a check for the document's current state.
+            cursor.execute("UPDATE documents SET status = 'approved' WHERE id = ? AND user_id = ? AND status IN ('pending_approval', 'completed')", (doc_id, current_user.id))
+            
+            if cursor.rowcount == 0:
+                # Check if this thread lost the race to another identical request milliseconds earlier
+                cursor.execute("SELECT status FROM documents WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
+                race_check = cursor.fetchone()
+                if race_check and race_check['status'] == 'approved':
+                    conn.rollback() # Rollback the implicit transaction from the failed update
+                    return jsonify({'status': 'ok', 'message': 'Document already approved', 'transactions_approved': 0})
+                
+                conn.rollback() # Rollback the implicit transaction from the failed update
+                return jsonify({'error': 'Document cannot be approved from its current state or was modified concurrently.'}), 400
     
-    # Verify ownership
-    cursor.execute("SELECT id, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
-    doc = cursor.fetchone()
-    if not doc:
-        conn.close()
-        return jsonify({'error': 'Document not found or unauthorized'}), 404
+            # Also approve any validly-staged child documents strictly obeying state machine valid transitions
+            cursor.execute("UPDATE documents SET status = 'approved' WHERE parent_document_id = ? AND user_id = ? AND status IN ('pending_approval', 'completed')", (doc_id, current_user.id))
+            
+            # Update all linked transactions to is_approved = 1 (for this doc and its successfully approved children)
+            cursor.execute("""
+                UPDATE transactions 
+                SET is_approved = 1 
+                WHERE (document_id = ? OR document_id IN (SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ? AND status = 'approved'))
+                AND user_id = ?
+            """, (doc_id, doc_id, current_user.id, current_user.id))
+            transactions_approved = cursor.rowcount
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            app.logger.error(f"Approval Transaction Failed, rolled back state: {e}")
+            return jsonify({'error': 'Failed to process approval workflow cleanly.'}), 500
+        finally:
+            conn.close()
         
-    doc_status = doc['status']
-    
-    # If already approved, handle idempotency
-    if doc_status == 'approved':
-        conn.close()
-        return jsonify({'status': 'ok', 'message': 'Document already approved', 'transactions_approved': 0})
-        
-    
-    try:
-        if doc_status not in ('pending_approval', 'completed'):
-            return jsonify({'error': 'Document cannot be approved from its current state'}), 400
-
-        # Update document status to approved directly bypassing implicit closures
-        cursor.execute("UPDATE documents SET status = 'approved' WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
-        
-        # Also approve any child documents
-        cursor.execute("UPDATE documents SET status = 'approved' WHERE parent_document_id = ? AND user_id = ?", (doc_id, current_user.id))
-        
-        # Update all linked transactions to is_approved = 1 (for this doc and its children)
-        cursor.execute("""
-            UPDATE transactions 
-            SET is_approved = 1 
-            WHERE (document_id = ? OR document_id IN (SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?))
-            AND user_id = ?
-        """, (doc_id, doc_id, current_user.id, current_user.id))
-        transactions_approved = cursor.rowcount
-        
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        app.logger.error(f"Approval Transaction Failed, rolled back state: {e}")
-        return jsonify({'error': 'Failed to process approval workflow cleanly.'}), 500
-    finally:
-        conn.close()
-    
-    return jsonify({
-        'status': 'ok',
-        'message': 'Document approved',
-        'transactions_approved': transactions_approved
-    })
+        return jsonify({
+            'status': 'ok',
+            'message': 'Document approved',
+            'transactions_approved': transactions_approved
+        })
 
 
 @app.route('/api/documents/<int:doc_id>', methods=['DELETE'])

@@ -6,9 +6,34 @@ import sqlite3
 import os
 import json
 from datetime import datetime
+import threading
+from contextlib import contextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# --- Concurrency Locks ---
+_doc_locks = {}
+_doc_lock_mutex = threading.Lock()
+
+@contextmanager
+def document_lock(doc_id):
+    """
+    Grants thread-safe exclusive execution access to a specific document ID.
+    Prevents race conditions when overlapping workflows (e.g. approve vs background parser) 
+    target the exact same row simultaneously.
+    """
+    with _doc_lock_mutex:
+        if doc_id not in _doc_locks:
+            _doc_locks[doc_id] = threading.Lock()
+        lock = _doc_locks[doc_id]
+        
+    lock.acquire()
+    try:
+        yield lock
+    finally:
+        lock.release()
+        # Optional: cleanup could happen here if memory bounded, but int keys are small.
 
 if os.environ.get('TESTING') == 'true':
     DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'test_audit.db')
@@ -665,15 +690,17 @@ def get_duplicate_document(user_id, content_sha256):
     return row['id'] if row else None
 
 
-def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None):
-    conn = get_db()
-    cursor = conn.cursor()
+def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None, conn=None):
+    is_external_conn = conn is not None
+    db_conn = conn or get_db()
+    cursor = db_conn.cursor()
     
     if content_sha256:
         cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ?", (user_id, content_sha256))
         row = cursor.fetchone()
         if row:
-            conn.close()
+            if not is_external_conn:
+                db_conn.close()
             return row['id']
 
     cursor.execute(
@@ -681,109 +708,174 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
         (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id)
     )
     doc_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    
+    if not is_external_conn:
+        db_conn.commit()
+        db_conn.close()
+        
     return doc_id
 
 
-def delete_document(user_id, doc_id):
+def delete_document(user_id, doc_id, conn=None):
     """
     Deletes a document, its children (if zip), and safely removes orphan transactions.
     """
-    conn = get_db()
-    cursor = conn.cursor()
+    with document_lock(doc_id):
+        is_external_conn = conn is not None
+        db_conn = conn or get_db()
+        cursor = db_conn.cursor()
+        
+        # 1. Get document details
+        cursor.execute("SELECT id, filename, file_type, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
+        doc = cursor.fetchone()
+        if not doc:
+            if not is_external_conn:
+                db_conn.close()
+            return False
+            
+        # Block deleting documents currently locked by background threads
+        if doc['status'] == 'processing':
+            print(f"Cannot delete document {doc_id} while it is actively processing.")
+            if not is_external_conn:
+                db_conn.close()
+            return False
+            
+        doc_ids_to_delete = [doc_id]
+        
+        # 2. Find any children documents (if zip container)
+        if doc['file_type'] == 'zip':
+            cursor.execute("SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?", (doc_id, user_id))
+            children = cursor.fetchall()
+            doc_ids_to_delete.extend([child['id'] for child in children])
+            
+        # Create placeholders
+        placeholders = ','.join('?' for _ in doc_ids_to_delete)
+        
+        try:
+            # 3. Delete from transaction_sources
+            cursor.execute(f"DELETE FROM transaction_sources WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            
+            # 4. Remove orphan transactions
+            cursor.execute("""
+                DELETE FROM transactions 
+                WHERE user_id = ? 
+                AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
+            """, (user_id, user_id))
+            
+            # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
+            cursor.execute(f"""
+                UPDATE transactions 
+                SET document_id = NULL
+                WHERE document_id IN ({placeholders}) AND user_id = ?
+            """, (*doc_ids_to_delete, user_id))
+            
+            # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
+            cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
     
-    # 1. Get document details
-    cursor.execute("SELECT id, filename, file_type, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
-    doc = cursor.fetchone()
-    if not doc:
-        conn.close()
-        return False
-        
-    doc_ids_to_delete = [doc_id]
+            # 6. Nullify parent_document_id on any document referencing these before they are deleted
+            cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
     
-    # 2. Find any children documents (if zip container)
-    if doc['file_type'] == 'zip':
-        cursor.execute("SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?", (doc_id, user_id))
-        children = cursor.fetchall()
-        doc_ids_to_delete.extend([child['id'] for child in children])
-        
-    # Create placeholders
-    placeholders = ','.join('?' for _ in doc_ids_to_delete)
-    
-    try:
-        # 3. Delete from transaction_sources
-        cursor.execute(f"DELETE FROM transaction_sources WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
-        
-        # 4. Remove orphan transactions
-        cursor.execute("""
-            DELETE FROM transactions 
-            WHERE user_id = ? 
-            AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
-        """, (user_id, user_id))
-        
-        # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
-        cursor.execute(f"""
-            UPDATE transactions 
-            SET document_id = NULL
-            WHERE document_id IN ({placeholders}) AND user_id = ?
-        """, (*doc_ids_to_delete, user_id))
-        
-        # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
-        cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
-        cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            # 7. Delete documents
+            cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            
+            if not is_external_conn:
+                db_conn.commit()
+        except Exception as e:
+            if not is_external_conn:
+                db_conn.rollback()
+            print(f"Error during document deletion: {e}")
+            if not is_external_conn:
+                db_conn.close()
+            return False
+            
+        if not is_external_conn:
+            db_conn.close()
+        return True
 
-        # 6. Nullify parent_document_id on any document referencing these before they are deleted
-        cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
 
-        # 7. Delete documents
-        cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+VALID_TRANSITIONS = {
+    'queued': ['processing', 'completed', 'failed', 'pending_approval'], 
+    'processing': ['parsed', 'completed', 'failed'],
+    'parsed': ['completed', 'pending_approval', 'approved', 'failed'],
+    'completed': ['pending_approval', 'approved', 'failed'],
+    'pending_approval': ['approved', 'failed'],
+    'approved': [], # Terminal
+    'failed': ['queued'] # Retry
+}
+
+def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None):
+    """Update the status and tracking metrics of a document with strict state-machine enforcement."""
+    with document_lock(doc_id):
+        is_external_conn = conn is not None
+        db_conn = conn or get_db()
+        cursor = db_conn.cursor()
         
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print(f"Error during document deletion: {e}")
-        conn.close()
-        return False
-        
-    conn.close()
-    return True
-
-
-def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None):
-    """Update the status and tracking metrics of a document."""
-    conn = get_db()
-    cursor = conn.cursor()
+        try:
+            # Enforce State Machine and Terminal States
+            cursor.execute("SELECT status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
+            row = cursor.fetchone()
+            if row:
+                current_status = row['status']
+                
+                # Block all modifications to documents in a terminal state
+                if current_status == 'approved':
+                    print(f"Workflow State Error: Document {doc_id} is already in terminal state ('approved') and cannot be modified.")
+                    if not is_external_conn:
+                        db_conn.close()
+                    return False
+                    
+                if status is not None and current_status != status: # If it's a real transition attempt
+                    if current_status in VALID_TRANSITIONS and status not in VALID_TRANSITIONS[current_status]:
+                        print(f"Workflow State Error: Invalid transition from '{current_status}' to '{status}' for document {doc_id}")
+                        if not is_external_conn:
+                            db_conn.rollback()
+                            db_conn.close()
+                        else:
+                            raise ValueError(f"Invalid transition from '{current_status}' to '{status}'")
+                        return False
     
-    updates = []
-    params = []
-    
-    if status is not None:
-        updates.append("status = ?")
-        params.append(status)
-    if parsed_count is not None:
-        updates.append("parsed_transaction_count = ?")
-        params.append(parsed_count)
-    if import_count is not None:
-        updates.append("import_transaction_count = ?")
-        params.append(import_count)
-    if skipped_count is not None:
-        updates.append("deduped_skipped_count = ?")
-        params.append(skipped_count)
-    if failure_reason is not None:
-        updates.append("failure_reason = ?")
-        params.append(failure_reason)
-        
-    if not updates:
-        return
-        
-    params.extend([doc_id, user_id])
-    query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
-    
-    cursor.execute(query, tuple(params))
-    conn.commit()
-    conn.close()
-
+            updates = []
+            params = []
+            
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            if parsed_count is not None:
+                updates.append("parsed_transaction_count = ?")
+                params.append(parsed_count)
+            if import_count is not None:
+                updates.append("import_transaction_count = ?")
+                params.append(import_count)
+            if skipped_count is not None:
+                updates.append("deduped_skipped_count = ?")
+                params.append(skipped_count)
+            if failure_reason is not None:
+                updates.append("failure_reason = ?")
+                params.append(failure_reason)
+                
+            if not updates:
+                if not is_external_conn:
+                    db_conn.close()
+                return True
+                
+            params.extend([doc_id, user_id])
+            query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
+            
+            cursor.execute(query, tuple(params))
+            
+            if not is_external_conn:
+                db_conn.commit()
+        except Exception as e:
+            print(f"Error updating document status: {e}")
+            if not is_external_conn:
+                db_conn.rollback()
+            raise e
+        finally:
+            if not is_external_conn:
+                db_conn.close()
+            
+        return True
 
 def find_duplicate_transactions(user_id, transactions):
     """Check a list of parsed transactions against existing DB transactions.
@@ -887,7 +979,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
     return trans_id, True
 
 
-def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_doc_ids):
+def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_doc_ids, conn=None):
     """
     Bulk insert transactions within a single transaction boundary for performance and reliability.
     transactions_with_hashes: list of dicts with 'trans' (the transaction dictionary) and 'txn_fingerprint' (the deduplication hash)
@@ -895,8 +987,9 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
     Returns (added_count, skipped_count, doc_stats)
     Where doc_stats is {doc_id: {'added': count, 'skipped': count, 'total': count}}
     """
-    conn = get_db()
-    cursor = conn.cursor()
+    is_external_conn = conn is not None
+    db_conn = conn or get_db()
+    cursor = db_conn.cursor()
     
     try:
         # 1. First, check which ones already exist
@@ -987,12 +1080,15 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
                 VALUES (?, ?, ?)
             """, source_insertions)
             
-        conn.commit()
+        if not is_external_conn:
+            db_conn.commit()
     except Exception as e:
-        conn.rollback()
+        if not is_external_conn:
+            db_conn.rollback()
         raise e
     finally:
-        conn.close()
+        if not is_external_conn:
+            db_conn.close()
         
     return added_count, skipped_count, doc_stats
 
@@ -1119,6 +1215,24 @@ def _is_super_admin():
         return current_user.is_authenticated and getattr(current_user, 'role', '') == 'SUPER_ADMIN'
     except Exception:
         return False
+
+def add_category(user_id, name, parent_category=None, category_type='other', color='#6c757d', icon='tag'):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO categories (user_id, name, parent_category, category_type, color, icon)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, name, parent_category, category_type, color, icon))
+        cat_id = cursor.lastrowid
+        conn.commit()
+        return cat_id
+    except Exception as e:
+        print(f"Error adding category: {e}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
 
 def get_categories(user_id):
     conn = get_db()
