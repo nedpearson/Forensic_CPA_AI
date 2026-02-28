@@ -3234,7 +3234,7 @@
                 } else {
                     toast(`Approved successfully. ${res.transactions_approved} transactions activated.`, "success");
                     loadDocuments();
-                    loadAnalytics();
+                    loadDashboard();
                 }
             } catch (e) {
                 toast("Error approving document.", "danger");
@@ -3254,7 +3254,7 @@
                 } else {
                     toast(`Document deleted successfully.`, "success");
                     loadDocuments();
-                    loadAnalytics();
+                    loadDashboard();
                 }
             } catch (e) {
                 toast("Error deleting document.", "danger");
