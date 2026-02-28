@@ -2305,6 +2305,7 @@
         document.querySelectorAll('.nav-link[data-page]').forEach(link => {
             link.addEventListener('click', e => {
                 e.preventDefault();
+                if (window.GlobalBreadcrumbs) window.GlobalBreadcrumbs.clear();
                 navigateTo(link.dataset.page, true);
             });
         });
