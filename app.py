@@ -2479,6 +2479,7 @@ def api_upload_commit():
         'status': 'ok',
         'message': 'Transactions imported successfully',
         'document_id': parent_doc_id, 
+        'filename': filename,
         'transactions_added': added,
         'transactions_skipped': skipped,
         'doc_stats': doc_stats

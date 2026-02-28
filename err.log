@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\dev\github\business\Forensic_CPA_AI\scripts\test2.py", line 5, in <module>
+    import app
+  File "C:\dev\github\business\Forensic_CPA_AI\app.py", line 2601, in <module>
+    @app.route('/api/upload/cancel', methods=['POST'])
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask\sansio\scaffold.py", line 362, in decorator
+    self.add_url_rule(rule, endpoint, f, **options)
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask\sansio\scaffold.py", line 47, in wrapper_func
+    return f(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask\sansio\app.py", line 657, in add_url_rule
+    raise AssertionError(
+AssertionError: View function mapping is overwriting an existing endpoint function: api_upload_cancel

@@ -3128,7 +3128,10 @@
         }
 
         async function commitUpload() {
-            if (!currentPreviewId) return;
+            if (!currentPreviewId) {
+                toast('Error: No active preview to commit. Please upload the file again.');
+                return;
+            }
             const previewEl = document.getElementById('upload-preview');
             const statusEl = document.getElementById('upload-status');
             const resultsEl = document.getElementById('upload-results');
@@ -3147,32 +3150,46 @@
 
             statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Committing transactions safely to the database...</div>`;
 
-            const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
-            if (data.error) {
-                statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(data.error)}</div>`;
+            try {
+                const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
+                if (data.error) {
+                    statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(data.error)}</div>`;
+                    if (btnCommit) { btnCommit.disabled = false; btnCommit.innerHTML = '<i class="fas fa-check"></i> Commit'; }
+                    if (btnCancel) btnCancel.disabled = false;
+                } else {
+                    statusEl.innerHTML = '';
+                    previewEl.style.display = 'none';
+                    let successMsg = `${data.transactions_added} imported`;
+                    if (data.transactions_skipped > 0) {
+                        successMsg += `, ${data.transactions_skipped} skipped as duplicates`;
+                    }
+                    resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(data.filename)}: ${successMsg}</div>`;
+                    toast(`Imported ${data.transactions_added} transactions`);
+                    currentPreviewId = null;
+                }
+            } catch (err) {
+                statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> Error committing: ${esc(err.message)}</div>`;
                 if (btnCommit) { btnCommit.disabled = false; btnCommit.innerHTML = '<i class="fas fa-check"></i> Commit'; }
                 if (btnCancel) btnCancel.disabled = false;
-            } else {
-                statusEl.innerHTML = '';
-                previewEl.style.display = 'none';
-                let successMsg = `${data.transactions_added} imported`;
-                if (data.transactions_skipped > 0) {
-                    successMsg += `, ${data.transactions_skipped} skipped as duplicates`;
-                }
-                resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(data.filename)}: ${successMsg}</div>`;
-                toast(`Imported ${data.transactions_added} transactions`);
             }
-            currentPreviewId = null;
         }
 
         async function cancelUpload() {
-            if (!currentPreviewId) return;
+            if (!currentPreviewId) {
+                document.getElementById('upload-preview').style.display = 'none';
+                return;
+            }
             const btnCancel = document.getElementById('btn-cancel-upload');
             const btnCommit = document.getElementById('btn-commit-upload');
             if (btnCancel) { btnCancel.disabled = true; btnCancel.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
             if (btnCommit) btnCommit.disabled = true;
 
-            await api('/api/upload/cancel', 'POST', { preview_id: currentPreviewId });
+            try {
+                await api('/api/upload/cancel', 'POST', { preview_id: currentPreviewId });
+            } catch (err) {
+                console.error("Cancel API error", err);
+            }
+
             document.getElementById('upload-preview').style.display = 'none';
             document.getElementById('upload-status').innerHTML = '<div class="alert alert-warning small py-2"><i class="fas fa-ban"></i> Upload cancelled</div>';
             currentPreviewId = null;
