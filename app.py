@@ -1266,7 +1266,7 @@ def api_update_transaction(trans_id):
         if suggestion:
             result['rule_suggestion'] = suggestion
             
-            # Phase 6 & 16: Automatic soft-learning and background ledger sweep
+            # Phase 16: Automatic soft-learning and background ledger sweep
             add_category_rule(
                 user_id=current_user.id,
                 pattern=suggestion['pattern'],
@@ -1279,6 +1279,7 @@ def api_update_transaction(trans_id):
             )
             
         # Phase 16: Trigger asynchronous ledger sweep so the UI reflects the new learning immediately
+        from categorizer import recategorize_all
         threading.Thread(target=recategorize_all, args=(current_user.id,)).start()
 
     return jsonify(result)

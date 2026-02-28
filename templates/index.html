@@ -2270,6 +2270,8 @@
 
         function clearFilters() {
             FilterStore.clear();
+            syncFilterUI();
+            loadTransactions();
         }
 
         function setDateRange(preset) {
@@ -2566,14 +2568,6 @@
             renderTransactions();
         }
 
-        function clearFilters() {
-            const currentViewMode = GlobalFilterState.view_mode;
-            Object.keys(GlobalFilterState).forEach(k => GlobalFilterState[k] = null);
-            GlobalFilterState.view_mode = currentViewMode;
-            GlobalFilterState.date_preset = 'all';
-            syncFilterUI();
-            loadTransactions(true);
-        }
 
         function renderTransactions() {
             const tbody = document.getElementById('transactions-tbody');
@@ -2604,6 +2598,17 @@
                     catUI += `<div class="mt-1"><span class="badge bg-success" style="font-size:0.6rem;" ${tip}><i class="fas fa-robot me-1"></i>AI Applied</span></div>`;
                 }
 
+                let tagAddDropdown = `
+                <div class="dropdown d-inline-block">
+                    <button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill border-0" style="font-size:0.65rem;" data-bs-toggle="dropdown" title="Add Tag"><i class="fas fa-plus"></i></button>
+                    <ul class="dropdown-menu dropdown-menu-dark text-small shadow" style="font-size:0.75rem;">
+                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_personal'); return false;">Personal</a></li>
+                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_business'); return false;">Business</a></li>
+                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_transfer'); return false;">Transfer</a></li>
+                        <li><a class="dropdown-item text-danger" href="#" onclick="quickAddTag(${t.id}, 'is_flagged'); return false;">Flagged</a></li>
+                    </ul>
+                </div>`;
+
                 html += `<tr>
                 <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
                 <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
@@ -2613,8 +2618,13 @@
                 <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
                 <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
                 <td style="font-size:0.75rem;">${t.payment_method || ''}</td>
-                <td style="white-space:nowrap;">${tags}</td>
-                <td><span class="quick-comment" ondblclick="inlineEditNote(this, ${t.id})" title="Double-click to add note">${t.user_notes ? esc(t.user_notes) : '<span style="color:#484f58;">+ note</span>'}</span></td>
+                <td style="white-space:nowrap;">${tags} ${tagAddDropdown}</td>
+                <td>
+                    <span class="quick-comment" id="note-display-${t.id}">
+                        ${t.user_notes ? esc(t.user_notes) + ` <button class="btn btn-sm text-secondary p-0 border-0 ms-1" onclick="quickAddNote(${t.id})" title="Edit Note"><i class="fas fa-pencil-alt" style="font-size:0.65rem;"></i></button>`
+                        : `<button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill" style="font-size:0.65rem;" onclick="quickAddNote(${t.id})"><i class="fas fa-plus me-1"></i>Note</button>`}
+                    </span>
+                </td>
                 <td style="white-space:nowrap;">
                     <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
                     <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
@@ -2650,28 +2660,73 @@
             }
         }
 
-        function inlineEditNote(el, id) {
-            const current = allTransactions.find(t => t.id === id)?.user_notes || '';
+        async function quickAddTag(id, tagKey) {
+            const t = allTransactions.find(x => x.id === id);
+            if (!t) return;
+            // Prevent duplicate call if already set
+            if (t[tagKey] === 1) return;
+
+            t[tagKey] = 1; // Optimistic UI update
+            const payload = {};
+            payload[tagKey] = 1;
+
+            const res = await api(`/api/transactions/${id}`, 'PUT', payload);
+            if (res.error) {
+                t[tagKey] = 0; // Rollback
+                toast(res.error, "danger");
+            } else {
+                renderTransactions();
+            }
+        }
+
+        function quickAddNote(id) {
+            const t = allTransactions.find(x => x.id === id);
+            if (!t) return;
+
+            const container = document.getElementById(`note-display-${id}`);
+            if (!container) return;
+
+            const current = t.user_notes || '';
             const input = document.createElement('input');
-            input.className = 'quick-comment-input';
+            input.className = 'quick-comment-input form-control form-control-sm';
+            input.style.cssText = 'min-width:150px; font-size:0.75rem; display:inline-block; width:auto;';
             input.value = current;
-            input.placeholder = 'Add note...';
-            el.replaceWith(input);
+            input.placeholder = 'Type note & press Enter';
+
+            // Avoid duplicate inputs
+            if (container.querySelector('input')) return;
+
+            container.innerHTML = '';
+            container.appendChild(input);
             input.focus();
-            input.select();
+
+            let isSaving = false;
+
             const save = async () => {
-                await api(`/api/transactions/${id}`, 'PUT', { user_notes: input.value });
-                const t = allTransactions.find(x => x.id === id);
-                if (t) t.user_notes = input.value;
-                const span = document.createElement('span');
-                span.className = 'quick-comment';
-                span.setAttribute('ondblclick', `inlineEditNote(this, ${id})`);
-                span.title = 'Double-click to edit';
-                span.innerHTML = input.value ? esc(input.value) : '<span style="color:#484f58;">+ note</span>';
-                input.replaceWith(span);
+                if (isSaving) return;
+                isSaving = true;
+
+                const newVal = input.value.trim();
+                // If unchanged, just restore UI
+                if (newVal === current) {
+                    renderTransactions();
+                    return;
+                }
+
+                const res = await api(`/api/transactions/${id}`, 'PUT', { user_notes: newVal });
+                if (res.error) {
+                    toast(res.error, "danger");
+                } else {
+                    t.user_notes = newVal;
+                }
+                renderTransactions();
             };
+
             input.addEventListener('blur', save);
-            input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = current; input.blur(); } });
+            input.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+                if (e.key === 'Escape') { input.value = current; input.blur(); }
+            });
         }
         async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged ? 0 : 1 }); loadTransactions(); toast(t.is_flagged ? 'Unflagged' : 'Flagged'); }
 
@@ -2758,11 +2813,19 @@
                 <div class="col-3 mb-2"><label class="form-label small">Method</label><select class="form-select form-select-sm" id="edit-method"><option value="">--</option>${['debit', 'credit', 'check', 'venmo', 'transfer', 'wire', 'cash'].map(m => `<option ${t.payment_method === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
             </div>
             <div class="mb-2"><label class="form-label small">Notes</label><input type="text" class="form-control form-control-sm" id="edit-notes" value="${esc(t.user_notes || '')}"></div>
-            <div class="d-flex gap-3 mb-2">
-                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-personal" ${t.is_personal ? 'checked' : ''}><label class="form-check-label small">Personal</label></div>
-                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-business" ${t.is_business ? 'checked' : ''}><label class="form-check-label small">Business</label></div>
-                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-transfer" ${t.is_transfer ? 'checked' : ''}><label class="form-check-label small">Transfer</label></div>
-                <div class="form-check"><input type="checkbox" class="form-check-input" id="edit-flagged" ${t.is_flagged ? 'checked' : ''}><label class="form-check-label small">Flagged</label></div>
+            <label class="form-label small mb-1">Tags</label>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+                <input type="checkbox" class="btn-check" id="edit-personal" autocomplete="off" ${t.is_personal ? 'checked' : ''}>
+                <label class="btn btn-outline-info btn-sm rounded-pill px-3" for="edit-personal"><i class="fas fa-user me-1"></i>Personal</label>
+
+                <input type="checkbox" class="btn-check" id="edit-business" autocomplete="off" ${t.is_business ? 'checked' : ''}>
+                <label class="btn btn-outline-warning btn-sm rounded-pill px-3" for="edit-business"><i class="fas fa-briefcase me-1"></i>Business</label>
+
+                <input type="checkbox" class="btn-check" id="edit-transfer" autocomplete="off" ${t.is_transfer ? 'checked' : ''}>
+                <label class="btn btn-outline-secondary btn-sm rounded-pill px-3" for="edit-transfer"><i class="fas fa-exchange-alt me-1"></i>Transfer</label>
+
+                <input type="checkbox" class="btn-check" id="edit-flagged" autocomplete="off" ${t.is_flagged ? 'checked' : ''}>
+                <label class="btn btn-outline-danger btn-sm rounded-pill px-3" for="edit-flagged"><i class="fas fa-flag me-1"></i>Flagged</label>
             </div>
             <div class="mb-0"><label class="form-label small">Flag Reason</label><input type="text" class="form-control form-control-sm" id="edit-flag-reason" value="${esc(t.flag_reason || '')}"></div>
             ${proofsHtml}
@@ -3880,9 +3943,49 @@
             const fc = document.getElementById('filter-cardholder');
             if (!fc) return;
             const current = fc.value;
-            const holders = [...new Set(allTransactions.map(t => t.cardholder_name).filter(Boolean))].sort();
+
+            const groups = {
+                'Bank Accounts': new Set(),
+                'Credit Card Holders': new Set(),
+                'Debit Card Holders': new Set(),
+                'Venmo Accounts': new Set(),
+                'Other Payment Methods': new Set()
+            };
+
+            allTransactions.forEach(t => {
+                const h = t.cardholder_name;
+                if (!h) return;
+                const m = (t.payment_method || '').toLowerCase();
+
+                if (m === 'credit') groups['Credit Card Holders'].add(h);
+                else if (m === 'debit') groups['Debit Card Holders'].add(h);
+                else if (m === 'venmo') groups['Venmo Accounts'].add(h);
+                else if (['check', 'transfer', 'wire', 'cash', 'bank'].includes(m)) groups['Bank Accounts'].add(h);
+                else groups['Other Payment Methods'].add(h);
+            });
+
+            // Remove overlaps (prioritize more specific types over Bank/Other)
+            const seen = new Set();
+            for (const g of ['Venmo Accounts', 'Credit Card Holders', 'Debit Card Holders', 'Bank Accounts', 'Other Payment Methods']) {
+                const uniqueForGroup = new Set();
+                groups[g].forEach(h => {
+                    if (!seen.has(h)) {
+                        uniqueForGroup.add(h);
+                        seen.add(h);
+                    }
+                });
+                groups[g] = [...uniqueForGroup].sort();
+            }
+
             fc.innerHTML = '<option value="">All Cardholders</option>';
-            holders.forEach(h => fc.add(new Option(h, h)));
+            for (const [gLabel, sortedHolders] of Object.entries(groups)) {
+                if (sortedHolders.length > 0) {
+                    const og = document.createElement('optgroup');
+                    og.label = gLabel;
+                    sortedHolders.forEach(h => og.appendChild(new Option(h, h)));
+                    fc.appendChild(og);
+                }
+            }
             fc.value = current;
         }
 
@@ -3894,7 +3997,13 @@
             }
         }
 
-        function categoryOptions(selected) { return allCategories.map(c => `<option value="${c.name}" ${c.name === selected ? 'selected' : ''}>${c.name}</option>`).join(''); }
+        function categoryOptions(selected) {
+            let optionsHtml = allCategories.map(c => `<option value="${c.name}" ${c.name === selected ? 'selected' : ''}>${c.name}</option>`).join('');
+            if (selected && !allCategories.some(c => c.name === selected)) {
+                optionsHtml = `<option value="${selected}" selected>${selected}</option>` + optionsHtml;
+            }
+            return optionsHtml;
+        }
         async function recategorizeAll() { if (!confirm('Re-run auto-categorization?')) return; const r = await api('/api/recategorize', 'POST'); toast(`Updated ${r.updated} transactions`); loadDashboard(); }
         function exportCSV() { window.open('/api/export/csv', '_blank'); }
         async function clearAllData() {
