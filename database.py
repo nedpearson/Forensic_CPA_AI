@@ -1022,6 +1022,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         added_count = 0
         skipped_count = 0
         doc_stats = {}
+        new_fps_set = set()
         
         for i, item in enumerate(transactions_with_hashes):
             t = item['trans']
@@ -1038,7 +1039,8 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
                 trans_id = existing_map[fp]
                 if target_doc_id:
                     # Still need to record the source mapping
-                    source_insertions.append((user_id, trans_id, target_doc_id))
+                    if trans_id != 'PENDING_INSERT':
+                        source_insertions.append((user_id, trans_id, target_doc_id))
                 skipped_count += 1
                 doc_stats[target_doc_id]['skipped'] += 1
             else:
@@ -1055,6 +1057,10 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
                     t.get('merchant_id'), t.get('categorization_confidence'), t.get('categorization_source'),
                     t.get('categorization_status'), t.get('categorization_explanation')
                 ))
+                existing_map[fp] = 'PENDING_INSERT'
+                new_fps_set.add(fp)
+                added_count += 1
+                doc_stats[target_doc_id]['added'] += 1
                 
         # Execute insertions
         if insertions:
@@ -1067,7 +1073,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, insertions)
             
-            new_fps = [row[23] for row in insertions] # txn_fingerprint is index 23
+            new_fps = list(new_fps_set)
             for i in range(0, len(new_fps), batch_size):
                 batch = new_fps[i:i+batch_size]
                 placeholders = ','.join('?' for _ in batch)
@@ -1079,10 +1085,8 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
             for i, item in enumerate(transactions_with_hashes):
                 fp = item['txn_fingerprint']
                 target_doc_id = target_doc_ids[i]
-                if fp in new_fps and fp in existing_map:
+                if fp in new_fps_set and fp in existing_map:
                     source_insertions.append((user_id, existing_map[fp], target_doc_id))
-                    added_count += 1
-                    doc_stats[target_doc_id]['added'] += 1
                     
         if source_insertions:
             cursor.executemany("""
