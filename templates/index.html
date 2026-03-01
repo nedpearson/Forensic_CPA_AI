@@ -1383,26 +1383,7 @@
                 <div id="saved-filters-bar" class="mt-2" style="display:none;"></div>
             </div>
             <div class="card-dark">
-                <div class="scrollable-table">
-                    <table class="table table-dark-custom">
-                        <thead>
-                            <tr>
-                                <th class="checkbox-cell"><input type="checkbox" id="select-all"></th>
-                                <th>Date</th>
-                                <th>Description</th>
-                                <th>Amount</th>
-                                <th>Category</th>
-                                <th>Cardholder</th>
-                                <th>Card</th>
-                                <th>Method</th>
-                                <th>Tags</th>
-                                <th>Notes</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="transactions-tbody"></tbody>
-                    </table>
-                </div>
+                <div id="transactions-table-container"></div>
                 <div class="d-flex justify-content-between align-items-center p-2"
                     style="border-top:1px solid #30363d;">
                     <span id="trans-count" class="text-muted small"></span>
@@ -2089,6 +2070,8 @@
     <script src="/shared/types/index.js"></script>
     <script src="/shared/url.js"></script>
     <script src="/shared/store.js"></script>
+    <script src="/shared/tableUtils.js?v=5"></script>
+    <script src="/shared/components/Table.js?v=5"></script>
     <script src="/shared/drilldown.js"></script>
     <script>
         // =====
@@ -2569,86 +2552,118 @@
         }
 
 
+        let transactionsTable;
+
         function renderTransactions() {
-            const tbody = document.getElementById('transactions-tbody');
-            let html = '', totalDebits = 0, totalCredits = 0;
+            if (!transactionsTable) {
+                transactionsTable = new DataTable({
+                    containerId: 'transactions-table-container',
+                    columns: [
+                        { key: 'select', label: '<input type="checkbox" id="select-all">', sortable: false, className: 'checkbox-cell' },
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'cardholder_name', label: 'Cardholder', sortable: true, type: 'text' },
+                        { key: 'card_last_four', label: 'Card', sortable: true, type: 'text' },
+                        { key: 'payment_method', label: 'Method', sortable: true, type: 'text' },
+                        { key: 'tags', label: 'Tags', sortable: false },
+                        { key: 'user_notes', label: 'Notes', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: (t, idx) => {
+                        let tags = '';
+                        if (t.is_personal) tags += '<span class="badge badge-personal me-1">Personal</span>';
+                        if (t.is_business) tags += '<span class="badge badge-business me-1">Business</span>';
+                        if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">Transfer</span>';
+                        if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason || '')}">FLAG</span>`;
+                        if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
 
-            allTransactions.forEach(t => {
-                if (t.amount < 0) totalDebits += Math.abs(t.amount); else totalCredits += t.amount;
-                let tags = '';
-                if (t.is_personal) tags += '<span class="badge badge-personal me-1">Personal</span>';
-                if (t.is_business) tags += '<span class="badge badge-business me-1">Business</span>';
-                if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">Transfer</span>';
-                if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason || '')}">FLAG</span>`;
-                if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
+                        let catUI = `<select class="category-select" style="max-width:200px;" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select>`;
 
-                // Confidences and UI Overrides
-                let catUI = `<select class="category-select" style="max-width:200px;" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select>`;
+                        if (t.categorization_status === 'review_required' || t.categorization_status === 'suggested') {
+                            const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                            catUI += `<div class="mt-1 d-flex align-items-center gap-1">`;
+                            catUI += `<span class="badge bg-warning text-dark" style="font-size:0.6rem;" ${tip}><i class="fas fa-exclamation-triangle me-1"></i>Review</span>`;
+                            catUI += `<button class="btn btn-sm btn-success py-0 px-1 ms-1" style="font-size:0.65rem;" onclick="approveCategory(${t.id})" title="Approve"><i class="fas fa-check"></i></button>`;
+                            catUI += `</div>`;
+                        } else if (t.categorization_source === 'internet_lookup') {
+                            catUI += `<div class="mt-1"><span class="badge bg-info text-dark" style="font-size:0.6rem;" title="Assisted by Web Search"><i class="fas fa-globe me-1"></i>Web Search</span></div>`;
+                        } else if (t.categorization_source === 'ai_high_conf') {
+                            const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                            catUI += `<div class="mt-1"><span class="badge bg-success" style="font-size:0.6rem;" ${tip}><i class="fas fa-robot me-1"></i>AI Applied</span></div>`;
+                        }
 
-                if (t.categorization_status === 'review_required' || t.categorization_status === 'suggested') {
-                    const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
-                    catUI += `<div class="mt-1 d-flex align-items-center gap-1">`;
-                    catUI += `<span class="badge bg-warning text-dark" style="font-size:0.6rem;" ${tip}><i class="fas fa-exclamation-triangle me-1"></i>Review</span>`;
-                    catUI += `<button class="btn btn-sm btn-success py-0 px-1 ms-1" style="font-size:0.65rem;" onclick="approveCategory(${t.id})" title="Approve"><i class="fas fa-check"></i></button>`;
-                    catUI += `</div>`;
-                } else if (t.categorization_source === 'internet_lookup') {
-                    catUI += `<div class="mt-1"><span class="badge bg-info text-dark" style="font-size:0.6rem;" title="Assisted by Web Search"><i class="fas fa-globe me-1"></i>Web Search</span></div>`;
-                } else if (t.categorization_source === 'ai_high_conf') {
-                    const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
-                    catUI += `<div class="mt-1"><span class="badge bg-success" style="font-size:0.6rem;" ${tip}><i class="fas fa-robot me-1"></i>AI Applied</span></div>`;
-                }
+                        let tagAddDropdown = `
+                        <div class="dropdown d-inline-block">
+                            <button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill border-0" style="font-size:0.65rem;" data-bs-toggle="dropdown" title="Add Tag"><i class="fas fa-plus"></i></button>
+                            <ul class="dropdown-menu dropdown-menu-dark text-small shadow" style="font-size:0.75rem;">
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_personal'); return false;">Personal</a></li>
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_business'); return false;">Business</a></li>
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_transfer'); return false;">Transfer</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" onclick="quickAddTag(${t.id}, 'is_flagged'); return false;">Flagged</a></li>
+                            </ul>
+                        </div>`;
 
-                let tagAddDropdown = `
-                <div class="dropdown d-inline-block">
-                    <button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill border-0" style="font-size:0.65rem;" data-bs-toggle="dropdown" title="Add Tag"><i class="fas fa-plus"></i></button>
-                    <ul class="dropdown-menu dropdown-menu-dark text-small shadow" style="font-size:0.75rem;">
-                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_personal'); return false;">Personal</a></li>
-                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_business'); return false;">Business</a></li>
-                        <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_transfer'); return false;">Transfer</a></li>
-                        <li><a class="dropdown-item text-danger" href="#" onclick="quickAddTag(${t.id}, 'is_flagged'); return false;">Flagged</a></li>
-                    </ul>
-                </div>`;
-
-                html += `<tr>
-                <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
-                <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
-                <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: ' + esc(t.user_notes) : ''}">${esc(t.description)}</td>
-                <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
-                <td>${catUI}</td>
-                <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
-                <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
-                <td style="font-size:0.75rem;">${t.payment_method || ''}</td>
-                <td style="white-space:nowrap;">${tags} ${tagAddDropdown}</td>
-                <td>
-                    <span class="quick-comment" id="note-display-${t.id}">
-                        ${t.user_notes ? esc(t.user_notes) + ` <button class="btn btn-sm text-secondary p-0 border-0 ms-1" onclick="quickAddNote(${t.id})" title="Edit Note"><i class="fas fa-pencil-alt" style="font-size:0.65rem;"></i></button>`
-                        : `<button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill" style="font-size:0.65rem;" onclick="quickAddNote(${t.id})"><i class="fas fa-plus me-1"></i>Note</button>`}
-                    </span>
-                </td>
-                <td style="white-space:nowrap;">
-                    <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
-                    <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
-                    <button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="toggleFlag(${t.id})" title="Flag"><i class="fas fa-flag fa-xs"></i></button>
-                </td>
-            </tr>`;
-            });
-
-            tbody.innerHTML = html || '<tr><td colspan="11" class="text-center text-muted py-4">No transactions found.</td></tr>';
-            document.getElementById('trans-count').textContent = `${allTransactions.length} transactions`;
-            document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
-
-            document.querySelectorAll('.row-check').forEach(cb => {
-                cb.addEventListener('change', () => {
-                    if (cb.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value);
-                    updateBulkButtons();
+                        return `<tr>
+                            <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
+                            <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
+                            <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: ' + esc(t.user_notes) : ''}">${esc(t.description)}</td>
+                            <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                            <td>${catUI}</td>
+                            <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
+                            <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
+                            <td style="font-size:0.75rem;">${t.payment_method || ''}</td>
+                            <td style="white-space:nowrap;">${tags} ${tagAddDropdown}</td>
+                            <td>
+                                <span class="quick-comment" id="note-display-${t.id}">
+                                    ${t.user_notes ? esc(t.user_notes) + ` <button class="btn btn-sm text-secondary p-0 border-0 ms-1" onclick="quickAddNote(${t.id})" title="Edit Note"><i class="fas fa-pencil-alt" style="font-size:0.65rem;"></i></button>`
+                                : `<button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill" style="font-size:0.65rem;" onclick="quickAddNote(${t.id})"><i class="fas fa-plus me-1"></i>Note</button>`}
+                                </span>
+                            </td>
+                            <td style="white-space:nowrap;">
+                                <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
+                                <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+                                <button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="toggleFlag(${t.id})" title="Flag"><i class="fas fa-flag fa-xs"></i></button>
+                            </td>
+                        </tr>`;
+                    }
                 });
-            });
+
+                // Overload the generic column rendered event to trigger logic for our selects
+                transactionsTable.onRenderComplete = () => {
+                    document.querySelectorAll('.row-check').forEach(cb => {
+                        cb.addEventListener('change', () => {
+                            if (cb.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value);
+                            updateBulkButtons();
+                        });
+                    });
+
+                    const selectAllCb = document.getElementById('select-all');
+                    if (selectAllCb) {
+                        selectAllCb.addEventListener('change', function () {
+                            const isChecked = this.checked;
+                            document.querySelectorAll('.row-check').forEach(cb => { cb.checked = isChecked; if (isChecked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value); });
+                            updateBulkButtons();
+                        });
+                    }
+                };
+                transactionsTable.onSortChange = (visibleData) => {
+                    let totalDebits = 0, totalCredits = 0;
+                    visibleData.forEach(t => {
+                        if (t.amount < 0) totalDebits += Math.abs(t.amount); else totalCredits += t.amount;
+                    });
+                    document.getElementById('trans-count').textContent = `${visibleData.length} transactions`;
+                    document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
+                }
+            }
+
+            transactionsTable.updateData(allTransactions);
+
+            // Re-run the counter immediately to show base initial state
+            if (transactionsTable._sortedData) transactionsTable.onSortChange(transactionsTable._sortedData);
         }
 
-        document.getElementById('select-all').addEventListener('change', function () {
-            document.querySelectorAll('.row-check').forEach(cb => { cb.checked = this.checked; if (this.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value); });
-            updateBulkButtons();
-        });
         function updateBulkButtons() { const show = selectedIds.size > 0; document.getElementById('bulk-delete-btn').style.display = show ? '' : 'none'; document.getElementById('bulk-edit-btn').style.display = show ? '' : 'none'; }
 
         async function quickCategory(id, cat) {
