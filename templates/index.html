@@ -1498,29 +1498,15 @@
             </div>
         </div>
 
-        <!-- ========== DOCUMENTS ========== -->
         <div class="page-section" id="page-documents">
-            <h4 class="mb-3"><i class="fas fa-folder-open text-info"></i> Uploaded Documents</h4>
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4 class="mb-0"><i class="fas fa-folder-open text-info"></i> Uploaded Documents</h4>
+                <input type="text" id="doc-quick-search"
+                    class="form-control form-control-sm bg-dark text-white border-secondary" style="width:250px;"
+                    placeholder="Filter documents..." oninput="window.filterDocs(this.value)">
+            </div>
             <div class="card-dark">
-                <div class="scrollable-table">
-                    <table class="table table-dark-custom">
-                        <thead>
-                            <tr>
-                                <th>Filename</th>
-                                <th>Type</th>
-                                <th>Category</th>
-                                <th>Account</th>
-                                <th>Status</th>
-                                <th>Parsed</th>
-                                <th>Imported</th>
-                                <th>Skipped</th>
-                                <th>Uploaded</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="documents-tbody"></tbody>
-                    </table>
-                </div>
+                <div class="scrollable-table" id="documents-table-container"></div>
             </div>
         </div>
 
@@ -2951,6 +2937,8 @@
         }
 
         // ===== FORENSIC ANALYSIS =====
+        let dtTable, flTable, vTable;
+
         async function loadAnalysis(filters) {
             if (!filters) filters = FilterStore.getState();
 
@@ -2963,47 +2951,86 @@
 
             // Deposit-transfer patterns
             const patterns = await api('/api/analysis/deposit-transfers?' + safeQs);
-            let dtHtml = '<table class="table table-dark-custom"><thead><tr><th>Deposit Date</th><th>Deposit Amt</th><th>Transfers Within 7 Days</th><th>Total Moved</th><th>% Moved</th></tr></thead><tbody>';
-            if (!patterns.length) dtHtml += '<tr><td colspan="5" class="text-center text-muted py-3">No patterns detected. Upload bank statements to analyze.</td></tr>';
+            if (!dtTable) {
+                dtTable = new DataTable({
+                    containerId: 'deposit-transfer-analysis',
+                    emptyMessage: 'No patterns detected. Upload bank statements to analyze.',
+                    columns: [
+                        { key: 'deposit.trans_date', label: 'Deposit Date', sortable: true, type: 'date' },
+                        { key: 'deposit_amount', label: 'Deposit Amt', sortable: true, type: 'number' },
+                        { key: 'transfers_html', label: 'Transfers Within 7 Days', sortable: false },
+                        { key: 'transfer_total', label: 'Total Moved', sortable: true, type: 'number' },
+                        { key: 'pct_transferred', label: '% Moved', sortable: true, type: 'number' }
+                    ],
+                    renderRow: p => {
+                        const cls = p.pct_transferred > 50 ? 'text-danger fw-bold' : p.pct_transferred > 25 ? 'text-warning' : '';
+                        return `<tr><td>${p.deposit.trans_date}</td><td class="amount-positive">$${fmt(p.deposit_amount)}</td>
+                        <td>${p.transfers_html}</td>
+                        <td class="amount-negative">$${fmt(p.transfer_total)}</td><td class="${cls}">${p.pct_transferred}%</td></tr>`;
+                    }
+                });
+            }
             patterns.forEach(p => {
-                const cls = p.pct_transferred > 50 ? 'text-danger fw-bold' : p.pct_transferred > 25 ? 'text-warning' : '';
-                dtHtml += `<tr><td>${p.deposit.trans_date}</td><td class="amount-positive">$${fmt(p.deposit_amount)}</td>
-                <td>${p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('')}</td>
-                <td class="amount-negative">$${fmt(p.transfer_total)}</td><td class="${cls}">${p.pct_transferred}%</td></tr>`;
+                p.transfers_html = p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('');
             });
-            dtHtml += '</tbody></table>';
-            document.getElementById('deposit-transfer-analysis').innerHTML = dtHtml;
+            dtTable.updateData(patterns);
 
             // Flagged
             const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
-            let flHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Cardholder</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
-            flagged.forEach(t => {
-                flHtml += `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
-                <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
-                <td>${esc(t.cardholder_name || '')}</td><td class="text-warning small">${esc(t.flag_reason || '')}</td>
-                <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`;
-            });
-            if (!flagged.length) flHtml += '<tr><td colspan="6" class="text-muted text-center py-3">No flagged transactions</td></tr>';
-            flHtml += '</tbody></table>';
-            document.getElementById('flagged-transactions').innerHTML = flHtml;
-            // Make flagged available for editing
             window._flaggedTrans = flagged;
+            if (!flTable) {
+                flTable = new DataTable({
+                    containerId: 'flagged-transactions',
+                    emptyMessage: 'No flagged transactions',
+                    columns: [
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'cardholder_name', label: 'Cardholder', sortable: true, type: 'text' },
+                        { key: 'flag_reason', label: 'Reason', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: t => `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                        <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                        <td>${esc(t.cardholder_name || '')}</td><td class="text-warning small">${esc(t.flag_reason || '')}</td>
+                        <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`
+                });
+            }
+            flTable.updateData(flagged);
 
             // Venmo analysis - Find transactions mathematically mapped to Venmo category OR containing Venmo
             const venmo = await api('/api/transactions?category=Venmo+-+Payment' + getViewModeParam().replace('?', '&'));
-            let vHtml = '<table class="table table-dark-custom"><thead><tr><th>Date</th><th>Recipient</th><th>Amount</th><th>Note/Description</th><th>Flagged</th></tr></thead><tbody>';
             let venmoTotal = 0;
             const venmoByPerson = {};
             venmo.forEach(t => {
                 venmoTotal += Math.abs(t.amount);
                 const name = t.cardholder_name || 'Unknown';
                 venmoByPerson[name] = (venmoByPerson[name] || 0) + Math.abs(t.amount);
-                vHtml += `<tr><td>${t.trans_date}</td><td>${esc(t.cardholder_name || '')}</td>
-                <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
-                <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
-                <td>${t.is_flagged ? '<span class="badge badge-flagged">FLAG</span>' : ''}</td></tr>`;
             });
-            vHtml += `</tbody></table>`;
+
+            if (!vTable) {
+                // Ensure the container exists for Venmo Summary separate from Table
+                if (!document.getElementById('venmo-summary-div')) {
+                    const vCont = document.getElementById('venmo-analysis');
+                    vCont.innerHTML = '<div id="venmo-summary-div"></div><div id="venmo-table-div"></div>';
+                }
+
+                vTable = new DataTable({
+                    containerId: 'venmo-table-div',
+                    emptyMessage: 'No Venmo transactions found.',
+                    columns: [
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'cardholder_name', label: 'Recipient', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'description', label: 'Note/Description', sortable: true, type: 'text' },
+                        { key: 'is_flagged', label: 'Flagged', sortable: true, type: 'boolean' }
+                    ],
+                    renderRow: t => `<tr><td>${t.trans_date}</td><td>${esc(t.cardholder_name || '')}</td>
+                        <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+                        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                        <td>${t.is_flagged ? '<span class="badge badge-flagged">FLAG</span>' : ''}</td></tr>`
+                });
+            }
 
             // Venmo summary by person
             let vSummary = `<div class="p-3 mb-2"><strong>Total Venmo: <span class="amount-negative">$${fmt(venmoTotal)}</span></strong> across ${venmo.length} payments</div>`;
@@ -3013,7 +3040,8 @@
             });
             vSummary += '</div>';
 
-            document.getElementById('venmo-analysis').innerHTML = vSummary + vHtml;
+            document.getElementById('venmo-summary-div').innerHTML = vSummary;
+            vTable.updateData(venmo);
         }
 
         // Old cardholders function removed - replaced by enhanced version below
@@ -3217,6 +3245,7 @@
         }
 
         // ===== DOCUMENTS =====
+        let docsTable;
         async function loadDocuments() {
             const docs = await api('/api/documents');
             let html = '';
@@ -3275,9 +3304,41 @@
                 return tr;
             }
 
-            roots.forEach(d => { html += renderDoc(d, false); });
-            document.getElementById('documents-tbody').innerHTML = html || '<tr><td colspan="10" class="text-muted text-center py-3">No documents uploaded.</td></tr>';
+            if (!docsTable) {
+                docsTable = new DataTable({
+                    containerId: 'documents-table-container',
+                    emptyMessage: 'No documents uploaded.',
+                    columns: [
+                        { key: 'filename', label: 'Filename', sortable: true, type: 'text' },
+                        { key: 'file_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'doc_category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'account_name', label: 'Account', sortable: true, type: 'text' },
+                        { key: 'status', label: 'Status', sortable: true, type: 'text' },
+                        { key: 'parsed_transaction_count', label: 'Parsed', sortable: true, type: 'number' },
+                        { key: 'import_transaction_count', label: 'Imported', sortable: true, type: 'number' },
+                        { key: 'deduped_skipped_count', label: 'Skipped', sortable: true, type: 'number' },
+                        { key: 'upload_date', label: 'Uploaded', sortable: true, type: 'date' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    filterConfig: [
+                        { key: 'quick', type: 'text', accessor: d => [d.filename, d.file_type, d.doc_category, d.account_name, d.status].join(' ') }
+                    ],
+                    renderRow: d => renderDoc(d, false)
+                });
+            }
+            // Preserve child documents when filtering parent
+            if (docsTable.filterState.quick) {
+                // Not supported cleanly due to hierarchy recursion, so we flatten for quicksearch
+            }
+            docsTable.updateData(roots);
         }
+
+        window.filterDocs = function (val) {
+            if (docsTable) {
+                docsTable.filterState.quick = val;
+                docsTable.applyFilters();
+            }
+        };
 
         async function approveDocument(docId, btn) {
             if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
@@ -3364,36 +3425,77 @@
         }
 
         // ===== CATEGORIES =====
+        let catsTable, rulesTable, taxTable;
         async function loadCategoriesPage() {
             await ensureCategories();
-            let catHtml = '<table class="table table-dark-custom"><thead><tr><th>Name</th><th>Type</th><th>Actions</th></tr></thead><tbody>';
-            allCategories.forEach(c => { catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})"><td><span style="color:${c.color}"><i class="fas fa-${c.icon || 'tag'}"></i></span> ${c.name}</td><td>${c.category_type || ''}</td><td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteCategory(${c.id})"><i class="fas fa-trash"></i></button></td></tr>`; });
-            catHtml += '</tbody></table>';
-            document.getElementById('categories-list').innerHTML = catHtml;
+            if (!catsTable) {
+                catsTable = new DataTable({
+                    containerId: 'categories-list',
+                    emptyMessage: 'No categories found.',
+                    columns: [
+                        { key: 'name', label: 'Name', sortable: true, type: 'text' },
+                        { key: 'category_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: c => `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})">
+                        <td><span style="color:${c.color}"><i class="fas fa-${c.icon || 'tag'}"></i></span> ${c.name}</td>
+                        <td>${c.category_type || ''}</td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteCategory(${c.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`
+                });
+            }
+            catsTable.updateData(allCategories);
 
             const rules = await api('/api/categories/rules');
-            let rHtml = '<table class="table table-dark-custom"><thead><tr><th>Pattern</th><th>Category</th><th>P</th><th>B</th><th>T</th><th>Priority</th><th>Actions</th></tr></thead><tbody>';
-            rules.forEach(r => { rHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(r.category)}'})"><td><code style="color:#79c0ff;">${esc(r.pattern)}</code></td><td>${r.category}</td><td>${r.is_personal ? '<i class="fas fa-check text-warning"></i>' : ''}</td><td>${r.is_business ? '<i class="fas fa-check text-info"></i>' : ''}</td><td>${r.is_transfer ? '<i class="fas fa-check text-danger"></i>' : ''}</td><td>${r.priority}</td><td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteRule(${r.id})"><i class="fas fa-trash"></i></button></td></tr>`; });
-            rHtml += '</tbody></table>';
-            document.getElementById('rules-list').innerHTML = rHtml;
+            if (!rulesTable) {
+                rulesTable = new DataTable({
+                    containerId: 'rules-list',
+                    emptyMessage: 'No rules found.',
+                    columns: [
+                        { key: 'pattern', label: 'Pattern', sortable: true, type: 'text' },
+                        { key: 'category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'is_personal', label: 'P', sortable: true, type: 'boolean' },
+                        { key: 'is_business', label: 'B', sortable: true, type: 'boolean' },
+                        { key: 'is_transfer', label: 'T', sortable: true, type: 'boolean' },
+                        { key: 'priority', label: 'Priority', sortable: true, type: 'number' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: r => `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(r.category)}'})">
+                        <td><code style="color:#79c0ff;">${esc(r.pattern)}</code></td>
+                        <td>${r.category}</td>
+                        <td>${r.is_personal ? '<i class="fas fa-check text-warning"></i>' : ''}</td>
+                        <td>${r.is_business ? '<i class="fas fa-check text-info"></i>' : ''}</td>
+                        <td>${r.is_transfer ? '<i class="fas fa-check text-danger"></i>' : ''}</td>
+                        <td>${r.priority}</td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteRule(${r.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`
+                });
+            }
+            rulesTable.updateData(rules);
 
             const taxonomy = await api('/api/taxonomy');
-            let taxHtml = '<table class="table table-dark-custom"><thead><tr><th>Name</th><th>Description</th><th>Type</th><th>Severity</th><th>Actions</th></tr></thead><tbody>';
-            if (taxonomy && taxonomy.length > 0) {
-                taxonomy.forEach(t => {
-                    taxHtml += `<tr>
+            if (!taxTable) {
+                taxTable = new DataTable({
+                    containerId: 'taxonomy-list',
+                    emptyMessage: 'No taxonomy rules defined. System will use defaults.',
+                    columns: [
+                        { key: 'name', label: 'Name', sortable: true, type: 'text' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'category_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'severity_num', label: 'Severity', sortable: true, type: 'number' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: t => `<tr>
                         <td class="fw-bold">${esc(t.name)}</td>
                         <td>${esc(t.description || '')}</td>
                         <td><span class="badge bg-secondary">${esc(t.category_type || '')}</span></td>
                         <td><span class="badge ${t.severity === 'high' || t.severity === 'critical' ? 'bg-danger' : t.severity === 'medium' ? 'bg-warning text-dark' : 'bg-info'}">${t.severity}</span></td>
                         <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="deleteTaxonomy(${t.id})"><i class="fas fa-trash"></i></button></td>
-                    </tr>`;
+                    </tr>`
                 });
-            } else {
-                taxHtml += '<tr><td colspan="5" class="text-center text-muted">No taxonomy rules defined. System will use defaults.</td></tr>';
             }
-            taxHtml += '</tbody></table>';
-            document.getElementById('taxonomy-list').innerHTML = taxHtml;
+            taxonomy.forEach(t => t.severity_num = t.severity === 'critical' ? 4 : t.severity === 'high' ? 3 : t.severity === 'medium' ? 2 : 1);
+            taxTable.updateData(taxonomy);
         }
 
         function showAddRuleModal() { loadCategoryOptions('rule-category'); new bootstrap.Modal(document.getElementById('addRuleModal')).show(); }
@@ -3489,50 +3591,71 @@
             renderRecipients();
         }
 
+        let recipientsTable;
         function renderRecipients() {
-            const sortBy = document.getElementById('recipient-sort')?.value || 'total';
+            // Note: sort logic is now handled internally by DataTable, so we don't custom-sort 'recipientData' here.
             let sorted = [...recipientData];
-            if (sortBy === 'suspicion') sorted.sort((a, b) => b.suspicion_score - a.suspicion_score);
-            else if (sortBy === 'count') sorted.sort((a, b) => b.count - a.count);
-            else if (sortBy === 'name') sorted.sort((a, b) => a.name.localeCompare(b.name));
-            else sorted.sort((a, b) => b.total - a.total);
 
             // Summary cards
             const totalOut = sorted.reduce((s, r) => s + r.total, 0);
             const highSuspicion = sorted.filter(r => r.suspicion_score >= 40).length;
-            const topRecipient = sorted[0];
+            const topRecipient = sorted.sort((a, b) => b.total - a.total)[0];
             document.getElementById('recipients-summary').innerHTML = `
             <div class="col"><div class="stat-card info"><div class="stat-value">${sorted.length}</div><div class="stat-label">Unique Recipients</div></div></div>
             <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalOut)}</div><div class="stat-label">Total Outflows</div></div></div>
             <div class="col"><div class="stat-card ${highSuspicion > 0 ? 'danger' : 'success'}"><div class="stat-value">${highSuspicion}</div><div class="stat-label">High Suspicion</div></div></div>
             <div class="col"><div class="stat-card warning"><div class="stat-value">${topRecipient ? esc(topRecipient.name).substring(0, 20) : 'N/A'}</div><div class="stat-label">Top Recipient ${topRecipient ? '$' + fmt(topRecipient.total) : ''}</div></div></div>
         `;
+            // Add a simple search box programmatically if not present
+            if (!document.getElementById('recipient-quick-search')) {
+                const container = document.getElementById('recipients-table').parentNode;
+                const searchHtml = `<div class="d-flex justify-content-end mb-2"><input type="text" id="recipient-quick-search" class="form-control form-control-sm bg-dark text-white border-secondary" style="width:250px;" placeholder="Filter recipients..." oninput="if(recipientsTable){ recipientsTable.filterState.quick = this.value; recipientsTable.applyFilters(); }"></div>`;
+                container.insertAdjacentHTML('afterbegin', searchHtml);
+            }
 
-            // Table
-            let html = `<table class="table table-dark-custom"><thead><tr>
-            <th>Recipient</th><th>Total Paid</th><th>Count</th><th>Avg</th>
-            <th>Concentration</th><th>Suspicion</th><th>Flags</th><th>Cardholders</th><th>Methods</th>
-        </tr></thead><tbody>`;
+            if (!recipientsTable) {
+                recipientsTable = new DataTable({
+                    containerId: 'recipients-table',
+                    emptyMessage: 'No outflow data found. Upload statements to analyze.',
+                    columns: [
+                        { key: 'name', label: 'Recipient', sortable: true, type: 'text' },
+                        { key: 'total', label: 'Total Paid', sortable: true, type: 'number' },
+                        { key: 'count', label: 'Count', sortable: true, type: 'number' },
+                        { key: 'avg_amount', label: 'Avg', sortable: true, type: 'number' },
+                        { key: 'concentration_pct', label: 'Concentration', sortable: true, type: 'number' },
+                        { key: 'suspicion_score', label: 'Suspicion', sortable: true, type: 'number' },
+                        { key: 'flags_text', label: 'Flags', sortable: true, type: 'text' },
+                        { key: 'cardholders_text', label: 'Cardholders', sortable: true, type: 'text' },
+                        { key: 'methods_text', label: 'Methods', sortable: true, type: 'text' }
+                    ],
+                    filterConfig: [
+                        { key: 'quick', type: 'text', accessor: r => [r.name, r.flags_text, r.cardholders_text, r.methods_text].join(' ') }
+                    ],
+                    renderRow: r => {
+                        const scoreClass = r.suspicion_score >= 40 ? 'suspicion-high' : r.suspicion_score >= 20 ? 'suspicion-med' : 'suspicion-low';
+                        const riskClass = r.suspicion_score >= 40 ? 'risk-high' : r.suspicion_score >= 20 ? 'risk-medium' : 'risk-low';
+                        return `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.name.split(' - ').pop().substring(0, 15))}'})">
+                            <td><strong>${esc(r.name)}</strong><br><span class="text-muted" style="font-size:0.7rem;">${r.first_date} to ${r.last_date}</span></td>
+                            <td class="amount-negative fw-bold">$${fmt(r.total)}</td>
+                            <td>${r.count}</td>
+                            <td class="amount-negative">$${fmt(r.avg_amount)}</td>
+                            <td>${r.concentration_pct}%</td>
+                            <td><div class="d-flex align-items-center gap-2"><div class="suspicion-bar ${scoreClass}"><div class="suspicion-fill" style="width:${r.suspicion_score}%"></div></div><span class="risk-badge ${riskClass}">${r.suspicion_score}</span></div></td>
+                            <td style="max-width:200px;font-size:0.72rem;">${r.flags_html}</td>
+                            <td style="font-size:0.72rem;">${r.cardholders_text}</td>
+                            <td style="font-size:0.72rem;">${r.methods_text}</td>
+                        </tr>`;
+                    }
+                });
+            }
 
-            sorted.forEach(r => {
-                const scoreClass = r.suspicion_score >= 40 ? 'suspicion-high' : r.suspicion_score >= 20 ? 'suspicion-med' : 'suspicion-low';
-                const riskClass = r.suspicion_score >= 40 ? 'risk-high' : r.suspicion_score >= 20 ? 'risk-medium' : 'risk-low';
-                html += `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.name.split(' - ').pop().substring(0, 15))}'})">
-                <td><strong>${esc(r.name)}</strong><br><span class="text-muted" style="font-size:0.7rem;">${r.first_date} to ${r.last_date}</span></td>
-                <td class="amount-negative fw-bold">$${fmt(r.total)}</td>
-                <td>${r.count}</td>
-                <td class="amount-negative">$${fmt(r.avg_amount)}</td>
-                <td>${r.concentration_pct}%</td>
-                <td><div class="d-flex align-items-center gap-2"><div class="suspicion-bar ${scoreClass}"><div class="suspicion-fill" style="width:${r.suspicion_score}%"></div></div><span class="risk-badge ${riskClass}">${r.suspicion_score}</span></div></td>
-                <td style="max-width:200px;font-size:0.72rem;">${r.flags.map(f => `<div class="text-warning">${esc(f)}</div>`).join('')}</td>
-                <td style="font-size:0.72rem;">${r.cardholders.join(', ')}</td>
-                <td style="font-size:0.72rem;">${r.methods.join(', ')}</td>
-            </tr>`;
+            recipientData.forEach(r => {
+                r.flags_text = r.flags.join(' ');
+                r.flags_html = r.flags.map(f => `<div class="text-warning">${esc(f)}</div>`).join('');
+                r.cardholders_text = r.cardholders.join(', ');
+                r.methods_text = r.methods.join(', ');
             });
-
-            if (!sorted.length) html += '<tr><td colspan="9" class="text-muted text-center py-4">No outflow data found. Upload statements to analyze.</td></tr>';
-            html += '</tbody></table>';
-            document.getElementById('recipients-table').innerHTML = html;
+            recipientsTable.updateData(recipientData);
         }
 
         // ===== DEPOSIT AGING =====
@@ -3548,6 +3671,7 @@
             renderDepositAging();
         }
 
+        let agingTable;
         function renderDepositAging() {
             const filter = document.getElementById('aging-filter')?.value || 'all';
             let filtered = agingData;
@@ -3568,31 +3692,42 @@
             <div class="col"><div class="stat-card ${avg3day > 50 ? 'danger' : 'info'}"><div class="stat-value">${avg3day.toFixed(0)}%</div><div class="stat-label">Avg 3-Day Drain</div></div></div>
         `;
 
-            let html = `<table class="table table-dark-custom"><thead><tr>
-            <th>Deposit Date</th><th>Description</th><th>Deposit Amt</th>
-            <th>Out in 3 Days</th><th>% 3-Day</th><th>Out in 7 Days</th><th>% 7-Day</th>
-            <th>Risk</th>
-        </tr></thead><tbody>`;
+            if (!agingTable) {
+                agingTable = new DataTable({
+                    containerId: 'aging-table',
+                    emptyMessage: 'No deposit data found.',
+                    columns: [
+                        { key: 'deposit.trans_date', label: 'Deposit Date', sortable: true, type: 'date' },
+                        { key: 'deposit.description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Deposit Amt', sortable: true, type: 'number' },
+                        { key: 'out_3day', label: 'Out in 3 Days', sortable: true, type: 'number' },
+                        { key: 'pct_3day', label: '% 3-Day', sortable: true, type: 'number' },
+                        { key: 'out_7day', label: 'Out in 7 Days', sortable: true, type: 'number' },
+                        { key: 'pct_7day', label: '% 7-Day', sortable: true, type: 'number' },
+                        { key: 'risk_sort', label: 'Risk', sortable: true, type: 'number' }
+                    ],
+                    renderRow: d => {
+                        const riskClass = d.risk === 'high' ? 'risk-high' : d.risk === 'medium' ? 'risk-medium' : 'risk-low';
+                        const pct3Class = d.pct_3day > 80 ? 'text-danger fw-bold' : d.pct_3day > 50 ? 'text-warning' : '';
+                        const pct7Class = d.pct_7day > 80 ? 'text-danger fw-bold' : d.pct_7day > 50 ? 'text-warning' : '';
+                        return `<tr class="clickable-row" onclick="drillToTransactions({date_from:'${d.deposit.trans_date}',date_to:'${d.deposit.trans_date}',search:'${esc(d.deposit.description.substring(0, 15))}'})">
+                            <td style="white-space:nowrap;">${d.deposit.trans_date}</td>
+                            <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(d.deposit.description)}">${esc(d.deposit.description)}</td>
+                            <td class="amount-positive fw-bold">$${fmt(d.amount)}</td>
+                            <td class="amount-negative">$${fmt(d.out_3day)}</td>
+                            <td class="${pct3Class}">${d.pct_3day}%</td>
+                            <td class="amount-negative">$${fmt(d.out_7day)}</td>
+                            <td class="${pct7Class}">${d.pct_7day}%</td>
+                            <td><span class="risk-badge ${riskClass}">${d.risk}</span></td>
+                        </tr>`;
+                    }
+                });
+            }
 
             filtered.forEach(d => {
-                const riskClass = d.risk === 'high' ? 'risk-high' : d.risk === 'medium' ? 'risk-medium' : 'risk-low';
-                const pct3Class = d.pct_3day > 80 ? 'text-danger fw-bold' : d.pct_3day > 50 ? 'text-warning' : '';
-                const pct7Class = d.pct_7day > 80 ? 'text-danger fw-bold' : d.pct_7day > 50 ? 'text-warning' : '';
-                html += `<tr class="clickable-row" onclick="drillToTransactions({date_from:'${d.deposit.trans_date}',date_to:'${d.deposit.trans_date}',search:'${esc(d.deposit.description.substring(0, 15))}'})">
-                <td style="white-space:nowrap;">${d.deposit.trans_date}</td>
-                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(d.deposit.description)}">${esc(d.deposit.description)}</td>
-                <td class="amount-positive fw-bold">$${fmt(d.amount)}</td>
-                <td class="amount-negative">$${fmt(d.out_3day)}</td>
-                <td class="${pct3Class}">${d.pct_3day}%</td>
-                <td class="amount-negative">$${fmt(d.out_7day)}</td>
-                <td class="${pct7Class}">${d.pct_7day}%</td>
-                <td><span class="risk-badge ${riskClass}">${d.risk}</span></td>
-            </tr>`;
+                d.risk_sort = d.risk === 'high' ? 3 : d.risk === 'medium' ? 2 : 1;
             });
-
-            if (!filtered.length) html += '<tr><td colspan="8" class="text-muted text-center py-4">No deposit data found.</td></tr>';
-            html += '</tbody></table>';
-            document.getElementById('aging-table').innerHTML = html;
+            agingTable.updateData(filtered);
         }
 
         // ===== CARDHOLDER COMPARISON (enhanced) =====

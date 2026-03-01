@@ -56,8 +56,9 @@ function getSortableValue(val, type = 'text') {
  * @param {string} sortDir - 'asc' or 'desc'
  */
 function sortComparator(a, b, sortBy, sortType, sortDir = 'asc') {
-    const valA = getSortableValue(a[sortBy], sortType);
-    const valB = getSortableValue(b[sortBy], sortType);
+    const getNested = (obj, path) => path.split('.').reduce((o, i) => (o ? o[i] : null), obj);
+    const valA = getSortableValue(getNested(a, sortBy), sortType);
+    const valB = getSortableValue(getNested(b, sortBy), sortType);
 
     const modifier = sortDir === 'desc' ? -1 : 1;
 
