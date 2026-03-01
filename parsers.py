@@ -210,10 +210,7 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
         traceback.print_exc()
         print(f"LLM Parsing failed: {e}")
         # Could fallback to regex here if heavily needed...
-
-    return transactions, account_info
-
-    # Extract account number
+        transactions = []
     acct_match = re.search(r'Account\s*(?:Number|#|No\.?)[:\s]*(\d+)', full_text, re.IGNORECASE)
     if acct_match:
         account_info['account_number'] = acct_match.group(1)
@@ -394,7 +391,70 @@ def parse_capital_one_statement(filepath, pre_extracted_pages=None):
     if name_match:
         account_info['account_name'] = name_match.group(1)
 
-    # Parse transactions by cardholder section
+    # Check for Year-End Summary Format
+    if "Year-End Summary" in full_text[:2000] or "Year-End Summary" in full_text:
+        in_transaction_details = False
+        current_card_last_four = ''
+        year = ''
+        
+        # Extract summary year
+        yr_match = re.search(r'Year-End Summary\s+(\d{4})', full_text[:1000])
+        if yr_match:
+            year = yr_match.group(1)
+        elif '2024' in full_text[:500]:
+            year = '2024'
+
+        for page_text in pages:
+            lines = page_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if "Section 4_Transaction Details" in line:
+                    in_transaction_details = True
+                    
+                if not in_transaction_details:
+                    continue
+                    
+                card_match = re.match(r'Card Ending in (\d{4})', line)
+                if card_match:
+                    current_card_last_four = card_match.group(1)
+                    continue
+                    
+                # Parse transaction lines: "02/07 Merchant Name Amount"
+                trans_match = re.match(r'(\d{2}/\d{2})\s+(.+?)\s+\$?([\d,]+\.\d{2})\s*$', line)
+                if trans_match:
+                    trans_date = trans_match.group(1)
+                    desc = trans_match.group(2).strip()
+                    amount_str = trans_match.group(3).replace(',', '')
+
+                    try:
+                        amount = float(amount_str)
+                    except ValueError:
+                        continue
+                        
+                    # Filter out headers/footers
+                    if desc.startswith("TOTAL CHARGES") or desc.startswith("TOTAL CREDITS") or desc.startswith("TOTAL "):
+                        continue
+                        
+                    # Standard parsing logic
+                    trans_type = 'debit'
+                    full_date = f"{trans_date}/{year}" if year else trans_date
+                    
+                    transactions.append({
+                        'trans_date': full_date,
+                        'post_date': full_date,
+                        'description': desc,
+                        'amount': -amount,
+                        'trans_type': trans_type,
+                        'cardholder_name': account_info['account_name'],
+                        'card_last_four': current_card_last_four,
+                        'payment_method': 'credit',
+                    })
+        return transactions, account_info
+
+    # Parse transactions by cardholder section for standard statement
     # Capital One statements group transactions under each cardholder
     current_cardholder = ''
     current_card = ''
@@ -1000,7 +1060,7 @@ def parse_document(filepath, doc_type='auto'):
                 pages = parse_pdf_text(filepath)
                 full_text = "\n".join(pages).upper()
                 header_text = full_text[:1000]
-                if 'SPARK CASH' in header_text or 'SPARK BUSINESS' in header_text:
+                if 'SPARK CASH' in header_text or 'SPARK BUSINESS' in header_text or 'QUICKSILVER' in header_text or 'YEAR-END SUMMARY' in header_text:
                     doc_type = 'credit_card'
                 elif 'BANK OF ST' in header_text or 'COMMERCIAL CHECKING' in header_text:
                     doc_type = 'bank_statement'

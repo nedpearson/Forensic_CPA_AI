@@ -3073,6 +3073,12 @@
                         continue;
                     }
 
+                    if (data.mode === 'duplicate') {
+                        statusEl.innerHTML = '';
+                        resultsEl.innerHTML += `<div class="alert alert-warning small py-2"><i class="fas fa-exclamation-triangle"></i> ${esc(file.name)}: ${esc(data.message)} Please delete the existing document in the Documents tab if you wish to re-upload and re-parse it.</div>`;
+                        continue;
+                    }
+
                     // Show preview
                     currentPreviewId = data.preview_id;
                     let dupWarning = data.duplicate_count > 0 ? ` <span class="text-warning fw-bold">WARNING: ${data.duplicate_count} potential duplicate(s) detected (shown struck-through).</span>` : '';
