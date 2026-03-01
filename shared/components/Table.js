@@ -139,6 +139,7 @@ class DataTable {
 
 // Make globally available
 window.DataTable = DataTable;
+window._tableInstances = window._tableInstances || {};
 
 window._tableSortHandler = function (containerId, sortKey, sortType) {
     console.log('[DataTable inline] Sort triggered:', containerId, sortKey, sortType);
