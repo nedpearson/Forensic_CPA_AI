@@ -1245,8 +1245,37 @@
             <h4 class="mb-1"><i class="fas fa-chart-pie text-info"></i> Dashboard</h4>
             <p class="text-muted small mb-3">Click any card or table row to drill down into the detail</p>
 
+            <!-- Dashboard Date Range Filters -->
+            <div class="filter-bar mb-3" id="dash-filter-bar">
+                <div class="row g-2 align-items-end">
+                    <div class="col"><input type="date" class="form-control form-control-sm" id="dash-date-from"
+                            placeholder="From Date"></div>
+                    <div class="col"><input type="date" class="form-control form-control-sm" id="dash-date-to"
+                            placeholder="To Date"></div>
+                    <div class="col"><select class="form-select form-select-sm" id="dash-account">
+                            <option value="">All Accounts</option>
+                        </select></div>
+                    <div class="col"><select class="form-select form-select-sm" id="dash-category">
+                            <option value="">All Categories</option>
+                        </select></div>
+                    <div class="col"><input type="text" class="form-control form-control-sm" id="dash-cardholder"
+                            placeholder="Cardholder..."></div>
+                    <div class="col"><select class="form-select form-select-sm" id="dash-flags">
+                            <option value="">All Statuses</option>
+                            <option value="flagged">Flagged</option>
+                            <option value="personal">Personal</option>
+                            <option value="business">Business</option>
+                            <option value="transfer">Transfers</option>
+                        </select></div>
+                    <div class="col-auto"><button class="btn btn-sm btn-info" onclick="readDashFilters()"><i
+                                class="fas fa-filter"></i> Apply</button></div>
+                    <div class="col-auto"><button class="btn btn-sm btn-outline-light" onclick="clearDashFilters()"><i
+                                class="fas fa-times"></i></button></div>
+                </div>
+            </div>
+
             <!-- Date Range Quick Picks -->
-            <div class="date-picks" id="date-picks">
+            <div class="date-picks d-flex justify-content-center gap-2 mb-3 mt-1" id="date-picks">
                 <button class="btn btn-sm btn-outline-light" onclick="setDateRange('all')" data-preset="all">All
                     Time</button>
                 <button class="btn btn-sm btn-outline-light" onclick="setDateRange('30')" data-preset="30">Last 30
@@ -2265,6 +2294,7 @@
         function syncFilterUI(filters) {
             const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
             filters = filters || FilterStore.getState();
+            // Transaction filters
             setVal('filter-search', filters.search);
             setVal('filter-category', filters.category);
             setVal('filter-cardholder', filters.cardholder);
@@ -2272,7 +2302,6 @@
             setVal('filter-date-from', filters.date_from);
             setVal('filter-date-to', filters.date_to);
             setVal('filter-min-amt', filters.min_amount);
-
             const elFlags = document.getElementById('filter-flags');
             if (elFlags) {
                 if (filters.is_flagged) elFlags.value = 'flagged';
@@ -2280,6 +2309,21 @@
                 else if (filters.is_business) elFlags.value = 'business';
                 else if (filters.is_transfer) elFlags.value = 'transfer';
                 else elFlags.value = '';
+            }
+
+            // Dashboard filters
+            setVal('dash-date-from', filters.date_from);
+            setVal('dash-date-to', filters.date_to);
+            setVal('dash-account', filters.account_id);
+            setVal('dash-category', filters.category);
+            setVal('dash-cardholder', filters.cardholder);
+            const dashFlags = document.getElementById('dash-flags');
+            if (dashFlags) {
+                if (filters.is_flagged) dashFlags.value = 'flagged';
+                else if (filters.is_personal) dashFlags.value = 'personal';
+                else if (filters.is_business) dashFlags.value = 'business';
+                else if (filters.is_transfer) dashFlags.value = 'transfer';
+                else dashFlags.value = '';
             }
         }
 
@@ -2422,7 +2466,47 @@
             // Re-load will be triggered automatically by subscription
         }
 
+        async function initDashFilters() {
+            await ensureCategories();
+            const dfc = document.getElementById('dash-category');
+            if (dfc && dfc.options.length <= 1) {
+                allCategories.forEach(c => dfc.add(new Option(c.name, c.name)));
+            }
+            try {
+                const accounts = await api('/api/accounts');
+                const dfa = document.getElementById('dash-account');
+                if (dfa && dfa.options.length <= 1) {
+                    accounts.forEach(a => dfa.add(new Option(a.account_name, a.id)));
+                }
+            } catch (e) { }
+        }
+
+        function readDashFilters() {
+            const getVal = (id) => { const el = document.getElementById(id); return el && el.value ? el.value : null; };
+            const updates = {
+                date_from: getVal('dash-date-from'),
+                date_to: getVal('dash-date-to'),
+                account_id: getVal('dash-account'),
+                category: getVal('dash-category'),
+                cardholder: getVal('dash-cardholder'),
+                is_flagged: null, is_personal: null, is_business: null, is_transfer: null,
+                date_preset: 'custom'
+            };
+            const fl = getVal('dash-flags');
+            if (fl === 'flagged') updates.is_flagged = '1';
+            if (fl === 'personal') updates.is_personal = '1';
+            if (fl === 'business') updates.is_business = '1';
+            if (fl === 'transfer') updates.is_transfer = '1';
+            FilterStore.update(updates);
+        }
+
+        function clearDashFilters() {
+            // clear both dash specific and shared inputs gracefully globally
+            FilterStore.clear();
+        }
+
         async function loadDashboard(filters) {
+            await initDashFilters();
             if (!filters) filters = FilterStore.getState();
             const qs = serializeFilters(filters);
             dashStats = await api('/api/stats?' + qs);
@@ -2445,32 +2529,43 @@
             // Cardholder table (clickable)
             let chHtml = '<table class="table table-dark-custom"><thead><tr><th>Cardholder</th><th>Spent</th><th>Count</th><th>Bar</th></tr></thead><tbody>';
             const maxSpent = Math.max(...(s.by_cardholder || []).map(c => c.total_spent), 1);
-            (s.by_cardholder || []).forEach(ch => {
-                const pct = (ch.total_spent / maxSpent * 100).toFixed(0);
-                chHtml += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})" title="Click to see all transactions">
-                <td>${esc(ch.cardholder_name || 'Unknown')}</td>
-                <td class="amount-negative">$${fmt(ch.total_spent)}</td>
-                <td>${ch.cnt}</td>
-                <td><div class="mini-bar" style="background:#f85149;width:${pct}%;">&nbsp;</div></td>
-            </tr>`;
-            });
+            if (!s.by_cardholder || s.by_cardholder.length === 0) {
+                chHtml += '<tr><td colspan="4" class="text-center text-muted py-3">No cardholder spending matching current filters.</td></tr>';
+            } else {
+                (s.by_cardholder || []).forEach(ch => {
+                    const pct = (ch.total_spent / maxSpent * 100).toFixed(0);
+                    chHtml += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})" title="Click to see all transactions">
+                    <td>${esc(ch.cardholder_name || 'Unknown')}</td>
+                    <td class="amount-negative">$${fmt(ch.total_spent)}</td>
+                    <td>${ch.cnt}</td>
+                    <td><div class="mini-bar" style="background:#f85149;width:${pct}%;">&nbsp;</div></td>
+                </tr>`;
+                });
+            }
             chHtml += '</tbody></table>';
             document.getElementById('dash-cardholder-table').innerHTML = chHtml;
 
             // Category table (clickable)
             let catHtml = '<table class="table table-dark-custom"><thead><tr><th>Category</th><th>Spent</th><th>Count</th></tr></thead><tbody>';
-            (s.by_category || []).forEach(c => {
-                catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.category)}'})" title="Click to filter by category">
-                <td>${c.category}</td>
-                <td class="amount-negative">$${fmt(c.spent)}</td>
-                <td>${c.cnt}</td>
-            </tr>`;
-            });
+            if (!s.by_category || s.by_category.length === 0) {
+                catHtml += '<tr><td colspan="3" class="text-center text-muted py-3">No category spending matching current filters.</td></tr>';
+            } else {
+                (s.by_category || []).forEach(c => {
+                    catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.category)}'})" title="Click to filter by category">
+                    <td>${c.category}</td>
+                    <td class="amount-negative">$${fmt(c.spent)}</td>
+                    <td>${c.cnt}</td>
+                </tr>`;
+                });
+            }
             catHtml += '</tbody></table>';
             document.getElementById('dash-category-table').innerHTML = catHtml;
 
             // Flagged preview
-            const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
+            const flaggedQs = new URLSearchParams(qs);
+            flaggedQs.set('is_flagged', '1');
+            const flaggedRs = await api('/api/transactions?' + flaggedQs.toString());
+            const flagged = flaggedRs.transactions || flaggedRs;
             let flHtml = '<table class="table table-dark-custom"><tbody>';
             flagged.slice(0, 10).forEach(t => {
                 flHtml += `<tr class="clickable-row" onclick="editTransaction(${t.id})" title="${esc(t.flag_reason || '')}">
@@ -2487,19 +2582,23 @@
             // Monthly chart (clickable)
             const maxM = Math.max(...(s.monthly_trend || []).map(m => Math.max(m.deposits, m.withdrawals)), 1);
             let mHtml = '<table class="table table-dark-custom"><thead><tr><th>Month</th><th>Deposits</th><th>Withdrawals</th><th>Transfers Out</th><th>Net</th><th style="width:30%">Visual</th></tr></thead><tbody>';
-            (s.monthly_trend || []).forEach(m => {
-                const dW = Math.round((m.deposits / maxM) * 200);
-                const wW = Math.round((m.withdrawals / maxM) * 200);
-                const net = m.deposits - m.withdrawals;
-                mHtml += `<tr class="clickable-row" onclick="drillToMonth('${m.month}')" title="Click to see ${m.month} transactions">
-                <td><strong>${m.month}</strong></td>
-                <td class="amount-positive">$${fmt(m.deposits)}</td>
-                <td class="amount-negative">$${fmt(m.withdrawals)}</td>
-                <td class="amount-negative">$${fmt(m.transfers_out)}</td>
-                <td class="${net < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(net))}</td>
-                <td><div style="display:flex;gap:1px;align-items:center;"><div style="background:#3fb950;height:14px;width:${dW}px;border-radius:2px;"></div><div style="background:#f85149;height:14px;width:${wW}px;border-radius:2px;"></div></div></td>
-            </tr>`;
-            });
+            if (!s.monthly_trend || s.monthly_trend.length === 0) {
+                mHtml += '<tr><td colspan="6" class="text-center text-muted py-4">No monthly cash flow data matching filters.</td></tr>';
+            } else {
+                (s.monthly_trend || []).forEach(m => {
+                    const dW = Math.round((m.deposits / maxM) * 200);
+                    const wW = Math.round((m.withdrawals / maxM) * 200);
+                    const net = m.deposits - m.withdrawals;
+                    mHtml += `<tr class="clickable-row" onclick="drillToMonth('${m.month}')" title="Click to see ${m.month} transactions">
+                    <td><strong>${m.month}</strong></td>
+                    <td class="amount-positive">$${fmt(m.deposits)}</td>
+                    <td class="amount-negative">$${fmt(m.withdrawals)}</td>
+                    <td class="amount-negative">$${fmt(m.transfers_out)}</td>
+                    <td class="${net < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(net))}</td>
+                    <td><div style="display:flex;gap:1px;align-items:center;"><div style="background:#3fb950;height:14px;width:${dW}px;border-radius:2px;"></div><div style="background:#f85149;height:14px;width:${wW}px;border-radius:2px;"></div></div></td>
+                </tr>`;
+                });
+            }
             mHtml += '</tbody></table>';
             document.getElementById('dash-monthly').innerHTML = mHtml;
 
@@ -4710,76 +4809,92 @@
             const categories = stats.by_category || [];
 
             // Monthly Cash Flow Bar Chart
-            const mCtx = document.getElementById('monthly-chart');
-            if (monthlyChart) monthlyChart.destroy();
-            monthlyChart = new Chart(mCtx, {
-                type: 'bar',
-                data: {
-                    labels: monthly.map(m => m.month),
-                    datasets: [
-                        { label: 'Deposits', data: monthly.map(m => m.deposits), backgroundColor: 'rgba(63,185,80,0.7)', borderRadius: 3 },
-                        { label: 'Withdrawals', data: monthly.map(m => m.withdrawals), backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3 },
-                        { label: 'Transfers Out', data: monthly.map(m => m.transfers_out), backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3 },
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
-                    scales: {
-                        x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
-                        y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + (v / 1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
-                    },
-                    onClick: (e, activeEls) => {
-                        if (activeEls.length > 0) {
-                            const idx = activeEls[0].index;
-                            const month = monthly[idx].month;
-                            drillToMonth(month);
+            const mCtxContainer = document.getElementById('monthly-chart')?.parentNode;
+            if (mCtxContainer) {
+                if (monthlyChart) { monthlyChart.destroy(); monthlyChart = null; }
+                if (monthly.length === 0) {
+                    mCtxContainer.innerHTML = '<div class="text-center text-muted d-flex align-items-center justify-content-center" style="height:100%;min-height:200px;"><i class="fas fa-chart-bar me-2"></i> No monthly data available.</div><canvas id="monthly-chart" style="display:none;"></canvas>';
+                } else {
+                    mCtxContainer.innerHTML = '<canvas id="monthly-chart"></canvas>';
+                    const mCtx = document.getElementById('monthly-chart');
+                    monthlyChart = new Chart(mCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: monthly.map(m => m.month),
+                            datasets: [
+                                { label: 'Deposits', data: monthly.map(m => m.deposits), backgroundColor: 'rgba(63,185,80,0.7)', borderRadius: 3 },
+                                { label: 'Withdrawals', data: monthly.map(m => m.withdrawals), backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3 },
+                                { label: 'Transfers Out', data: monthly.map(m => m.transfers_out), backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3 },
+                            ]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+                            scales: {
+                                x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+                                y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + (v / 1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                            },
+                            onClick: (e, activeEls) => {
+                                if (activeEls.length > 0) {
+                                    const idx = activeEls[0].index;
+                                    const month = monthly[idx].month;
+                                    drillToMonth(month);
+                                }
+                            }
                         }
-                    }
+                    });
                 }
-            });
+            }
 
             // Category Doughnut Chart
-            const cCtx = document.getElementById('category-chart');
-            if (categoryChart) categoryChart.destroy();
-            const topCats = categories.filter(c => c.spent > 0).slice(0, 8);
-            const colors = ['#f85149', '#d29922', '#58a6ff', '#3fb950', '#bc8cff', '#fd7e14', '#3d95ce', '#8b949e'];
-            categoryChart = new Chart(cCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: topCats.map(c => c.category),
-                    datasets: [{ data: topCats.map(c => c.spent), backgroundColor: colors.slice(0, topCats.length), borderWidth: 0 }]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 12, padding: 6 } },
-                        tooltip: { callbacks: { label: (ctx) => `${ctx.label}: $${fmt(ctx.raw)}` } }
-                    },
-                    onClick: (e, activeEls) => {
-                        if (activeEls.length > 0) {
-                            const idx = activeEls[0].index;
-                            const cat = topCats[idx].category;
+            const cCtxContainer = document.getElementById('category-chart')?.parentNode;
+            if (cCtxContainer) {
+                if (categoryChart) { categoryChart.destroy(); categoryChart = null; }
+                const topCats = categories.filter(c => c.spent > 0).slice(0, 8);
+                if (topCats.length === 0) {
+                    cCtxContainer.innerHTML = '<div class="text-center text-muted d-flex align-items-center justify-content-center" style="height:100%;min-height:200px;"><i class="fas fa-chart-pie me-2"></i> No category spending available.</div><canvas id="category-chart" style="display:none;"></canvas>';
+                } else {
+                    cCtxContainer.innerHTML = '<canvas id="category-chart"></canvas>';
+                    const cCtx = document.getElementById('category-chart');
+                    const colors = ['#f85149', '#d29922', '#58a6ff', '#3fb950', '#bc8cff', '#fd7e14', '#3d95ce', '#8b949e'];
+                    categoryChart = new Chart(cCtx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: topCats.map(c => c.category),
+                            datasets: [{ data: topCats.map(c => c.spent), backgroundColor: colors.slice(0, topCats.length), borderWidth: 0 }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 12, padding: 6 } },
+                                tooltip: { callbacks: { label: (ctx) => `${ctx.label}: $${fmt(ctx.raw)}` } }
+                            },
+                            onClick: (e, activeEls) => {
+                                if (activeEls.length > 0) {
+                                    const idx = activeEls[0].index;
+                                    const cat = topCats[idx].category;
 
-                            const handler = window.createDrilldownHandler({
-                                sourceTab: 'dashboard',
-                                widgetId: 'category-chart',
-                                defaultTarget: DrilldownTarget.TRANSACTIONS,
-                                breadcrumbLabel: 'Dashboard',
-                                breadcrumbStore: window.GlobalBreadcrumbs,
-                                getState: () => FilterStore.getState(),
-                                onLogEvent: logDrilldownEvent,
-                                onNavigate: (target, nextFilters) => {
-                                    FilterStore.replace(nextFilters);
-                                    navigateTo(target.toLowerCase());
+                                    const handler = window.createDrilldownHandler({
+                                        sourceTab: 'dashboard',
+                                        widgetId: 'category-chart',
+                                        defaultTarget: DrilldownTarget.TRANSACTIONS,
+                                        breadcrumbLabel: 'Dashboard',
+                                        breadcrumbStore: window.GlobalBreadcrumbs,
+                                        getState: () => FilterStore.getState(),
+                                        onLogEvent: logDrilldownEvent,
+                                        onNavigate: (target, nextFilters) => {
+                                            FilterStore.replace(nextFilters);
+                                            navigateTo(target.toLowerCase());
+                                        }
+                                    });
+
+                                    handler({ filters: { category: cat } });
                                 }
-                            });
-
-                            handler({ filters: { category: cat } });
+                            }
                         }
-                    }
+                    });
                 }
-            });
+            }
         }
 
         // ===== RUNNING BALANCE PER ACCOUNT =====
