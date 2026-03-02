@@ -120,11 +120,15 @@ class FinancialCentsClient:
                 ]
             }
 
-def sync_fc_clients_to_merchants(user_id):
+def sync_fc_clients_to_merchants(user_id, company_id=None):
     """
     Idempotent background job to sync FC clients natively into the `merchants` table.
     Ensures safe mapping and strictly avoids duplicating records.
     """
+    if company_id is None:
+        from database import _get_active_company_id_shim
+        company_id = _get_active_company_id_shim()
+        
     client = FinancialCentsClient(user_id)
     if not client.is_connected():
         return {"status": "error", "message": "Financial Cents connection required for sync."}
@@ -146,14 +150,14 @@ def sync_fc_clients_to_merchants(user_id):
                 continue
             
             # Idempotency check explicitly natively via SQLite
-            cursor.execute("SELECT id FROM merchants WHERE user_id = ? AND canonical_name = ?", (user_id, c_name))
+            cursor.execute("SELECT id FROM merchants WHERE user_id = ? AND company_id = ? AND canonical_name = ?", (user_id, company_id, c_name))
             if cursor.fetchone():
                 skipped_count += 1
                 continue
                 
             cursor.execute(
-                "INSERT INTO merchants (user_id, canonical_name, is_business) VALUES (?, ?, 1)",
-                (user_id, c_name)
+                "INSERT INTO merchants (user_id, company_id, canonical_name, is_business) VALUES (?, ?, ?, 1)",
+                (user_id, company_id, c_name)
             )
             synced_count += 1
 

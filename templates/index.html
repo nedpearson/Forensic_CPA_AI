@@ -1870,9 +1870,31 @@
                         style="color: #c9d1d9; border: none;">Integrations</a>
                 </li>
             </ul>
-            <div class="card-dark p-4 text-center position-relative">
-                <p class="text-muted">General settings panel. Ensure the Integrations route is navigated.</p>
-                <button class="btn btn-outline-info" onclick="navigateTo('integrations')">View Integrations</button>
+            <div class="card-dark p-4 position-relative">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="mb-0"><i class="fas fa-users-cog me-2"></i>Workspace Access Control</h5>
+                    <button class="btn btn-sm btn-info" onclick="inviteMember()"><i
+                            class="fas fa-user-plus me-1"></i>Invite User</button>
+                </div>
+                <p class="text-muted small">Manage who has access to this specific workspace and their role. Owners can
+                    manage billing and delete the workspace.</p>
+                <div class="table-responsive">
+                    <table class="table table-dark table-hover shadow-sm">
+                        <thead>
+                            <tr>
+                                <th>User Email</th>
+                                <th>Role</th>
+                                <th>Joined</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="company-members-table">
+                            <tr>
+                                <td colspan="4" class="text-center text-muted py-3">Loading access list...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
 
                 <!-- User Badge -->
                 <div class="position-absolute bottom-0 end-0 p-3">
@@ -2403,10 +2425,46 @@
             else if (page === 'categories') loadCategoriesPage();
             else if (page === 'audit-trail') loadAuditTrail();
             else if (page === 'integrations') loadIntegrations();
+            else if (page === 'settings') loadCompanyMembers();
 
             // Close sidebar on mobile after navigation
             if (window.innerWidth <= 768) toggleSidebar(false);
         }
+
+        async function loadCompanyMembers() {
+            const table = document.getElementById('company-members-table');
+            if (!table) return;
+
+            try {
+                const res = await fetch('/api/business/members');
+                if (!res.ok) throw new Error('Failed to load members');
+
+                const data = await res.json();
+                const members = data.members || [];
+
+                let html = '';
+                members.forEach(m => {
+                    const isSelf = m.email === "{{ current_user.email }}";
+                    html += `<tr>
+                        <td>${esc(m.email)} ${isSelf ? '<span class="badge bg-secondary ms-1">You</span>' : ''}</td>
+                        <td><span class="badge ${m.role === 'owner' ? 'bg-danger' : m.role === 'admin' ? 'bg-primary' : 'bg-info'}">${m.role.toUpperCase()}</span></td>
+                        <td>${new Date(m.created_at).toLocaleDateString()}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-light py-0 px-1" title="Change Role" onclick="changeMemberRole(${m.membership_id})" ${isSelf && m.role === 'owner' ? 'disabled' : ''}><i class="fas fa-user-edit"></i></button>
+                            <button class="btn btn-sm btn-outline-danger py-0 px-1 ms-1" title="Revoke Access" onclick="revokeMember(${m.membership_id})" ${isSelf && m.role === 'owner' ? 'disabled' : ''}><i class="fas fa-user-times"></i></button>
+                        </td>
+                    </tr>`;
+                });
+                table.innerHTML = html;
+            } catch (e) {
+                console.error(e);
+                table.innerHTML = '<tr><td colspan="4" class="text-danger text-center"><i class="fas fa-exclamation-triangle"></i> Error loading workspace access</td></tr>';
+            }
+        }
+
+        function inviteMember() { alert('Access control: Inviting users requires Phase 3 implementation block (Email / Invite Token Generation).'); }
+        function changeMemberRole(id) { alert('Access control: Role updates require Phase 3 implementation block.'); }
+        function revokeMember(id) { alert('Access control: Access revocation requires Phase 3 implementation block.'); }
 
         // ===== DRILL-DOWN: Navigate to transactions with pre-set filters =====
         function drillToTransactions(filterObj) {
@@ -4979,9 +5037,18 @@
                     // Sidebar
                     const sidebarInfo = document.getElementById('sidebar-user-info');
                     if (sidebarInfo) {
+                        let companyOptions = user.companies ? user.companies.map(c => `<option value="${c.id}" ${c.id === user.active_company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '';
+
                         sidebarInfo.innerHTML = `
-                            <div class="mt-2" style="color: #58a6ff; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
-                                <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${user.email}</span>
+                            <div class="mt-2 mb-2">
+                                <select class="form-select form-select-sm" style="background-color: rgba(255,255,255,0.05); color: #c9d1d9; border-color: rgba(255,255,255,0.1);" onchange="switchCompany(this.value)">
+                                    ${companyOptions}
+                                    <option disabled>──────────</option>
+                                    <option value="NEW_COMPANY">+ Create New Workspace</option>
+                                </select>
+                            </div>
+                            <div style="color: #58a6ff; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
+                                <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${esc(user.email)}</span>
                                 <i class="fas fa-sign-out-alt ms-1 text-muted hover-white"></i>
                             </div>
                         `;
@@ -4990,11 +5057,20 @@
                     // Top Bar
                     const topProfile = document.getElementById('top-user-profile');
                     if (topProfile) {
+                        let companyOptions = user.companies ? user.companies.map(c => `<option value="${c.id}" ${c.id === user.active_company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '';
+
                         topProfile.style.display = 'flex';
                         topProfile.innerHTML = `
+                            <div class="me-3">
+                                <select class="form-select form-select-sm" style="background-color: transparent; color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); outline: none;" onchange="switchCompany(this.value)">
+                                    ${companyOptions}
+                                    <option disabled>──────────</option>
+                                    <option value="NEW_COMPANY">+ Create New Workspace</option>
+                                </select>
+                            </div>
                             <div style="color: #58a6ff; font-weight: 600; font-size: 0.9rem; cursor: pointer; transition: color 0.2s; display: flex; align-items: center;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
                                 <i class="fas fa-user-circle me-2 fs-5"></i>
-                                <span>${user.email}</span>
+                                <span class="d-none d-sm-inline">${esc(user.email)}</span>
                                 <i class="fas fa-sign-out-alt ms-2 text-muted"></i>
                             </div>
                         `;
@@ -5002,6 +5078,40 @@
                 }
             } catch (e) {
                 console.error('Failed to fetch user', e);
+            }
+        }
+
+        async function switchCompany(companyId) {
+            if (companyId === 'NEW_COMPANY') {
+                const name = prompt("Enter a name for the new workspace:");
+                if (!name) return fetchUserProfile();
+
+                try {
+                    const res = await fetch('/api/business/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: name })
+                    });
+                    if (res.ok) window.location.reload();
+                    else alert('Failed to create workspace.');
+                } catch (e) {
+                    alert('Error creating workspace.');
+                }
+                return;
+            }
+            try {
+                const res = await fetch('/api/business/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_id: companyId })
+                });
+                if (res.ok) {
+                    window.location.reload(); // Hard flush everything
+                } else {
+                    alert('Failed to switch workspace context.');
+                }
+            } catch (e) {
+                console.error(e);
             }
         }
 

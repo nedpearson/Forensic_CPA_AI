@@ -288,6 +288,36 @@ def require_super_admin(f):
         return jsonify({"error": "Unauthorized"}), 401
     return decorated
 
+def require_company_role(allowed_roles=None):
+    """
+    Decorator to enforce company-level Role-Based Access Control.
+    Ensure `active_company_id` is set, user is a member, and their role is sufficient.
+    """
+    if allowed_roles is None:
+        allowed_roles = ['owner', 'admin', 'operator', 'viewer']
+        
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not current_user.is_authenticated:
+                return jsonify({"error": "Unauthorized"}), 401
+                
+            active_comp_id = session.get('active_company_id')
+            if not active_comp_id:
+                return jsonify({"error": "No active company context. Switch to a company first."}), 400
+                
+            from database import get_company_member_role
+            my_role = get_company_member_role(active_comp_id, current_user.id)
+            if not my_role:
+                return jsonify({"error": "You do not have access to this company."}), 403
+                
+            if my_role not in allowed_roles:
+                return jsonify({"error": f"Forbidden - Requires one of {allowed_roles}"}), 403
+                
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
 @app.route('/api/admin/verify')
 @require_super_admin
 def api_admin_verify():
@@ -388,16 +418,225 @@ def api_demo_login():
 @app.route('/api/auth/me', methods=['GET'])
 @login_required
 def api_me():
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT c.id, c.name, cm.role, c.owner_user_id
+        FROM companies c
+        JOIN company_memberships cm ON c.id = cm.company_id
+        WHERE cm.user_id = ? AND c.status NOT IN ('archived', 'deleted')
+        ORDER BY cm.is_default DESC, c.name ASC
+    """, (current_user.id,))
+    companies = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    active_id = session.get('active_company_id')
+    if not active_id and companies:
+        active_id = companies[0]['id']
+        session['active_company_id'] = active_id
+        
     return jsonify({
          "id": current_user.id, 
          "email": getattr(current_user, 'email', 'unknown'),
-         "role": getattr(current_user, 'role', 'USER')
+         "role": getattr(current_user, 'role', 'USER'),
+         "active_company_id": active_id,
+         "companies": companies
     })
+
+@app.route('/api/business/switch', methods=['POST'])
+@login_required
+def api_business_switch():
+    data = request.json or {}
+    company_id = int(data.get('company_id', 0))
+    if not company_id:
+        return jsonify({"error": "Missing company_id"}), 400
+        
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cm.id 
+        FROM company_memberships cm
+        JOIN companies c ON c.id = cm.company_id
+        WHERE cm.user_id = ? AND cm.company_id = ? AND c.status NOT IN ('archived', 'deleted')
+    """, (current_user.id, company_id))
+    if not cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Unauthorized"}), 403
+    conn.close()
+    
+    session['active_company_id'] = company_id
+    return jsonify({"status": "success", "active_company_id": company_id})
+
+@app.route('/api/business/create', methods=['POST'])
+@login_required
+def api_business_create():
+    data = request.json or {}
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+        
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO companies (name, created_by, owner_user_id) VALUES (?, ?, ?)",
+        (name, current_user.id, current_user.id)
+    )
+    new_id = cursor.lastrowid
+    cursor.execute(
+        "INSERT INTO company_memberships (user_id, company_id, role, is_default) VALUES (?, ?, 'owner', 0)",
+        (current_user.id, new_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    session['active_company_id'] = new_id
+    return jsonify({"status": "success", "active_company_id": new_id})
+
+@app.route('/api/business/members', methods=['GET'])
+@login_required
+def api_business_members():
+    active_comp_id = session.get('active_company_id')
+    if not active_comp_id:
+        return jsonify({"error": "No active company"}), 400
+    
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT role FROM company_memberships WHERE user_id = ? AND company_id = ?", (current_user.id, active_comp_id))
+    my_role = cursor.fetchone()
+    if not my_role:
+        conn.close()
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    cursor.execute("""
+        SELECT cm.id as membership_id, cm.role, cm.created_at, u.email, u.id as user_id 
+        FROM company_memberships cm
+        JOIN users u ON cm.user_id = u.id
+        WHERE cm.company_id = ?
+    """, (active_comp_id,))
+    members = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"status": "success", "my_role": my_role['role'], "members": members})
+
+@app.route('/api/business/members', methods=['POST'])
+@login_required
+def api_business_members_add():
+    active_comp_id = session.get('active_company_id')
+    if not active_comp_id:
+        return jsonify({"error": "No active company"}), 400
+    
+    data = request.json or {}
+    email = data.get('email', '').strip().lower()
+    role = data.get('role', 'viewer')
+    
+    if not email:
+        return jsonify({"error": "Email required"}), 400
+        
+    from database import get_user_by_email, get_company_member_role, add_company_member
+    
+    # Check permissions
+    my_role = get_company_member_role(active_comp_id, current_user.id)
+    if my_role not in ['owner', 'admin']:
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    target_user = get_user_by_email(email)
+    if not target_user:
+        return jsonify({"error": "User not found. They must sign up first."}), 404
+        
+    success = add_company_member(active_comp_id, target_user['id'], role, current_user.id)
+    if success:
+        return jsonify({"status": "success", "message": "Member added"})
+    else:
+        return jsonify({"error": "User is already a member"}), 400
+
+@app.route('/api/business/members/<int:user_id>', methods=['PUT', 'DELETE'])
+@login_required
+def api_business_members_manage(user_id):
+    active_comp_id = session.get('active_company_id')
+    if not active_comp_id:
+        return jsonify({"error": "No active company"}), 400
+        
+    from database import get_company_member_role, update_company_member_role, remove_company_member
+    
+    my_role = get_company_member_role(active_comp_id, current_user.id)
+    if my_role not in ['owner', 'admin']:
+        return jsonify({"error": "Unauthorized"}), 403
+            
+    if request.method == 'PUT':
+        data = request.json or {}
+        new_role = data.get('role')
+        if not new_role or new_role not in ['admin', 'operator', 'viewer']:
+            return jsonify({"error": "Invalid role"}), 400
+            
+        target_role = get_company_member_role(active_comp_id, user_id)
+        if target_role == 'owner':
+            return jsonify({"error": "Cannot change owner role this way. Use transfer ownership."}), 400
+            
+        update_company_member_role(active_comp_id, user_id, new_role)
+        return jsonify({"status": "success"})
+        
+    elif request.method == 'DELETE':
+        target_role = get_company_member_role(active_comp_id, user_id)
+        if my_role == 'admin' and target_role in ['owner', 'admin'] and user_id != current_user.id:
+            return jsonify({"error": "Admins cannot remove owners or other admins"}), 403
+            
+        success, msg = remove_company_member(active_comp_id, user_id)
+        if success:
+            return jsonify({"status": "success"})
+        else:
+            return jsonify({"error": msg}), 400
+
+@app.route('/api/business/transfer', methods=['POST'])
+@login_required
+def api_business_transfer():
+    active_comp_id = session.get('active_company_id')
+    if not active_comp_id:
+        return jsonify({"error": "No active company"}), 400
+        
+    data = request.json or {}
+    new_owner_id = data.get('new_owner_id')
+    if not new_owner_id:
+        return jsonify({"error": "Missing new_owner_id"}), 400
+        
+    from database import get_company_member_role, transfer_company_ownership
+    
+    my_role = get_company_member_role(active_comp_id, current_user.id)
+    if my_role != 'owner':
+        return jsonify({"error": "Only the current owner can transfer ownership"}), 403
+        
+    success, msg = transfer_company_ownership(active_comp_id, current_user.id, new_owner_id)
+    if success:
+        return jsonify({"status": "success"})
+    else:
+        return jsonify({"error": msg}), 400
+
+@app.route('/api/business', methods=['DELETE'])
+@login_required
+def api_business_delete():
+    active_comp_id = session.get('active_company_id')
+    if not active_comp_id:
+        return jsonify({"error": "No active company"}), 400
+        
+    from database import get_company_member_role, soft_delete_company
+    
+    my_role = get_company_member_role(active_comp_id, current_user.id)
+    if my_role != 'owner':
+        return jsonify({"error": "Only the owner can delete the company"}), 403
+        
+    soft_delete_company(active_comp_id)
+    session.pop('active_company_id', None)
+    return jsonify({"status": "success", "message": "Company deleted"})
+
 
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required
 def api_logout():
     user_id = getattr(current_user, 'id', 'unknown')
+    session.pop('active_company_id', None)
     logout_user()
     logger.info(f"Auth Event: Logout successful for user {user_id}")
     return jsonify({"status": "success"})
@@ -478,7 +717,8 @@ def api_integrations_status():
         if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
             return jsonify({"error": "Integrations disabled"}), 403
         
-        saved = get_integrations(current_user.id)
+        active_company_id = session.get('active_company_id')
+        saved = get_integrations(current_user.id, active_company_id)
         connected_map = {c['provider']: c['status'] for c in saved}
         meta_map = {c['provider']: c['metadata'] for c in saved}
         
@@ -609,13 +849,15 @@ def api_integrations_google_callback():
     encrypted_access = encrypt_token(access_token)
     encrypted_refresh = encrypt_token(refresh_token) if refresh_token else None
     
+    active_company_id = session.get('active_company_id')
     upsert_integration(
         user_id=current_user.id, 
         provider="google_drive", 
         status="Connected", 
         access_token=encrypted_access, 
         refresh_token=encrypted_refresh,
-        scopes=token_data.get('scope', '').split(' ')
+        scopes=token_data.get('scope', '').split(' '),
+        company_id=active_company_id
     )
     
     return redirect(url_for('settings_integrations_page'))
@@ -629,7 +871,8 @@ def api_integrations_google_test():
     if not os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
         return jsonify({"error": "Google Integration disabled"}), 403
         
-    integration = get_integration(current_user.id, "google_drive")
+    active_company_id = session.get('active_company_id')
+    integration = get_integration(current_user.id, "google_drive", active_company_id)
     if not integration or integration.get("status") != "Connected":
         return jsonify({"error": "Google integration not connected"}), 400
         
@@ -936,13 +1179,15 @@ def api_integrations_callback(provider):
     dummy_access = encrypt_token(f"mock_access_token_{provider}_{secrets.token_hex(4)}")
     dummy_refresh = encrypt_token(f"mock_refresh_token_{provider}_{secrets.token_hex(4)}")
     
+    active_company_id = session.get('active_company_id')
     upsert_integration(
         user_id=current_user.id, 
         provider=provider, 
         status="Connected", 
         access_token=dummy_access, 
         refresh_token=dummy_refresh,
-        scopes=['read_all']
+        scopes=['read_all'],
+        company_id=active_company_id
     )
     return redirect(url_for('settings_integrations_page'))
 
@@ -955,7 +1200,8 @@ def api_integrations_disconnect(provider):
     if not check_workspace_access(provider):
         return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
         
-    delete_integration(current_user.id, provider)
+    active_company_id = session.get('active_company_id')
+    delete_integration(current_user.id, provider, active_company_id)
     return jsonify({"status": "success", "message": f"Disconnected {provider}"})
 
 @app.route('/api/integrations/financial_cents/sync_clients', methods=['POST'])
@@ -969,8 +1215,12 @@ def api_integrations_fc_sync_clients():
         
     from shared.financial_cents_client import sync_fc_clients_to_merchants
     
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({"error": "No active company context."}), 400
+        
     # Ideally dispatched to celery/executor, but safe as a direct return for paginated 1st page
-    result = sync_fc_clients_to_merchants(current_user.id)
+    result = sync_fc_clients_to_merchants(current_user.id, active_company_id)
     if result.get('status') == 'error':
         return jsonify(result), 400
         
@@ -1001,7 +1251,7 @@ def get_request_filters():
 # --- Analytics Endpoints (Phase 10) ---
 
 @app.route('/api/analytics/overview', methods=['GET'])
-@login_required
+@require_company_role()
 def api_analytics_overview():
     """Provides high-level grouping and time series for Dashboard views."""
     filters = get_request_filters()
@@ -1018,7 +1268,7 @@ def api_analytics_overview():
         conn.close()
 
 @app.route('/api/analytics/tab/<tab_id>', methods=['GET'])
-@login_required
+@require_company_role()
 def api_analytics_tab(tab_id):
     """Provides specific sliced analytics for specialized tabs."""
     filters = get_request_filters()
@@ -1040,7 +1290,7 @@ def api_analytics_tab(tab_id):
         conn.close()
 
 @app.route('/api/analytics/drilldown', methods=['GET'])
-@login_required
+@require_company_role()
 def api_analytics_drilldown():
     """Returns telemetry of drilldown events mapping to targets."""
     limit = min(500, int(request.args.get('limit', 100)))
@@ -1059,7 +1309,7 @@ def api_analytics_drilldown():
 # --- Document Upload & Extraction Endpoints ---
 
 @app.route('/api/docs/upload', methods=['POST'])
-@require_auth
+@require_company_role(['owner', 'admin', 'operator'])
 def api_docs_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
@@ -1068,11 +1318,17 @@ def api_docs_upload():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
         
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({'error': 'No active company context. Switch or create a workspace.'}), 400
+
     if file and allowed_file(file.filename):
         # 1. Save file uniquely
         ext = file.filename.rsplit('.', 1)[1].lower()
         unique_filename = f"{uuid.uuid4().hex}.{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        comp_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(active_company_id))
+        os.makedirs(comp_folder, exist_ok=True)
+        filepath = os.path.join(comp_folder, unique_filename)
         file.save(filepath)
         
         # Deduplication check
@@ -1083,7 +1339,7 @@ def api_docs_upload():
             return jsonify({'status': 'ok', 'message': 'Duplicate document detected', 'document_id': existing_doc_id, 'duplicate': True}), 200
         
         # 2. Persist to DB
-        doc_id = add_document(current_user.id, file.filename, filepath, ext, 'unknown', None, content_sha256=file_hash)
+        doc_id = add_document(current_user.id, file.filename, filepath, ext, 'unknown', account_id=None, content_sha256=file_hash, company_id=active_company_id)
         ext_id = add_document_extraction(current_user.id, doc_id, status='pending')
         
         from database import update_document_status
@@ -1137,7 +1393,7 @@ def api_docs_upload():
     return jsonify({'error': 'File type not allowed'}), 400
 
 @app.route('/api/docs/<int:doc_id>', methods=['GET'])
-@require_auth
+@require_company_role()
 def api_docs_get(doc_id):
     docs = get_documents(current_user.id)
     doc = next((d for d in docs if d['id'] == doc_id), None)
@@ -1146,7 +1402,7 @@ def api_docs_get(doc_id):
     return jsonify(doc)
 
 @app.route('/api/docs/<int:doc_id>/extraction', methods=['GET'])
-@login_required
+@require_company_role()
 def api_docs_get_extraction(doc_id):
     ext = get_document_extraction(current_user.id, doc_id)
     if not ext:
@@ -1164,7 +1420,7 @@ def api_docs_get_extraction(doc_id):
 # --- Categorization Endpoints (Phase 12) ---
 
 @app.route('/api/docs/<int:doc_id>/categorize', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_docs_categorize(doc_id):
     """Manually trigger or rerun LLM Categorization for a document."""
     ext = get_document_extraction(current_user.id, doc_id)
@@ -1210,7 +1466,7 @@ def api_docs_categorize(doc_id):
     return jsonify({'status': 'accepted', 'document_id': doc_id}), 202
 
 @app.route('/api/docs/<int:doc_id>/categorization', methods=['GET'])
-@login_required
+@require_company_role()
 def api_docs_get_categorization(doc_id):
     """Retrieve the latest categorization results."""
     cat = get_document_categorization(current_user.id, doc_id)
@@ -1226,7 +1482,7 @@ def api_docs_get_categorization(doc_id):
     return jsonify(cat)
 
 @app.route('/api/stats', methods=['GET'])
-@login_required
+@require_company_role()
 def api_stats():
     filters = get_request_filters()
     stats = get_summary_stats(current_user.id, filters if filters else None)
@@ -1234,7 +1490,7 @@ def api_stats():
 
 
 @app.route('/api/transactions', methods=['GET'])
-@login_required
+@require_company_role()
 def api_transactions():
     filters = get_request_filters()
     transactions = get_transactions(current_user.id, filters if filters else None)
@@ -1265,6 +1521,7 @@ def api_transactions():
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['PUT'])
+@require_company_role(['owner', 'admin', 'operator'])
 def api_update_transaction(trans_id):
     data = request.get_json()
     if not data:
@@ -1313,14 +1570,14 @@ def api_update_transaction(trans_id):
 
 
 @app.route('/api/transactions/<int:trans_id>', methods=['DELETE'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_delete_transaction(trans_id):
     delete_transaction(current_user.id, trans_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/transactions/bulk', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_bulk_update():
     """Bulk update multiple transactions."""
     data = request.get_json()
@@ -1357,7 +1614,7 @@ def api_bulk_update():
 
 
 @app.route('/api/drilldowns', methods=['POST'])
-@login_required
+@require_company_role()
 def handle_drilldown_log():
     data = request.json
     try:
@@ -1368,7 +1625,7 @@ def handle_drilldown_log():
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/upload', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -1380,18 +1637,24 @@ def api_upload():
     if not allowed_file(file.filename):
         return jsonify({'error': f'File type not allowed. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
 
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({'error': 'No active company context. Switch or create a workspace.'}), 400
+
     doc_type = request.form.get('doc_type', 'auto')
     doc_category = request.form.get('doc_category', 'bank_statement')
 
     filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    comp_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(active_company_id))
+    os.makedirs(comp_folder, exist_ok=True)
+    filepath = os.path.join(comp_folder, filename)
 
     # Avoid overwriting
     base, ext = os.path.splitext(filename)
     counter = 1
     while os.path.exists(filepath):
         filename = f"{base}_{counter}{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        filepath = os.path.join(comp_folder, filename)
         counter += 1
 
     file.save(filepath)
@@ -1712,12 +1975,12 @@ def api_upload():
 
 
 @app.route('/api/taxonomy', methods=['GET'])
-@login_required
+@require_company_role()
 def api_get_taxonomy():
     return jsonify(get_taxonomy_config(current_user.id))
 
 @app.route('/api/taxonomy', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_add_taxonomy():
     data = request.get_json()
     tax_id = add_taxonomy_config(
@@ -1732,19 +1995,19 @@ def api_add_taxonomy():
     return jsonify({'error': 'Failed to add taxonomy config'}), 500
 
 @app.route('/api/taxonomy/<int:tax_id>', methods=['DELETE'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_delete_taxonomy(tax_id):
     delete_taxonomy_config(current_user.id, tax_id)
     return jsonify({'status': 'ok'})
 
 @app.route('/api/categories', methods=['GET'])
-@login_required
+@require_company_role()
 def api_categories():
     return jsonify(get_categories(current_user.id))
 
 
 @app.route('/api/categories', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_add_category():
     data = request.get_json()
     if not data or not data.get('name'):
@@ -1764,13 +2027,13 @@ def api_add_category():
 
 
 @app.route('/api/categories/rules', methods=['GET'])
-@login_required
+@require_company_role()
 def api_category_rules():
     return jsonify(get_category_rules(current_user.id))
 
 
 @app.route('/api/categories/rules', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_add_rule():
     data = request.get_json()
     add_category_rule(
@@ -1791,59 +2054,59 @@ def api_add_rule():
 
 
 @app.route('/api/categories/<int:category_id>', methods=['DELETE'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_delete_category(category_id):
     delete_category(current_user.id, category_id)
     return jsonify({'status': 'ok'})
 
 
 @app.route('/api/categories/rules/<int:rule_id>', methods=['DELETE'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_delete_category_rule(rule_id):
     delete_category_rule(current_user.id, rule_id)
     return jsonify({'status': 'ok'})
 
 @app.route('/api/categories/restore-defaults', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin'])
 def api_restore_categories_defaults():
     reset_user_taxonomy(current_user.id)
     return jsonify({'status': 'ok'})
 
 @app.route('/api/recategorize', methods=['POST'])
-@login_required
+@require_company_role(['owner', 'admin', 'operator'])
 def api_recategorize():
     count = recategorize_all(current_user.id)
     return jsonify({'status': 'ok', 'updated': count})
 
 
 @app.route('/api/accounts', methods=['GET'])
-@login_required
+@require_company_role()
 def api_accounts():
     return jsonify(get_accounts(current_user.id))
 
 
 @app.route('/api/documents', methods=['GET'])
-@require_auth
+@require_company_role()
 def api_documents():
     return jsonify(get_documents(current_user.id))
 
 
 @app.route('/api/analysis/deposit-transfers', methods=['GET'])
-@login_required
+@require_company_role()
 def api_deposit_transfers():
     patterns = detect_deposit_transfer_patterns(current_user.id, get_request_filters())
     return jsonify(patterns)
 
 
 @app.route('/api/analysis/cardholder-spending', methods=['GET'])
-@login_required
+@require_company_role()
 def api_cardholder_spending():
     summary = get_cardholder_spending_summary(current_user.id, get_request_filters())
     return jsonify(summary)
 
 
 @app.route('/api/export/csv', methods=['GET'])
-@login_required
+@require_company_role()
 def api_export_csv():
     """Export transactions as CSV."""
     import csv
@@ -1872,7 +2135,7 @@ def api_export_csv():
 
 
 @app.route('/api/clear-data', methods=['POST'])
-@login_required
+@require_company_role(['owner'])
 def api_clear_data():
     """Clear all financial data for a fresh start."""
     clear_all_data(current_user.id)
@@ -1886,7 +2149,7 @@ def api_clear_data():
     return jsonify({'status': 'ok', 'message': 'All data cleared'})
 
 
-def process_zip_background(user_id, parent_doc_id, filepath, file_hash, filename, doc_category, app_context):
+def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_hash, filename, doc_category, app_context):
     """
     Background job to process a zip file progressively.
     Stages:
@@ -2151,7 +2414,7 @@ def process_zip_background(user_id, parent_doc_id, filepath, file_hash, filename
         finally:
             shutil.rmtree(extracted_dir, ignore_errors=True)
 
-def process_qbw_background(user_id, doc_id, filepath, app_context):
+def process_qbw_background(user_id, company_id, doc_id, filepath, app_context):
     with app_context:
         import time
         import os
@@ -2195,18 +2458,24 @@ def api_upload_preview():
     if not allowed_file(file.filename):
         return jsonify({'error': f'File type not allowed. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
 
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({'error': 'No active company context. Switch or create a workspace.'}), 400
+
     doc_type = request.form.get('doc_type', 'auto')
     doc_category = request.form.get('doc_category', 'bank_statement')
 
     filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    comp_folder = os.path.join(app.config['UPLOAD_FOLDER'], str(active_company_id))
+    os.makedirs(comp_folder, exist_ok=True)
+    filepath = os.path.join(comp_folder, filename)
 
     # Avoid overwriting
     base, ext = os.path.splitext(filename)
     counter = 1
     while os.path.exists(filepath):
         filename = f"{base}_{counter}{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        filepath = os.path.join(comp_folder, filename)
         counter += 1
 
     file.save(filepath)
@@ -2261,7 +2530,8 @@ def api_upload_preview():
                 doc_category=doc_category,
                 account_id=None,
                 content_sha256=file_hash,
-                status='uploaded'
+                status='uploaded',
+                company_id=active_company_id
             )
             
             # Spin up background job
@@ -2269,6 +2539,7 @@ def api_upload_preview():
             zip_executor.submit(
                 process_zip_background,
                 current_user.id,
+                active_company_id,
                 parent_doc_id,
                 filepath,
                 file_hash,
@@ -2296,13 +2567,15 @@ def api_upload_preview():
                 doc_category=doc_category,
                 account_id=None,
                 content_sha256=file_hash,
-                status='uploaded'  # Staged state, intentionally NOT completed
+                status='uploaded',  # Staged state, intentionally NOT completed
+                company_id=active_company_id
             )
             
             app_context = app.app_context()
             zip_executor.submit(
                 process_qbw_background,
                 current_user.id,
+                active_company_id,
                 doc_id,
                 filepath,
                 app_context
@@ -2325,7 +2598,7 @@ def api_upload_preview():
 
     # For proof/word docs, skip preview and commit directly
     if doc_type in ('word', 'proof') or account_info.get('doc_type') == 'proof':
-        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', content_sha256=file_hash)
+        doc_id = add_document(current_user.id, filename, filepath, ext.replace('.', ''), 'proof', content_sha256=file_hash, company_id=active_company_id)
         
         # Persist extracted text and tables for AI categorization
         if account_info.get('content'):
@@ -2404,6 +2677,10 @@ def api_upload_commit():
     """Commit a previewed upload to the database."""
     data = request.get_json()
     preview_id = data.get('preview_id')
+    active_company_id = session.get('active_company_id')
+    
+    if not active_company_id:
+        return jsonify({'error': 'No active company context.'}), 400
 
     with _preview_lock:
         if preview_id in _recent_commits:
@@ -2443,7 +2720,8 @@ def api_upload_commit():
                 institution=account_info.get('institution', 'Unknown'),
                 cardholder_name=account_info.get('account_name'),
                 card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
-                conn=conn
+                conn=conn,
+                company_id=active_company_id
             )
 
         # Save document record
@@ -2457,7 +2735,8 @@ def api_upload_commit():
             statement_start=account_info.get('statement_start'),
             statement_end=account_info.get('statement_end'),
             content_sha256=file_hash,
-            conn=conn
+            conn=conn,
+            company_id=active_company_id
         )
 
         child_doc_map = {}
@@ -2476,7 +2755,8 @@ def api_upload_commit():
                 account_id=account_id,
                 content_sha256=child_hash,
                 parent_document_id=parent_doc_id,
-                conn=conn
+                conn=conn,
+                company_id=active_company_id
             )
             child_doc_map[child_hash] = c_id
             doc_stats[c_id] = {'added': 0, 'skipped': 0, 'total': 0}
@@ -2513,7 +2793,8 @@ def api_upload_commit():
             account_id=account_id,
             transactions_with_hashes=transactions_with_hashes,
             target_doc_ids=target_doc_ids,
-            conn=conn
+            conn=conn,
+            company_id=active_company_id
         )
 
         for d_id, stats in trans_doc_stats.items():
@@ -2533,8 +2814,9 @@ def api_upload_commit():
                 status='pending_approval', 
                 parsed_count=stats['total'], 
                 import_count=stats['added'], 
-                skipped_count=stats['skipped'],
-                conn=conn
+                skipped_count=stats['skipped'], 
+                conn=conn,
+                company_id=active_company_id
             )
         
         # If the parent ZIP itself had no direct transactions (only children did), mark it approved or pending
@@ -2546,7 +2828,8 @@ def api_upload_commit():
                 parsed_count=0, 
                 import_count=0, 
                 skipped_count=0,
-                conn=conn
+                conn=conn,
+                company_id=active_company_id
             )
             
         conn.commit()
