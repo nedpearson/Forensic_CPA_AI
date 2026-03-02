@@ -1224,6 +1224,9 @@ def api_integrations_fc_sync_clients():
     if result.get('status') == 'error':
         return jsonify(result), 400
         
+    from advisor_worker import trigger_async_advisor_refresh
+    trigger_async_advisor_refresh(active_company_id, current_user.id, "Financial Cents Client Sync")
+        
     return jsonify(result)
 
 
@@ -1541,6 +1544,10 @@ def api_update_transaction(trans_id):
     try:
         if fields:
             update_transaction(current_user.id, trans_id, **fields)
+            active_company_id = session.get('active_company_id')
+            if active_company_id:
+                from advisor_worker import trigger_async_advisor_refresh
+                trigger_async_advisor_refresh(active_company_id, current_user.id, "Manual Transaction Update")
     except Exception as e:
         return jsonify({'error': f'Update failed: {str(e)}'}), 500
     # If category was changed, suggest a rule
@@ -1573,6 +1580,10 @@ def api_update_transaction(trans_id):
 @require_company_role(['owner', 'admin', 'operator'])
 def api_delete_transaction(trans_id):
     delete_transaction(current_user.id, trans_id)
+    active_company_id = session.get('active_company_id')
+    if active_company_id:
+        from advisor_worker import trigger_async_advisor_refresh
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "Manual Transaction Deletion")
     return jsonify({'status': 'ok'})
 
 
@@ -1609,6 +1620,12 @@ def api_bulk_update():
     if 'category' in fields:
         # Phase 16: Trigger asynchronous ledger sweep so the UI reflects bulk learning immediately
         threading.Thread(target=recategorize_all, args=(current_user.id,)).start()
+
+    # Trigger AI Advisor refresh 
+    active_company_id = session.get('active_company_id')
+    if active_company_id:
+        from advisor_worker import trigger_async_advisor_refresh
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "Bulk Transaction Update")
 
     return jsonify({'status': 'ok', 'updated': len(ids)})
 
@@ -1963,6 +1980,10 @@ def api_upload():
     if uncategorized_txns:
         from categorizer import run_bulk_ai_categorization
         run_bulk_ai_categorization(current_user.id, uncategorized_txns)
+        
+    if active_company_id:
+        from advisor_worker import trigger_async_advisor_refresh
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "Document Import Completed")
 
     return jsonify({
         'status': 'ok',
@@ -2858,6 +2879,11 @@ def api_upload_commit():
             oldest_key = next(iter(_recent_commits))
             _recent_commits.pop(oldest_key, None)
 
+    # Automatically mark Advisor state as stale post-commit
+    if active_company_id:
+        from advisor_worker import trigger_async_advisor_refresh
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "Document/Batch Upload Committed")
+
     return jsonify(success_payload)
 
 
@@ -2921,6 +2947,12 @@ def api_document_approve(doc_id):
             return jsonify({'error': 'Failed to process approval workflow cleanly.'}), 500
         finally:
             conn.close()
+            
+        # Trigger Advisor Refresh assuming success and non-zero mutations
+        active_company_id = session.get('active_company_id')
+        if active_company_id and transactions_approved > 0:
+            from advisor_worker import trigger_async_advisor_refresh
+            trigger_async_advisor_refresh(active_company_id, current_user.id, "Document Approved (Batch Transactions)")
         
         return jsonify({
             'status': 'ok',
@@ -2936,6 +2968,10 @@ def api_document_delete(doc_id):
     from database import delete_document
     success = delete_document(current_user.id, doc_id)
     if success:
+        active_company_id = session.get('active_company_id')
+        if active_company_id:
+            from advisor_worker import trigger_async_advisor_refresh
+            trigger_async_advisor_refresh(active_company_id, current_user.id, "Document Deletion")
         return jsonify({'status': 'ok', 'message': 'Document and derived data deleted'})
     else:
         return jsonify({'error': 'Document not found or unauthorized'}), 404
@@ -3281,6 +3317,77 @@ def health():
     """Health check endpoint for LocalProgramControlCenter."""
     return jsonify({'status': 'ok', 'service': 'Forensic CPA AI'})
 
+
+@app.route('/api/advisor/status', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_status():
+    """Fetch the current execution state without triggering operations."""
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({"status": "error", "message": "No active company selected"}), 400
+        
+    from database import get_advisor_company_state
+    state = get_advisor_company_state(active_company_id)
+    return jsonify({
+        "status": "success",
+        "advisor_state": {
+            "execution_status": state.get('status'),
+            "needs_refresh": state.get('needs_refresh'),
+            "last_run_at": state.get('last_run_at'),
+            "last_failure_at": state.get('last_failure_at'),
+            "has_cache": 1 if state.get('last_result_json') else 0
+        }
+    })
+
+
+@app.route('/api/advisor/aggregate', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_aggregate():
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({"status": "error", "message": "No active company selected"}), 400
+        
+    from database import get_advisor_company_state
+    from advisor_worker import trigger_async_advisor_refresh
+    import json
+    
+    state = get_advisor_company_state(active_company_id)
+    
+    # 1. Thread currently holds processing lock
+    if state.get('status') == 'running':
+        msg = "Applying deterministic multi-factor models. Please wait..."
+        if state.get('last_result_json'):
+            msg = "Analysis Stale / Refresh Needed: Automatically updating multi-factor models in background. Previous cached findings shown below."
+        resp = {"status": "running", "message": msg}
+        if state.get('last_result_json'):
+            try: resp['data'] = json.loads(state['last_result_json'])
+            except: pass
+        return jsonify(resp)
+        
+    # 2. Dirtied flag, trigger thread instantiation
+    if state.get('needs_refresh') == 1 or not state.get('last_result_json') or state.get('status') == 'queued':
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "Manual Tab Refresh")
+        msg = "Analysis queued. Starting new engine execution..."
+        if state.get('last_result_json'):
+            msg = "Analysis Stale / Refresh Needed: Instantiating automated refresh in background. Previous findings shown below."
+        resp = {"status": "running", "message": msg}
+        if state.get('last_result_json'):
+            try: resp['data'] = json.loads(state['last_result_json'])
+            except: pass
+        return jsonify(resp)
+        
+    # 3. Clean/Completed, deliver generated cache without halting execution 
+    try:
+        cached_data = json.loads(state['last_result_json'])
+        return jsonify({
+            "status": "success",
+            "data": cached_data
+        })
+    except Exception as e:
+        trigger_async_advisor_refresh(active_company_id, current_user.id, "JSON Cache Corruption Recovery")
+        return jsonify({"status": "running", "message": "Rebuilding corrupted analysis state..."})
 
 if __name__ == '__main__':
     import sys

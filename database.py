@@ -115,7 +115,24 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_invites ON company_invitations(company_id, email) WHERE status = 'pending';
+        CREATE TABLE IF NOT EXISTS advisor_company_state (
+            company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+            status TEXT DEFAULT 'never_run', -- 'never_run', 'queued', 'running', 'completed', 'failed'
+            needs_refresh INTEGER DEFAULT 1,
+            last_run_at TIMESTAMP,
+            last_success_at TIMESTAMP,
+            last_failure_at TIMESTAMP,
+            last_trigger_reason TEXT,
+            last_result_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        -- Safe migration injected for Phase 9D: add new column to existing local tables without crashing
+        try:
+            cursor.execute("ALTER TABLE advisor_company_state ADD COLUMN last_result_json TEXT")
+        except sqlite3.OperationalError:
+            pass # Column exists
 
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2581,5 +2598,69 @@ def get_merchant_context_rules(user_id: int, merchant_id: int) -> list:
         ORDER BY mcr.priority DESC
     """, (user_id, merchant_id))
     rules = [dict(r) for r in cursor.fetchall()]
-    conn.close()
     return rules
+
+def get_advisor_company_state(company_id: int) -> dict:
+    """Retrieve the current Advisor execution state for a company."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM advisor_company_state WHERE company_id = ?", (company_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return {
+            "company_id": company_id,
+            "status": "never_run",
+            "needs_refresh": 1,
+            "last_run_at": None,
+            "last_success_at": None,
+            "last_failure_at": None,
+            "last_trigger_reason": None
+        }
+    return dict(row)
+
+def update_advisor_company_state(company_id: int, status: str = None, needs_refresh: int = None, trigger_reason: str = None):
+    """
+    Creates or updates the Advisor execution state for a company.
+    If needs_refresh is passed, it flags the company's advisor tab as stale.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Ensure a row exists first
+    cursor.execute("SELECT 1 FROM advisor_company_state WHERE company_id = ?", (company_id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO advisor_company_state (company_id) VALUES (?)", (company_id,))
+        
+    updates = ["updated_at = CURRENT_TIMESTAMP"]
+    params = []
+    
+    if status is not None:
+        if status == 'queued':
+            updates.append("status = CASE WHEN status = 'running' THEN 'running' ELSE 'queued' END")
+        else:
+            updates.append("status = ?")
+            params.append(status)
+            
+        if status == 'running':
+            updates.append("last_run_at = CURRENT_TIMESTAMP")
+        elif status == 'completed':
+            updates.append("last_success_at = CURRENT_TIMESTAMP")
+        elif status == 'failed':
+            updates.append("last_failure_at = CURRENT_TIMESTAMP")
+            
+    if needs_refresh is not None:
+        updates.append("needs_refresh = ?")
+        params.append(needs_refresh)
+        
+    if trigger_reason is not None:
+        updates.append("last_trigger_reason = ?")
+        params.append(trigger_reason)
+        
+    params.append(company_id)
+    
+    query = f"UPDATE advisor_company_state SET {', '.join(updates)} WHERE company_id = ?"
+    cursor.execute(query, params)
+    conn.commit()
+    conn.close()

@@ -156,6 +156,22 @@
             color: #bc8cff;
         }
 
+        .text-purple {
+            color: #bc8cff !important;
+        }
+
+        .btn-purple {
+            background-color: #bc8cff;
+            color: #000;
+            border: 1px solid #a372eb;
+            font-weight: 600;
+        }
+
+        .btn-purple:hover {
+            background-color: #9d50ff;
+            color: #fff;
+        }
+
         .card-dark {
             background: #161b22;
             border: 1px solid #30363d;
@@ -1183,6 +1199,8 @@
             <a class="nav-link" href="#" data-page="transactions"><i class="fas fa-list-alt"></i> All Transactions</a>
             <a class="nav-link" href="#" data-page="analysis"><i class="fas fa-magnifying-glass-chart"></i> Forensic
                 Analysis</a>
+            <a class="nav-link" href="#" data-page="advisor"><i class="fas fa-brain text-purple"></i> AI Forensic
+                Advisor</a>
             <a class="nav-link" href="#" data-page="recipients"><i class="fas fa-user-secret"></i> Who Gets The
                 Money</a>
             <a class="nav-link" href="#" data-page="deposit-aging"><i class="fas fa-clock"></i> Deposit Aging</a>
@@ -1462,6 +1480,108 @@
                 <div class="card-header"><i class="fas fa-hand-holding-usd text-warning me-1"></i> Venmo Payment
                     Analysis</div>
                 <div class="scrollable-table" id="venmo-analysis"></div>
+            </div>
+        </div>
+
+        <!-- ========== AI ADVISOR ========== -->
+        <div class="page-section" id="page-advisor">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h4 class="mb-0"><i class="fas fa-brain text-purple"></i> AI Forensic Advisor</h4>
+                <div>
+                    <button class="btn btn-sm btn-purple shadow-sm" id="btn-run-advisor"
+                        onclick="runAdvisorAnalysis(true)">
+                        <i class="fas fa-magic"></i> Run AI Analysis
+                    </button>
+                </div>
+            </div>
+            <p class="text-muted small mb-3">Company-scoped intelligent reasoning across all uploaded documents and
+                categorized transactions.</p>
+
+            <!-- Empty / State Containers -->
+            <div id="advisor-empty-state" class="text-center p-5"
+                style="border: 1px dashed #30363d; border-radius: 12px; margin-bottom: 20px; background: #161b22;">
+                <i class="fas fa-brain text-purple mb-3" style="font-size: 2.5rem; opacity: 0.6;"></i>
+                <h5>No AI Analysis Exists</h5>
+                <p class="text-muted small">The AI Advisor has not evaluated this company's workspace yet.<br>Ensure you
+                    have categorized transactions and uploaded documents, then run the analysis.</p>
+            </div>
+
+            <div id="advisor-loading-state" class="text-center p-5"
+                style="display:none; border: 1px solid #bc8cff; border-radius: 12px; margin-bottom: 20px; background: rgba(188, 140, 255, 0.05);">
+                <div class="spinner-border text-purple mb-3" role="status"></div>
+                <h5>Analyzing Financial Data...</h5>
+                <p class="text-muted small">The AI is reviewing documents, detecting fraud patterns, and generating
+                    exact deterministic findings. This may take up to 60 seconds...</p>
+            </div>
+
+            <!-- Content Container (Hidden until analysis completes) -->
+            <div id="advisor-results-state" style="display:none;">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-12">
+                        <div class="card-dark" style="border-left: 4px solid #bc8cff;">
+                            <div class="card-header" style="background: rgba(188,140,255,0.08);"><i
+                                    class="fas fa-clipboard-list text-purple me-1"></i> Executive Summary</div>
+                            <div class="p-3 placeholder-glow">
+                                <span class="placeholder col-7 bg-secondary"></span>
+                                <span class="placeholder col-4 bg-secondary"></span>
+                                <span class="placeholder col-4 bg-secondary"></span>
+                                <span class="placeholder col-6 bg-secondary"></span>
+                                <span class="placeholder col-8 bg-secondary"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <div class="card-dark h-100 border-danger">
+                            <div class="card-header bg-danger text-white border-bottom-0"><i
+                                    class="fas fa-exclamation-triangle me-1"></i> Fraud & Red Flags</div>
+                            <div class="p-3 text-muted small"><i class="fas fa-info-circle"></i> Awaiting detection
+                                results...</div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card-dark h-100">
+                            <div class="card-header"><i class="fas fa-key text-warning me-1"></i> Key Findings</div>
+                            <div class="p-3 text-muted small"><i class="fas fa-info-circle"></i> Awaiting structural
+                                insights...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3 mb-3">
+                    <div class="col-md-4">
+                        <div class="card-dark h-100">
+                            <div class="card-header"><i class="fas fa-file-invoice text-info me-1"></i> Document
+                                Intelligence</div>
+                            <div class="p-3 text-muted small">Awaiting OCR and metadata correlations...</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card-dark h-100">
+                            <div class="card-header"><i class="fas fa-shield-alt text-success me-1"></i> Internal
+                                Controls</div>
+                            <div class="p-3 text-muted small">Awaiting control vulnerability assessments...</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card-dark h-100">
+                            <div class="card-header"><i class="fas fa-balance-scale text-primary me-1"></i> Scenario
+                                Simulator</div>
+                            <div class="p-3 text-muted small">Awaiting legal and audit risk simulation bounds...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-dark border-secondary">
+                    <div class="card-header bg-secondary text-white"><i class="fas fa-gavel me-1"></i> Audit-Ready
+                        Appendix (Deterministic Truth)</div>
+                    <div class="p-3 text-white-50 small" style="background:#0d1117;">
+                        <em>Awaiting strictly referenced transaction hashes and document anchors. The LLM is
+                            structurally blocked from referencing unproven records here.</em>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -2422,6 +2542,7 @@
             else if (page === 'case-notes') loadCaseNotes();
             else if (page === 'accounts') loadAccounts();
             else if (page === 'documents') loadDocuments();
+            else if (page === 'advisor') loadAdvisorStatus();
             else if (page === 'categories') loadCategoriesPage();
             else if (page === 'audit-trail') loadAuditTrail();
             else if (page === 'integrations') loadIntegrations();
@@ -5140,6 +5261,145 @@
             updateAlertBadge();
             loadSavedFilters();
         })();
+        // ===== AI ADVISOR LOGIC =====
+        function loadAdvisorStatus() {
+            fetch('/api/advisor/status', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const s = data.advisor_state;
+                        if (s.execution_status === 'running' || s.has_cache === 1 || s.execution_status === 'queued' || s.needs_refresh === 1) {
+                            runAdvisorAnalysis(false);
+                        } else if (s.execution_status === 'failed') {
+                            $('#advisor-loading-state, #advisor-results-state').hide();
+                            $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-exclamation-triangle fs-1 text-danger mb-3 d-block"></i><h4>Analysis Failed</h4><p class="text-secondary">The background worker encountered an error during orchestration.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Analysis</button></div>`).show();
+                        } else {
+                            $('#advisor-loading-state, #advisor-results-state').hide();
+                            $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-brain text-purple mb-3 d-block" style="font-size: 2.5rem; opacity: 0.6;"></i><h4>No AI Analysis Exists</h4><p class="text-muted small">The AI Advisor has not evaluated this company's workspace yet.<br>Ensure you have categorized transactions and uploaded documents, then run the analysis.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-magic"></i> Run AI Analysis</button></div>`).show();
+                        }
+                    }
+                })
+                .catch(err => console.error("Error fetching advisor status:", err));
+        }
+
+        function runAdvisorAnalysis(isManual = false) {
+            if (isManual) {
+                $('#advisor-empty-state').hide();
+                $('#advisor-loading-state').show();
+            }
+
+            fetch('/api/advisor/aggregate', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success' && data.data) {
+                        $('#advisor-loading-state').hide();
+                        $('#advisor-results-state').show();
+                        renderAdvisorResults(data.data);
+                    } else if (data.status === 'running') {
+                        $('#advisor-empty-state').hide();
+                        $('#advisor-loading-state').show();
+
+                        // Safely preserve old state if UX permits
+                        if (data.data) {
+                            $('#advisor-results-state').show();
+                            renderAdvisorResults(data.data);
+                        }
+
+                        let pTag = $('#advisor-loading-state p.text-muted');
+                        if (pTag.length) {
+                            pTag.text(data.message || "Applying deterministic multi-factor models. Please wait...");
+                        }
+                        setTimeout(() => runAdvisorAnalysis(false), 3000);
+                    } else {
+                        $('#advisor-loading-state').hide();
+                        $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-server fs-1 text-muted mb-3 d-block"></i><h4>Advisor Unavailable</h4><p class="text-secondary">${data.message || 'Insufficient data or permissions to complete analysis.'}</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Analysis</button></div>`).show();
+                    }
+                })
+                .catch(err => {
+                    $('#advisor-loading-state').hide();
+                    $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-wifi fs-1 text-muted mb-3 d-block"></i><h4>Connection Error</h4><p class="text-secondary">Failed to reach the AI Advisor orchestration engine.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Connection</button></div>`).show();
+                    console.error('Advisor error:', err);
+                });
+        }
+
+        function renderAdvisorResults(payload) {
+            // Exec Summary
+            const exec = payload.executive_summary;
+            const execContainer = $('#page-advisor .card-header:contains("Executive Summary")').next();
+            execContainer.removeClass('placeholder-glow');
+            if (exec.status === 'success') {
+                execContainer.html(`
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p class="mb-1 text-muted small">Date Range</p>
+                            <h6 class="text-white">${exec.data.date_range}</h6>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <p class="mb-1 text-muted small">Global Risk Score</p>
+                            <h6 class="text-danger fw-bold">${payload.risk_scoring ? payload.risk_scoring.fraud_probability : exec.data.risk_score} <span class="text-muted" style="font-size:10px;">/ 100</span></h6>
+                        </div>
+                    </div>
+                `);
+            } else {
+                execContainer.html(`<div class="alert alert-secondary border-0 mb-0 py-2">${exec.message || 'No summary available.'}</div>`);
+            }
+
+            // Universal render function
+            const renderArray = (headerText, findingsArr) => {
+                const container = $('#page-advisor .card-header:contains("' + headerText + '")').next();
+                if (!findingsArr || findingsArr.length === 0 || findingsArr[0].status === 'insufficient_evidence') {
+                    container.html(`<div class="text-muted small p-2"><i class="fas fa-info-circle"></i> ${findingsArr && findingsArr.length ? findingsArr[0].message : 'No findings.'}</div>`);
+                    return;
+                }
+
+                let html = '<div class="px-2 pb-2">';
+                if (headerText === "Scenario Simulator") {
+                    html += `<div class="alert alert-warning py-1 mx-2 mb-3 mt-2" style="font-size:0.75rem;"><i class="fas fa-balance-scale"></i> <strong>LEGAL DISCLAIMER:</strong> All scenarios are entirely hypothetical simulations based on aggregated SQL limits. They do not alter source documents or ledger histories.</div>`;
+                }
+
+                findingsArr.forEach(f => {
+                    // map impact logic for scenarios
+                    let diffBadge = '';
+                    if (f.net_difference) {
+                        diffBadge = `<span class="badge bg-success float-end">+ $${f.net_difference.toLocaleString()}</span>`;
+                    }
+
+                    html += `
+                        <div class="mb-2 p-2 border rounded border-secondary" style="background: rgba(255,255,255,0.02)">
+                            <strong class="text-${f.severity || 'info'} d-block mb-1" style="font-size:0.85rem;">
+                                <i class="fas fa-circle" style="font-size:6px; vertical-align:middle;"></i> ${f.title}
+                                ${diffBadge}
+                            </strong>
+                            <div class="small fw-light text-light">${f.explanation || f.description}</div>
+                            ${f.evidence_links && f.evidence_links.length > 0 ? `<div class="mt-1" style="font-size: 0.70rem; color: #8b949e;"><i class="fas fa-link"></i> Traceable Nodes: ${f.evidence_links.length} indices</div>` : ''}
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                container.html(html);
+            };
+
+            // Inject arrays
+            renderArray("Fraud & Red Flags", payload.fraud_red_flags);
+            renderArray("Key Findings", payload.key_findings);
+            renderArray("Document Intelligence", payload.document_intelligence);
+            renderArray("Internal Controls", payload.internal_controls);
+            renderArray("Scenario Simulator", payload.scenario_simulator);
+
+            // Audit Appendix
+            const appx = payload.audit_ready_appendix;
+            if (appx && appx.status === 'ready') {
+                $('#page-advisor .card-header:contains("Appendix")').next().html(`
+                    <div style="font-family: monospace;">
+                        <span class="text-success d-block mb-1">SYSTEM STATUS: TRACEABILITY LOCK MAINTAINED</span>
+                        <div class="mt-2 text-muted">traced_documents: [${appx.traced_documents.join(', ')}]</div>
+                        <div class="mt-1 text-muted">flagged_anchors: [${appx.flagged_anchors.join(', ')}]</div>
+                        <div class="mt-1 text-muted">active_ledgers: [${appx.active_accounts.join(', ')}]</div>
+                    </div>
+                `);
+            }
+        }
+
     </script>
 </body>
 
