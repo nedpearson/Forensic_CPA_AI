@@ -12,6 +12,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _get_active_company_id_shim():
+    try:
+        from flask import session
+        if session:
+            return session.get('active_company_id')
+    except Exception:
+        pass
+    return None
+
+
 # --- Concurrency Locks ---
 _doc_locks = {}
 _doc_lock_mutex = threading.Lock()
@@ -67,6 +77,45 @@ def init_db():
             role TEXT DEFAULT 'user',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            legal_name TEXT,
+            created_by INTEGER REFERENCES users(id),
+            owner_user_id INTEGER REFERENCES users(id),
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS company_memberships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            is_default INTEGER DEFAULT 0,
+            invited_by INTEGER REFERENCES users(id),
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, company_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS company_invitations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+            email TEXT NOT NULL,
+            invited_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            intended_role TEXT NOT NULL DEFAULT 'viewer',
+            token_hash TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            expires_at TIMESTAMP NOT NULL,
+            accepted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_invites ON company_invitations(company_id, email) WHERE status = 'pending';
 
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -298,7 +347,8 @@ def init_db():
             connected_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, provider)
+            company_id INTEGER REFERENCES companies(id),
+            UNIQUE(company_id, provider)
         );
 
         CREATE TABLE IF NOT EXISTS merchants (
@@ -499,14 +549,102 @@ def init_db():
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER REFERENCES users(id)")
             cursor.execute(f"UPDATE {table} SET user_id = ?", (root_id,))
 
-    # Migrate users table to add role
-    cursor.execute("PRAGMA table_info(users)")
-    user_columns = [row['name'] for row in cursor.fetchall()]
-    if 'role' not in user_columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+    # Phase 3: Tenant Isolation Schema Migration
+    # 1. Add company_id to all domain tables
+    domain_tables = tables_to_migrate + ['merchants', 'merchant_context_rules', 'merchant_aliases']
+    for table in domain_tables:
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = [row['name'] for row in cursor.fetchall()]
+        if 'company_id' not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN company_id INTEGER REFERENCES companies(id)")
+            
+    # Add status backfill for companies
+    cursor.execute("PRAGMA table_info(companies)")
+    if 'status' not in [row['name'] for row in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE companies ADD COLUMN status TEXT DEFAULT 'active'")
 
-    # Insert default categories only for root_id to bootstrap
-    seed_taxonomy(root_id, cursor)
+    # Migration for unique integrations constraint
+    try:
+        # Check if the UNIQUE constraint uses company_id
+        cursor.execute("PRAGMA index_list(integrations)")
+        indexes = cursor.fetchall()
+        needs_integration_rebuild = True
+        for idx in indexes:
+            if idx['unique']:
+                cursor.execute(f"PRAGMA index_info({idx['name']})")
+                cols = [r['name'] for r in cursor.fetchall()]
+                if set(cols) == {'company_id', 'provider'}:
+                    needs_integration_rebuild = False
+                    break
+        
+        if needs_integration_rebuild:
+            cursor.executescript('''
+                CREATE TABLE IF NOT EXISTS integrations_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER REFERENCES users(id),
+                    company_id INTEGER REFERENCES companies(id),
+                    provider TEXT NOT NULL,
+                    account_id TEXT,
+                    status TEXT DEFAULT 'Not connected',
+                    scopes TEXT,
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    expires_at INTEGER,
+                    metadata TEXT,
+                    connected_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(company_id, provider)
+                );
+                INSERT INTO integrations_new (id, user_id, company_id, provider, account_id, status, scopes, access_token, refresh_token, expires_at, metadata, connected_at, created_at, updated_at)
+                SELECT id, user_id, company_id, provider, account_id, status, scopes, access_token, refresh_token, expires_at, metadata, connected_at, created_at, updated_at FROM integrations;
+                DROP TABLE integrations;
+                ALTER TABLE integrations_new RENAME TO integrations;
+            ''')
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # Phase 1: Multi-Tenant Schema Compatibility Backfill
+    # Ensure all existing users have a default workspace mapped to them
+    cursor.execute("SELECT id, email FROM users")
+    existing_users = cursor.fetchall()
+    
+    for user_row in existing_users:
+        u_id = user_row['id']
+        u_email = user_row['email']
+        
+        cursor.execute("SELECT id FROM company_memberships WHERE user_id = ?", (u_id,))
+        if not cursor.fetchone():
+            default_name = f"{u_email.split('@')[0].capitalize()}'s Workspace"
+            cursor.execute(
+                "INSERT INTO companies (name, created_by, owner_user_id) VALUES (?, ?, ?)",
+                (default_name, u_id, u_id)
+            )
+            new_comp_id = cursor.lastrowid
+            
+            cursor.execute(
+                "INSERT INTO company_memberships (user_id, company_id, role, is_default) VALUES (?, ?, 'owner', 1)",
+                (u_id, new_comp_id)
+            )
+
+    # Phase 3: Tenant Isolation Backfill
+    # Ensure all existing rows obtain the active company_id from the user's default company
+    for table in domain_tables:
+        try:
+            cursor.execute(f"""
+                UPDATE {table}
+                SET company_id = (
+                    SELECT company_id 
+                    FROM company_memberships 
+                    WHERE company_memberships.user_id = {table}.user_id 
+                    ORDER BY is_default DESC 
+                    LIMIT 1
+                )
+                WHERE company_id IS NULL AND user_id IS NOT NULL
+            """)
+        except sqlite3.OperationalError as e:
+            pass
 
     conn.commit()
     conn.close()
@@ -538,6 +676,202 @@ def init_db():
                     print(f"Super admin verified: {admin_email} repaired to SUPER_ADMIN with correct password.")
                 else:
                     print(f"Super admin verified: {admin_email} already active and correct.")
+# --- Company Admin & Access Management ---
+
+def get_company_members(company_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cm.id as membership_id, cm.user_id, cm.company_id, cm.role,
+               u.email, cm.created_at
+        FROM company_memberships cm
+        JOIN users u ON cm.user_id = u.id
+        WHERE cm.company_id = ?
+        ORDER BY cm.role='owner' DESC, u.email ASC
+    """, (company_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_company_member_role(company_id, user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT role FROM company_memberships WHERE company_id = ? AND user_id = ?", (company_id, user_id))
+    row = cursor.fetchone()
+    conn.close()
+    return row['role'] if row else None
+
+def add_company_member(company_id, user_id, role='viewer', invited_by=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO company_memberships (user_id, company_id, role, invited_by)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, company_id, role, invited_by))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def update_company_member_role(company_id, user_id, role):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE company_memberships SET role = ? WHERE company_id = ? AND user_id = ?", (role, company_id, user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+def remove_company_member(company_id, user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    # Safely prevent removing last owner
+    cursor.execute("SELECT role FROM company_memberships WHERE company_id = ? AND user_id = ?", (company_id, user_id))
+    row = cursor.fetchone()
+    if row and row['role'] == 'owner':
+        cursor.execute("SELECT count(*) as owner_count FROM company_memberships WHERE company_id = ? AND role = 'owner'", (company_id,))
+        owner_count = cursor.fetchone()['owner_count']
+        if owner_count <= 1:
+            conn.close()
+            return False, "Cannot remove the last owner of the company."
+            
+    cursor.execute("DELETE FROM company_memberships WHERE company_id = ? AND user_id = ?", (company_id, user_id))
+    conn.commit()
+    conn.close()
+    return True, "Member removed."
+
+def transfer_company_ownership(company_id, current_owner_id, new_owner_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Check if target user is in the company
+    cursor.execute("SELECT id FROM company_memberships WHERE company_id = ? AND user_id = ?", (company_id, new_owner_id))
+    if not cursor.fetchone():
+        conn.close()
+        return False, "Target user must be a member of the company before transferring ownership."
+        
+    try:
+        # Transfer owner_user_id in companies table
+        cursor.execute("UPDATE companies SET owner_user_id = ? WHERE id = ? AND owner_user_id = ?", (new_owner_id, company_id, current_owner_id))
+        if cursor.rowcount == 0:
+            conn.close()
+            return False, "Not authorized or company not found."
+            
+        # Update roles
+        cursor.execute("UPDATE company_memberships SET role = 'owner' WHERE company_id = ? AND user_id = ?", (company_id, new_owner_id))
+        cursor.execute("UPDATE company_memberships SET role = 'admin' WHERE company_id = ? AND user_id = ?", (company_id, current_owner_id))
+        conn.commit()
+        return True, "Ownership transferred successfully."
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
+def soft_delete_company(company_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE companies SET status = 'deleted' WHERE id = ?", (company_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+def create_company_invitation(company_id, email, intended_role, invited_by_user_id, expires_hours=72):
+    import secrets
+    import hashlib
+    from datetime import datetime, timedelta
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Check for existing pending invites for this company/email
+    cursor.execute("SELECT id FROM company_invitations WHERE company_id = ? AND email = ? AND status = 'pending'", (company_id, email))
+    if cursor.fetchone():
+        conn.close()
+        return None, "A pending invitation already exists for this email in this company."
+        
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = (datetime.utcnow() + timedelta(hours=expires_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    try:
+        cursor.execute("""
+            INSERT INTO company_invitations 
+            (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at))
+        invite_id = cursor.lastrowid
+        conn.commit()
+        return {'id': invite_id, 'raw_token': raw_token, 'expires_at': expires_at}, None
+    except Exception as e:
+        return None, str(e)
+    finally:
+        conn.close()
+
+def get_invitation_by_token(raw_token):
+    import hashlib
+    from datetime import datetime
+    
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ci.*, c.name as company_name 
+        FROM company_invitations ci
+        JOIN companies c ON ci.company_id = c.id
+        WHERE ci.token_hash = ?
+    """, (token_hash,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return None, "Invalid invitation token."
+        
+    invitation = dict(row)
+    if invitation['status'] != 'pending':
+        return invitation, f"Invitation is {invitation['status']}."
+        
+    if invitation['expires_at'] < datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'):
+        # Auto-revoke if fetched and expired
+        revoke_invitation(invitation['id'], system_auto=True)
+        return invitation, "Invitation has expired."
+        
+    return invitation, None
+
+def get_pending_invitations_for_company(company_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ci.id, ci.email, ci.intended_role, ci.status, ci.expires_at, ci.created_at,
+               u.email as invited_by_email
+        FROM company_invitations ci
+        LEFT JOIN users u ON ci.invited_by_user_id = u.id
+        WHERE ci.company_id = ? AND ci.status = 'pending'
+        ORDER BY ci.created_at DESC
+    """, (company_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def revoke_invitation(invite_id, system_auto=False):
+    conn = get_db()
+    cursor = conn.cursor()
+    new_status = 'expired' if system_auto else 'revoked'
+    cursor.execute("UPDATE company_invitations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'", (new_status, invite_id))
+    success = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return success
+
+def mark_invitation_accepted(invite_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE company_invitations SET status = 'accepted', accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'", (invite_id,))
+    success = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return success
 
 # --- Identity / Auth Operations ---
 
@@ -652,13 +986,16 @@ def clear_all_data(user_id):
 
 # --- CRUD Operations ---
 
-def add_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None, conn=None):
+def add_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, notes=None, conn=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+
     is_external_conn = conn is not None
     db_conn = conn or get_db()
     cursor = db_conn.cursor()
     cursor.execute(
-        "INSERT INTO accounts (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
+        "INSERT INTO accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
     )
     account_id = cursor.lastrowid
     if not is_external_conn:
@@ -667,13 +1004,16 @@ def add_account(user_id, account_name, account_number, account_type, institution
     return account_id
 
 
-def get_or_create_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, conn=None):
+def get_or_create_account(user_id, account_name, account_number, account_type, institution, cardholder_name=None, card_last_four=None, conn=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+
     is_external_conn = conn is not None
     db_conn = conn or get_db()
     cursor = db_conn.cursor()
     cursor.execute(
-        "SELECT id FROM accounts WHERE user_id = ? AND account_number = ? AND account_type = ? AND (cardholder_name = ? OR cardholder_name IS NULL)",
-        (user_id, account_number, account_type, cardholder_name)
+        "SELECT id FROM accounts WHERE user_id = ? AND company_id = ? AND account_number = ? AND account_type = ? AND (cardholder_name = ? OR cardholder_name IS NULL)",
+        (user_id, company_id, account_number, account_type, cardholder_name)
     )
     row = cursor.fetchone()
     if row:
@@ -682,7 +1022,7 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
         return row['id']
     if not is_external_conn:
         db_conn.close()
-    return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn)
+    return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn, company_id=company_id)
 
 def get_duplicate_document(user_id, content_sha256):
     if not content_sha256:
@@ -695,13 +1035,16 @@ def get_duplicate_document(user_id, content_sha256):
     return row['id'] if row else None
 
 
-def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None, status='queued', conn=None):
+def add_document(user_id, filename, original_path, file_type, doc_category, account_id=None, statement_start=None, statement_end=None, notes=None, content_sha256=None, parent_document_id=None, status='queued', conn=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     is_external_conn = conn is not None
     db_conn = conn or get_db()
     cursor = db_conn.cursor()
     
     if content_sha256:
-        cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ?", (user_id, content_sha256))
+        cursor.execute("SELECT id FROM documents WHERE user_id = ? AND company_id = ? AND content_sha256 = ?", (user_id, company_id, content_sha256))
         row = cursor.fetchone()
         if row:
             if not is_external_conn:
@@ -709,8 +1052,8 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
             return row['id']
 
     cursor.execute(
-        "INSERT INTO documents (user_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id, status)
+        "INSERT INTO documents (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id, status)
     )
     doc_id = cursor.lastrowid
     
@@ -721,17 +1064,20 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
     return doc_id
 
 
-def delete_document(user_id, doc_id, conn=None):
+def delete_document(user_id, doc_id, conn=None, company_id=None):
     """
     Deletes a document, its children (if zip), and safely removes orphan transactions.
     """
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     with document_lock(doc_id):
         is_external_conn = conn is not None
         db_conn = conn or get_db()
         cursor = db_conn.cursor()
         
         # 1. Get document details
-        cursor.execute("SELECT id, filename, file_type, status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
+        cursor.execute("SELECT id, filename, file_type, status FROM documents WHERE id = ? AND user_id = ? AND company_id = ?", (doc_id, user_id, company_id))
         doc = cursor.fetchone()
         if not doc:
             if not is_external_conn:
@@ -749,7 +1095,7 @@ def delete_document(user_id, doc_id, conn=None):
         
         # 2. Find any children documents (if zip container)
         if doc['file_type'] == 'zip':
-            cursor.execute("SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ?", (doc_id, user_id))
+            cursor.execute("SELECT id FROM documents WHERE parent_document_id = ? AND user_id = ? AND company_id = ?", (doc_id, user_id, company_id))
             children = cursor.fetchall()
             doc_ids_to_delete.extend([child['id'] for child in children])
             
@@ -763,26 +1109,26 @@ def delete_document(user_id, doc_id, conn=None):
             # 4. Remove orphan transactions
             cursor.execute("""
                 DELETE FROM transactions 
-                WHERE user_id = ? 
+                WHERE user_id = ? AND company_id = ?
                 AND id NOT IN (SELECT transaction_id FROM transaction_sources WHERE user_id = ?)
-            """, (user_id, user_id))
+            """, (user_id, company_id, user_id))
             
             # 4.5. Reassign or clear document_id for surviving transactions that referenced this document
             cursor.execute(f"""
                 UPDATE transactions 
                 SET document_id = NULL
-                WHERE document_id IN ({placeholders}) AND user_id = ?
-            """, (*doc_ids_to_delete, user_id))
+                WHERE document_id IN ({placeholders}) AND user_id = ? AND company_id = ?
+            """, (*doc_ids_to_delete, user_id, company_id))
             
             # 5. Delete document_extractions and categorizations explicitly if foreign key cascade lacks
             cursor.execute(f"DELETE FROM document_categorizations WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
             cursor.execute(f"DELETE FROM document_extractions WHERE document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
     
             # 6. Nullify parent_document_id on any document referencing these before they are deleted
-            cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            cursor.execute(f"UPDATE documents SET parent_document_id = NULL WHERE parent_document_id IN ({placeholders}) AND user_id = ? AND company_id = ?", (*doc_ids_to_delete, user_id, company_id))
     
             # 7. Delete documents
-            cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ?", (*doc_ids_to_delete, user_id))
+            cursor.execute(f"DELETE FROM documents WHERE id IN ({placeholders}) AND user_id = ? AND company_id = ?", (*doc_ids_to_delete, user_id, company_id))
             
             if not is_external_conn:
                 db_conn.commit()
@@ -814,8 +1160,11 @@ VALID_TRANSITIONS = {
     'failed': ['queued', 'uploaded', 'extracting'] # Retry
 }
 
-def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None):
+def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None, company_id=None):
     """Update the status and tracking metrics of a document with strict state-machine enforcement."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     with document_lock(doc_id):
         is_external_conn = conn is not None
         db_conn = conn or get_db()
@@ -823,7 +1172,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
         
         try:
             # Enforce State Machine and Terminal States
-            cursor.execute("SELECT status FROM documents WHERE id = ? AND user_id = ?", (doc_id, user_id))
+            cursor.execute("SELECT status FROM documents WHERE id = ? AND user_id = ? AND company_id = ?", (doc_id, user_id, company_id))
             row = cursor.fetchone()
             if row:
                 current_status = row['status']
@@ -869,8 +1218,8 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                     db_conn.close()
                 return True
                 
-            params.extend([doc_id, user_id])
-            query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
+            params.extend([doc_id, user_id, company_id])
+            query = f"UPDATE documents SET {', '.join(updates)} WHERE id = ? AND user_id = ? AND company_id = ?"
             
             cursor.execute(query, tuple(params))
             
@@ -887,9 +1236,12 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             
         return True
 
-def find_duplicate_transactions(user_id, transactions):
+def find_duplicate_transactions(user_id, transactions, company_id=None):
     """Check a list of parsed transactions against existing DB transactions.
     Returns list of (index, existing_transaction) tuples for duplicates."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+
     conn = get_db()
     cursor = conn.cursor()
     duplicates = []
@@ -913,8 +1265,8 @@ def find_duplicate_transactions(user_id, transactions):
         placeholders = ','.join('?' for _ in batch)
         cursor.execute(f"""
             SELECT id, trans_date, description, amount FROM transactions
-            WHERE user_id = ? AND trans_date IN ({placeholders})
-        """, (user_id, *batch))
+            WHERE user_id = ? AND company_id = ? AND trans_date IN ({placeholders})
+        """, (user_id, company_id, *batch))
         
         for row in cursor.fetchall():
             key = (row['trans_date'], row['description'].upper() if row['description'] else '', round(float(row['amount']), 2))
@@ -933,13 +1285,16 @@ def find_duplicate_transactions(user_id, transactions):
     return duplicates
 
 
-def add_transaction(user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', **kwargs):
+def add_transaction(user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category='uncategorized', company_id=None, **kwargs):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
     
     txn_fingerprint = kwargs.get('txn_fingerprint')
     if txn_fingerprint:
-        cursor.execute("SELECT id FROM transactions WHERE user_id = ? AND txn_fingerprint = ?", (user_id, txn_fingerprint))
+        cursor.execute("SELECT id FROM transactions WHERE user_id = ? AND company_id = ? AND txn_fingerprint = ?", (user_id, company_id, txn_fingerprint))
         existing = cursor.fetchone()
         if existing:
             trans_id = existing['id']
@@ -956,14 +1311,14 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
             return trans_id, False
 
     cursor.execute("""
-        INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+        INSERT INTO transactions (user_id, company_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
             subcategory, cardholder_name, card_last_four, payment_method, check_number,
             is_transfer, transfer_to_account, transfer_from_account,
             is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved,
             merchant_id, categorization_confidence, categorization_source, categorization_status, categorization_explanation)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        user_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+        user_id, company_id, doc_id, account_id, trans_date, post_date, description, amount, trans_type, category,
         kwargs.get('subcategory'), kwargs.get('cardholder_name'), kwargs.get('card_last_four'),
         kwargs.get('payment_method'), kwargs.get('check_number'),
         kwargs.get('is_transfer', 0), kwargs.get('transfer_to_account'), kwargs.get('transfer_from_account'),
@@ -989,7 +1344,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
     return trans_id, True
 
 
-def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_doc_ids, conn=None):
+def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_doc_ids, conn=None, company_id=None):
     """
     Bulk insert transactions within a single transaction boundary for performance and reliability.
     transactions_with_hashes: list of dicts with 'trans' (the transaction dictionary) and 'txn_fingerprint' (the deduplication hash)
@@ -997,6 +1352,9 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
     Returns (added_count, skipped_count, doc_stats)
     Where doc_stats is {doc_id: {'added': count, 'skipped': count, 'total': count}}
     """
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+
     is_external_conn = conn is not None
     db_conn = conn or get_db()
     cursor = db_conn.cursor()
@@ -1012,9 +1370,10 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         for i in range(0, len(fingerprints), batch_size):
             batch = fingerprints[i:i+batch_size]
             placeholders = ','.join('?' for _ in batch)
-            cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, *batch))
+            cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND company_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, company_id, *batch))
             for row in cursor.fetchall():
                 existing_map[row['txn_fingerprint']] = row['id']
+
                 
         insertions = []
         source_insertions = []
@@ -1046,7 +1405,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
             else:
                 # Prepare for insertion
                 insertions.append((
-                    user_id, target_doc_id, account_id, t['trans_date'], t.get('post_date', t['trans_date']), 
+                    user_id, company_id, target_doc_id, account_id, t['trans_date'], t.get('post_date', t['trans_date']), 
                     t['description'], t['amount'], t.get('trans_type', 'debit'), t.get('category', 'Uncategorized'),
                     t.get('subcategory'), t.get('cardholder_name', ''), t.get('card_last_four', ''),
                     t.get('payment_method', ''), t.get('check_number'),
@@ -1065,19 +1424,19 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         # Execute insertions
         if insertions:
             cursor.executemany("""
-                INSERT INTO transactions (user_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
+                INSERT INTO transactions (user_id, company_id, document_id, account_id, trans_date, post_date, description, amount, trans_type, category,
                     subcategory, cardholder_name, card_last_four, payment_method, check_number,
                     is_transfer, transfer_to_account, transfer_from_account,
                     is_personal, is_business, is_flagged, flag_reason, auto_categorized, manually_edited, txn_fingerprint, is_approved,
                     merchant_id, categorization_confidence, categorization_source, categorization_status, categorization_explanation)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, insertions)
             
             new_fps = list(new_fps_set)
             for i in range(0, len(new_fps), batch_size):
                 batch = new_fps[i:i+batch_size]
                 placeholders = ','.join('?' for _ in batch)
-                cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, *batch))
+                cursor.execute(f"SELECT txn_fingerprint, id FROM transactions WHERE user_id = ? AND company_id = ? AND txn_fingerprint IN ({placeholders})", (user_id, company_id, *batch))
                 for row in cursor.fetchall():
                     existing_map[row['txn_fingerprint']] = row['id']
                     
@@ -1106,13 +1465,16 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         
     return added_count, skipped_count, doc_stats
 
-def update_transaction(user_id, trans_id, **fields):
+def update_transaction(user_id, trans_id, company_id=None, **fields):
     """Update a transaction and log the changes."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
 
     # Get current values for audit log
-    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
+    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ? AND company_id = ?", (trans_id, user_id, company_id))
     old = dict(cursor.fetchone() or {})
     if not old:
         conn.close()
@@ -1139,40 +1501,47 @@ def update_transaction(user_id, trans_id, **fields):
     
     values.append(trans_id)
     values.append(user_id)
+    values.append(company_id)
 
-    cursor.execute(f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ?", values)
+    cursor.execute(f"UPDATE transactions SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ? AND company_id = ?", values)
     conn.commit()
     conn.close()
 
 
-def delete_transaction(user_id, trans_id):
+def delete_transaction(user_id, trans_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
+    cursor.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ? AND company_id = ?", (trans_id, user_id, company_id))
     old = cursor.fetchone()
     if old:
         cursor.execute(
             "INSERT INTO audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (?, ?, 'delete', ?, 'all')",
             (user_id, trans_id, str(dict(old)))
         )
-    cursor.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
+    cursor.execute("DELETE FROM transactions WHERE id = ? AND user_id = ? AND company_id = ?", (trans_id, user_id, company_id))
     conn.commit()
     conn.close()
 
 
-def get_transactions(user_id, filters=None):
+def get_transactions(user_id, filters=None, company_id=None):
     """Get transactions with optional filters."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
 
     query = """
         SELECT t.*, d.filename as doc_filename, a.account_name, a.institution
         FROM transactions t
-        LEFT JOIN documents d ON t.document_id = d.id
-        LEFT JOIN accounts a ON t.account_id = a.id
-        WHERE t.user_id = ?
+        LEFT JOIN documents d ON t.document_id = d.id AND d.company_id = t.company_id
+        LEFT JOIN accounts a ON t.account_id = a.id AND a.company_id = t.company_id
+        WHERE t.user_id = ? AND t.company_id = ?
     """
-    params = [user_id]
+    params = [user_id, company_id]
 
     if filters:
         if filters.get('category'):
@@ -1230,14 +1599,17 @@ def _is_super_admin():
     except Exception:
         return False
 
-def add_category(user_id, name, parent_category=None, category_type='other', color='#6c757d', icon='tag'):
+def add_category(user_id, name, parent_category=None, category_type='other', color='#6c757d', icon='tag', company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO categories (user_id, name, parent_category, category_type, color, icon)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, name, parent_category, category_type, color, icon))
+            INSERT INTO categories (user_id, company_id, name, parent_category, category_type, color, icon)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, company_id, name, parent_category, category_type, color, icon))
         cat_id = cursor.lastrowid
         conn.commit()
         return cat_id
@@ -1248,23 +1620,32 @@ def add_category(user_id, name, parent_category=None, category_type='other', col
     finally:
         conn.close()
 
-def get_categories(user_id):
+def get_categories(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
+    cursor.execute("SELECT * FROM categories WHERE user_id = ? AND company_id = ? ORDER BY name", (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
-def get_accounts(user_id):
+def get_accounts(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM accounts WHERE user_id = ? ORDER BY account_name", (user_id,))
+    cursor.execute("SELECT * FROM accounts WHERE user_id = ? AND company_id = ? ORDER BY account_name", (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
-def get_documents(user_id):
+def get_documents(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -1278,22 +1659,25 @@ def get_documents(user_id):
             a.account_name 
         FROM documents d 
         LEFT JOIN accounts a ON d.account_id = a.id 
-        LEFT JOIN documents c ON c.parent_document_id = d.id AND c.user_id = d.user_id
-        WHERE d.user_id = ? 
+        LEFT JOIN documents c ON c.parent_document_id = d.id AND c.user_id = d.user_id AND c.company_id = d.company_id
+        WHERE d.user_id = ? AND d.company_id = ? 
         GROUP BY d.id
         ORDER BY d.upload_date DESC
-    """, (user_id,))
+    """, (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def build_filter_clause(user_id, filters=None, table_alias=''):
+def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
     """Build a SQL WHERE clause and parameter list from a filters dictionary."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     prefix = f"{table_alias}." if table_alias else ""
     
-    where = f"WHERE {prefix}user_id = ?"
-    params = [user_id]
+    where = f"WHERE {prefix}user_id = ? AND {prefix}company_id = ?"
+    params = [user_id, company_id]
     
     if not filters:
         return where, params
@@ -1354,12 +1738,15 @@ def build_filter_clause(user_id, filters=None, table_alias=''):
 
     return where, params
 
-def get_summary_stats(user_id, filters=None):
+def get_summary_stats(user_id, filters=None, company_id=None):
     """Get summary statistics for dashboard."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
 
-    where, params = build_filter_clause(user_id, filters)
+    where, params = build_filter_clause(user_id, filters, company_id=company_id)
 
     stats = {}
 
@@ -1440,7 +1827,10 @@ def get_summary_stats(user_id, filters=None):
     return stats
 
 
-def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=0, is_business=0, is_transfer=0, priority=50):
+def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=0, is_business=0, is_transfer=0, priority=50, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
     
@@ -1448,7 +1838,7 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
     pattern = pattern.upper()
     
     # Check if a rule for this pattern already exists for the user
-    cursor.execute("SELECT id, category, priority, hit_count FROM category_rules WHERE user_id = ? AND pattern = ?", (user_id, pattern))
+    cursor.execute("SELECT id, category, priority, hit_count FROM category_rules WHERE user_id = ? AND company_id = ? AND pattern = ?", (user_id, company_id, pattern))
     existing_rule = cursor.fetchone()
     
     if existing_rule:
@@ -1513,18 +1903,21 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
     else:
         # Insert a fresh rule
         cursor.execute(
-            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)",
-            (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
+            "INSERT INTO category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)",
+            (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
         )
         
     conn.commit()
     conn.close()
 
 
-def get_category_rules(user_id):
+def get_category_rules(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM category_rules WHERE user_id = ? ORDER BY priority DESC, pattern", (user_id,))
+    cursor.execute("SELECT * FROM category_rules WHERE user_id = ? AND company_id = ? ORDER BY priority DESC, pattern", (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -1585,21 +1978,27 @@ def get_transactions_for_proof(user_id, document_id):
 
 # --- Case Notes ---
 
-def get_case_notes(user_id):
+def get_case_notes(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM case_notes WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
+    cursor.execute("SELECT * FROM case_notes WHERE user_id = ? AND company_id = ? ORDER BY updated_at DESC", (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
 
 
-def add_case_note(user_id, title, content, note_type='general', severity='info', linked_transaction_ids=None):
+def add_case_note(user_id, title, content, note_type='general', severity='info', linked_transaction_ids=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO case_notes (user_id, title, content, note_type, severity, linked_transaction_ids) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
+        "INSERT INTO case_notes (user_id, company_id, title, content, note_type, severity, linked_transaction_ids) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, company_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
     )
     note_id = cursor.lastrowid
     conn.commit()
@@ -1619,25 +2018,35 @@ def update_case_note(user_id, note_id, **fields):
     set_clauses.append("updated_at = CURRENT_TIMESTAMP")
     values.append(note_id)
     values.append(user_id)
-    cursor.execute(f"UPDATE case_notes SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ?", values)
+    
+    company_id = _get_active_company_id_shim()
+    values.append(company_id)
+    
+    cursor.execute(f"UPDATE case_notes SET {', '.join(set_clauses)} WHERE id = ? AND user_id = ? AND company_id = ?", values)
     conn.commit()
     conn.close()
 
 
-def delete_case_note(user_id, note_id):
+def delete_case_note(user_id, note_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM case_notes WHERE id = ? AND user_id = ?", (note_id, user_id))
+    cursor.execute("DELETE FROM case_notes WHERE id = ? AND user_id = ? AND company_id = ?", (note_id, user_id, company_id))
     conn.commit()
     conn.close()
 
 
 # --- Saved Filters ---
 
-def get_saved_filters(user_id):
+def get_saved_filters(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM saved_filters WHERE user_id = ? ORDER BY name", (user_id,))
+    cursor.execute("SELECT * FROM saved_filters WHERE user_id = ? AND company_id = ? ORDER BY name", (user_id, company_id))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -1840,22 +2249,26 @@ def get_document_extraction(user_id, document_id):
     conn.close()
     return dict(row) if row else None
 
-def get_taxonomy_config(user_id):
+def get_taxonomy_config(user_id, company_id=None):
     """Fetches the taxonomy configuration as a list of dicts."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM taxonomy_config WHERE user_id = ? ORDER BY category_type, severity DESC", (user_id,))
+    cursor.execute("SELECT * FROM taxonomy_config WHERE user_id = ? AND company_id = ? ORDER BY category_type, severity DESC", (user_id, company_id))
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
-def add_taxonomy_config(user_id, name, description, category_type, severity):
+def add_taxonomy_config(user_id, name, description, category_type, severity, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO taxonomy_config (user_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?)",
-            (user_id, name, description, category_type, severity)
+            "INSERT INTO taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, company_id, name, description, category_type, severity)
         )
         _id = cursor.lastrowid
         conn.commit()
@@ -1865,10 +2278,12 @@ def add_taxonomy_config(user_id, name, description, category_type, severity):
     finally:
         conn.close()
 
-def delete_taxonomy_config(user_id, tax_id):
+def delete_taxonomy_config(user_id, tax_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM taxonomy_config WHERE id = ? AND user_id = ?", (tax_id, user_id))
+    cursor.execute("DELETE FROM taxonomy_config WHERE id = ? AND user_id = ? AND company_id = ?", (tax_id, user_id, company_id))
     conn.commit()
     conn.close()
 
@@ -1913,23 +2328,29 @@ def get_document_categorization(user_id, document_id):
 
 # --- Integrations ---
 
-def get_integration(user_id, provider):
+def get_integration(user_id, provider, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM integrations WHERE user_id = ? AND provider = ?", (user_id, provider))
+    cursor.execute("SELECT * FROM integrations WHERE user_id = ? AND company_id = ? AND provider = ?", (user_id, company_id, provider))
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
 
-def get_integrations(user_id):
+def get_integrations(user_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM integrations WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT * FROM integrations WHERE user_id = ? AND company_id = ?", (user_id, company_id))
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
-def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None):
+def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
     
@@ -1941,10 +2362,10 @@ def upsert_integration(user_id, provider, status='Connected', scopes=None, acces
         
     cursor.execute("""
         INSERT INTO integrations (
-            user_id, provider, status, scopes, access_token, refresh_token,
+            user_id, company_id, provider, status, scopes, access_token, refresh_token,
             expires_at, metadata, connected_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, provider) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(company_id, provider) DO UPDATE SET
             status = excluded.status,
             scopes = excluded.scopes,
             access_token = excluded.access_token,
@@ -1952,18 +2373,23 @@ def upsert_integration(user_id, provider, status='Connected', scopes=None, acces
             expires_at = excluded.expires_at,
             metadata = excluded.metadata,
             updated_at = CURRENT_TIMESTAMP
-    """, (user_id, provider, status, scopes, access_token, refresh_token, expires_at, metadata))
+    """, (user_id, company_id, provider, status, scopes, access_token, refresh_token, expires_at, metadata))
     conn.commit()
     conn.close()
 
-def delete_integration(user_id, provider):
+def delete_integration(user_id, provider, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM integrations WHERE user_id = ? AND provider = ?", (user_id, provider))
+    cursor.execute("DELETE FROM integrations WHERE user_id = ? AND company_id = ? AND provider = ?", (user_id, company_id, provider))
     conn.commit()
     conn.close()
 
-def seed_taxonomy(user_id, passed_cursor=None):
+def seed_taxonomy(user_id, passed_cursor=None, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
+        
     if passed_cursor:
         cursor = passed_cursor
         conn = None
@@ -1971,7 +2397,7 @@ def seed_taxonomy(user_id, passed_cursor=None):
         conn = get_db()
         cursor = conn.cursor()
         
-    cursor.execute("SELECT id FROM categories WHERE user_id = ? LIMIT 1", (user_id,))
+    cursor.execute("SELECT id FROM categories WHERE user_id = ? AND company_id = ? LIMIT 1", (user_id, company_id))
     if cursor.fetchone():
         if conn: conn.close()
         return
@@ -2006,8 +2432,8 @@ def seed_taxonomy(user_id, passed_cursor=None):
 
     for cat in default_categories:
         cursor.execute(
-            "INSERT INTO categories (user_id, name, parent_category, category_type, color, icon) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id,) + cat
+            "INSERT INTO categories (user_id, company_id, name, parent_category, category_type, color, icon) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, company_id) + cat
         )
 
     default_rules = [
@@ -2055,39 +2481,45 @@ def seed_taxonomy(user_id, passed_cursor=None):
 
     for rule in default_rules:
         cursor.execute(
-            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id,) + rule
+            "INSERT INTO category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, company_id) + rule
         )
             
     if conn:
         conn.commit()
         conn.close()
 
-def delete_category(user_id, category_id):
+def delete_category(user_id, category_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM categories WHERE id = ? AND user_id = ?", (category_id, user_id))
+    cursor.execute("DELETE FROM categories WHERE id = ? AND user_id = ? AND company_id = ?", (category_id, user_id, company_id))
     conn.commit()
     conn.close()
 
-def delete_category_rule(user_id, rule_id):
+def delete_category_rule(user_id, rule_id, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM category_rules WHERE id = ? AND user_id = ?", (rule_id, user_id))
+    cursor.execute("DELETE FROM category_rules WHERE id = ? AND user_id = ? AND company_id = ?", (rule_id, user_id, company_id))
     conn.commit()
     conn.close()
 
-def reset_user_taxonomy(user_id):
+def reset_user_taxonomy(user_id, company_id=None):
     """Wipes the user's categories and rules, then reseeds the standard 25 names."""
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM categories WHERE user_id = ?", (user_id,))
-    cursor.execute("DELETE FROM category_rules WHERE user_id = ?", (user_id,))
+    cursor.execute("DELETE FROM categories WHERE user_id = ? AND company_id = ?", (user_id, company_id))
+    cursor.execute("DELETE FROM category_rules WHERE user_id = ? AND company_id = ?", (user_id, company_id))
     conn.commit()
     conn.close()
     
     # Now call seed_taxonomy logic to inject the default setup
-    seed_taxonomy(user_id)
+    seed_taxonomy(user_id, company_id=company_id)
 
 # --- Internet Lookup Cache ---
 

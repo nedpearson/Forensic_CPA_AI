@@ -25,7 +25,22 @@ def seed_demo_environment():
         return
         
     print(f"Isolated demo tenant initialized (User ID: {user_id})")
-    database.seed_taxonomy(user_id)
+    
+    conn = database.get_db()
+    cursor = conn.cursor()
+    
+    # 1.5 Ensure active company context
+    cursor.execute("SELECT company_id FROM company_memberships WHERE user_id = ? AND is_default = 1", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        company_id = row['company_id']
+    else:
+        cursor.execute("INSERT INTO companies (name, created_by, owner_user_id) VALUES (?, ?, ?)", ("Demo Company", user_id, user_id))
+        company_id = cursor.lastrowid
+        cursor.execute("INSERT INTO company_memberships (user_id, company_id, role, is_default) VALUES (?, ?, 'owner', 1)", (user_id, company_id))
+        conn.commit()
+
+    database.seed_taxonomy(user_id, company_id=company_id)
     
     # 2. Add sample accounts
     accounts = scenario.get("accounts", [])
@@ -33,26 +48,24 @@ def seed_demo_environment():
     account_ids = {}
     for acc in accounts:
         acc_id = database.add_account(
-            user_id, acc["name"], acc["number"], acc["type"], acc["institution"]
+            user_id, acc["name"], acc["number"], acc["type"], acc["institution"], company_id=company_id
         )
         account_ids[acc["type"]] = acc_id
     
     # 3. Add sample taxonomy configs
     topics = scenario.get("taxonomy", [])
-    conn = database.get_db()
-    cursor = conn.cursor()
     for topic in topics:
         cursor.execute(
-            "INSERT INTO taxonomy_config (user_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?)",
-            (user_id, topic['name'], topic['description'], topic['category_type'], topic['severity'])
+            "INSERT INTO taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, company_id, topic['name'], topic['description'], topic['category_type'], topic['severity'])
         )
         
     # 4. Generate rules
     rules = scenario.get("category_rules", [])
     for rule in rules:
         cursor.execute(
-            "INSERT INTO category_rules (user_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, rule['pattern'], rule['category'], rule.get('subcategory', ''), rule.get('is_personal', 0), rule.get('is_business', 0), rule.get('is_transfer', 0), rule.get('priority', 0))
+            "INSERT INTO category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, company_id, rule['pattern'], rule['category'], rule.get('subcategory', ''), rule.get('is_personal', 0), rule.get('is_business', 0), rule.get('is_transfer', 0), rule.get('priority', 0))
         )
 
     # 5. Generate some realistic transactions over the last 6 months
@@ -70,12 +83,12 @@ def seed_demo_environment():
             # Use query builder directly
             cursor.execute("""
                 INSERT INTO transactions (
-                    user_id, account_id, trans_date, description, amount, trans_type, 
+                    user_id, company_id, account_id, trans_date, description, amount, trans_type, 
                     category, subcategory, payment_method, is_business, is_personal, 
                     is_transfer, cardholder_name, user_notes, is_flagged, flag_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                user_id, account_ids[tx["acc"]], tx_date, tx["desc"], tx["amount"], tx["type"],
+                user_id, company_id, account_ids[tx["acc"]], tx_date, tx["desc"], tx["amount"], tx["type"],
                 tx.get('category', 'Uncategorized'), tx.get('subcategory', ''), tx.get('payment_method', ''),
                 tx.get('is_business', 0), tx.get('is_personal', 0), tx.get('is_transfer', 0),
                 tx.get('cardholder_name', ''), tx.get('user_notes', ''),
@@ -88,12 +101,12 @@ def seed_demo_environment():
     if flagged:
         cursor.execute("""
             INSERT INTO transactions (
-                user_id, account_id, trans_date, description, amount, trans_type, 
+                user_id, company_id, account_id, trans_date, description, amount, trans_type, 
                 category, subcategory, payment_method, is_business, is_personal, 
                 is_transfer, cardholder_name, user_notes, is_flagged, flag_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            user_id, account_ids.get(flagged["acc"], account_ids.get('bank')), today.strftime('%Y-%m-%d'), 
+            user_id, company_id, account_ids.get(flagged["acc"], account_ids.get('bank')), today.strftime('%Y-%m-%d'), 
             flagged["desc"], flagged["amount"], flagged["type"],
             flagged.get('category', 'Uncategorized'), flagged.get('subcategory', ''), flagged.get('payment_method', ''),
             flagged.get('is_business', 0), flagged.get('is_personal', 0), flagged.get('is_transfer', 0),
@@ -116,7 +129,8 @@ def seed_demo_environment():
             doc_meta["doc_category"], 
             account_ids.get(doc_meta["account"], account_ids['bank']), 
             doc_meta["statement_start_date"], 
-            doc_meta["statement_end_date"]
+            doc_meta["statement_end_date"],
+            company_id=company_id
         )
 
     # Adding mock proof link just to populate the drill down
