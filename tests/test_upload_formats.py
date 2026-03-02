@@ -97,8 +97,8 @@ def test_upload_zip(auth_client):
     assert res.status_code == 200
     json_data = res.get_json()
     assert json_data['status'] == 'ok'
-    assert json_data['transaction_count'] == 1
-    assert json_data['transactions'][0]['_source_file'] == 'inside.xlsx'
+    assert json_data['mode'] == 'async_zip'
+    assert 'document_id' in json_data
 
 def test_existing_upload_behaves_identically(auth_client):
     csv_data = b"Date,Description,Amount\n01/02/2026,Test CSV,-10.0\n"

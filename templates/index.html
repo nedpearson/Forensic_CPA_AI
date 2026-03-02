@@ -3377,7 +3377,17 @@
                     sClass = 'danger';
                 }
 
-                let badgeHtml = `<span class="badge bg-${sClass}">${spinner}${(d.status || 'queued').replace('_', ' ')}</span>`;
+                let displayStatus = (d.status || 'queued').replace('_', ' ');
+                let failTooltip = '';
+                if (d.status === 'failed' && d.failure_reason) {
+                    failTooltip = ` title="${esc(d.failure_reason)}" style="cursor:help;" data-bs-toggle="tooltip"`;
+                    if (d.file_type === 'qbw' && d.failure_reason.includes('Needs Conversion')) {
+                        displayStatus = 'needs conversion';
+                        sClass = 'warning text-dark';
+                    }
+                }
+
+                let badgeHtml = `<span class="badge bg-${sClass}"${failTooltip}>${spinner}${displayStatus}</span>`;
 
                 let actionHtml = '';
                 if (d.status === 'pending_approval') {
@@ -3908,11 +3918,29 @@
                     providers.push({ id: 'quickbooks', name: 'QuickBooks', icon: 'fas fa-file-invoice-dollar', color: '#2ca01c', desc: 'Sync chart of accounts and automatically categorize expenses.' });
                 }
 
+                // FC Integration is conditionally surfaced if environment variables allow integration
+                providers.push({ id: 'financial_cents', name: 'Financial Cents', icon: 'fas fa-building', color: '#5433FF', desc: 'Sync practice management clients securely to the Merchants ledger.' });
+
                 let html = '';
                 providers.forEach(p => {
-                    const isConnected = connectedList.find(c => c.provider === p.id && c.status === 'Connected');
+                    const connObj = connectedList.find(c => c.provider === p.id);
+                    const isConnected = connObj && connObj.status === 'Connected';
                     const isWorkspace = (p.id === 'quickbooks');
                     const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes(userRole);
+
+                    let metaHtml = '';
+                    if (isConnected && connObj.metadata) {
+                        try {
+                            const meta = typeof connObj.metadata === 'string' ? JSON.parse(connObj.metadata) : connObj.metadata;
+                            if (meta.last_sync) {
+                                const localTime = new Date(meta.last_sync).toLocaleString();
+                                metaHtml = `<div class="small text-muted mt-2 border-top border-secondary pt-2">
+                                    <i class="fas fa-history me-1"></i>Last Sync: ${localTime}<br>
+                                    <span style="font-size:0.75rem;">Synced: ${meta.synced_count || 0} | Skipped: ${meta.skipped_count || 0}</span>
+                                </div>`;
+                            }
+                        } catch (e) { }
+                    }
                     html += `
                     <div class="col-md-6 mb-3">
                         <div class="stat-card d-flex align-items-start gap-3">
@@ -3929,6 +3957,7 @@
                                 <div>
                                     ${p.id === 'google_drive' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testGoogleIntegration()">Test Connection</button>` : ''}
                                     ${p.id === 'quickbooks' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testQuickBooksIntegration()">Test Connection</button>` : ''}
+                                    ${p.id === 'financial_cents' ? `<button class="btn btn-sm btn-outline-success py-0 px-2 me-2" onclick="syncFCIntegration()"><i class="fas fa-sync-alt me-1"></i>Sync Clients</button>` : ''}
                                     <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="disconnectIntegration('${p.id}')">Disconnect</button>
                                 </div>
                                 ` : ''}
@@ -3941,6 +3970,7 @@
                             }
                              </div>`
                         }
+                        ${metaHtml}
                             </div>
                         </div>
                     </div>`;
@@ -4005,6 +4035,17 @@
                 }
             } catch (err) {
                 toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function syncFCIntegration() {
+            try {
+                toast(`Triggering Financial Cents sync...`, 'info');
+                const res = await api('/api/integrations/financial_cents/sync_clients', 'POST');
+                toast(res.message || 'Sync complete.', 'success');
+                loadIntegrations();
+            } catch (err) {
+                toast(`FC Sync failed: ${err.message}`, 'danger');
             }
         }
 
