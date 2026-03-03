@@ -234,7 +234,7 @@ def assess_controls(user_id: int, company_id: int) -> List[Dict[str, Any]]:
 
     try:
         # Segregation of duties: Admin overrides on manually edited transactions
-        cursor.execute(f"SELECT id, description, amount FROM transactions {where} AND is_edited = 1", params)
+        cursor.execute(f"SELECT id, description, amount FROM transactions {where} AND manually_edited = 1", params)
         manual_overrides = cursor.fetchall()
         if len(manual_overrides) > 10:
             evidence = [{"type": "transaction", "id": r['id'], "amount": r['amount']} for r in manual_overrides[:3]]
@@ -309,7 +309,8 @@ def calculate_risk_scores(user_id: int, company_id: int, all_findings: List[Dict
     scores["vendor_risk"] = round(scores["vendor_risk"], 1)
     
     # Drop internal confidence if no data triggered
-    if sum(scores.values()) if any(isinstance(v, (int, float)) for v in scores.values()) else 0 == 0:
+    total_score = sum(v for v in scores.values() if isinstance(v, (int, float)))
+    if total_score == 0:
         scores["overall_confidence"] = "LOW (Dataset too sparse)"
 
     return scores

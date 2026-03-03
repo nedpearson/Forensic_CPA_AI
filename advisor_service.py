@@ -35,16 +35,16 @@ def get_advisor_aggregation_payload(user_id: int, company_id: int) -> Dict[str, 
 
         # 2. Gather Document Metadata (Deterministic Context)
         if company_id:
-            cursor.execute("SELECT id as document_id, filename, file_type, statement_start_date, statement_end_date, created_at FROM documents WHERE company_id = ?", (company_id,))
+            cursor.execute("SELECT id as document_id, filename, file_type, statement_start_date, statement_end_date, upload_date FROM documents WHERE company_id = ?", (company_id,))
         else:
-            cursor.execute("SELECT id as document_id, filename, file_type, statement_start_date, statement_end_date, created_at FROM documents WHERE user_id = ? AND company_id IS NULL", (user_id,))
+            cursor.execute("SELECT id as document_id, filename, file_type, statement_start_date, statement_end_date, upload_date FROM documents WHERE user_id = ? AND company_id IS NULL", (user_id,))
         payload['documents'] = [dict(row) for row in cursor.fetchall()]
 
         # 3. Gather Account Structures
         if company_id:
-            cursor.execute("SELECT id as account_id, name, type, institution FROM accounts WHERE company_id = ?", (company_id,))
+            cursor.execute("SELECT id as account_id, account_name as name, account_type as type, institution FROM accounts WHERE company_id = ?", (company_id,))
         else:
-            cursor.execute("SELECT id as account_id, name, type, institution FROM accounts WHERE user_id = ? AND company_id IS NULL", (user_id,))
+            cursor.execute("SELECT id as account_id, account_name as name, account_type as type, institution FROM accounts WHERE user_id = ? AND company_id IS NULL", (user_id,))
         payload['accounts'] = [dict(row) for row in cursor.fetchall()]
 
         # 4. Gather Flagged / Critical Transactions (Limited to 200 for token safety)
