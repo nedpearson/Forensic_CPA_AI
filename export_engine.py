@@ -3,7 +3,6 @@ import io
 from datetime import datetime
 from fpdf import FPDF
 from docx import Document
-from report_builder import generate_advisor_report
 from database import get_advisor_finding_by_id
 
 class PDFReport(FPDF):
@@ -19,109 +18,283 @@ class PDFReport(FPDF):
         self.set_font('Helvetica', 'I', 8)
         self.cell(0, 10, f'Page {self.page_no()}', border=0, new_x="LMARGIN", new_y="NEXT", align='C')
 
-def generate_pdf_export(report_data: dict) -> bytes:
+def _add_markdown_text(pdf_obj, text: str):
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            pdf_obj.ln(4)
+            continue
+        
+        if line.startswith('### '):
+            pdf_obj.set_font("Helvetica", 'B', 12)
+            pdf_obj.multi_cell(0, 8, line[4:].replace('**', ''))
+            pdf_obj.set_font("Helvetica", '', 10)
+        elif line.startswith('## '):
+            pdf_obj.set_font("Helvetica", 'B', 14)
+            pdf_obj.multi_cell(0, 10, line[3:].replace('**', ''))
+            pdf_obj.set_font("Helvetica", '', 10)
+        else:
+            clean_line = line.replace('**', '')
+            pdf_obj.multi_cell(0, 6, clean_line)
+
+def generate_pdf_export(report_data: dict, mode: str = 'client') -> bytes:
     pdf = PDFReport()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Metadata
+    # Check if this is the new premium report contract
+    is_premium = 'financial_statements_snapshot' in report_data
+    
     pdf.set_font("Helvetica", size=10)
-    generated_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    generated_at = report_data.get('generated_at', datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'))
     company_id = report_data.get('company_id', 'Unknown')
-    mode = report_data.get('mode', 'client').title()
+    actual_mode = report_data.get('mode', mode).title()
     
     pdf.cell(0, 6, f"Company ID: {company_id}", border=0, new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Report Mode: {mode}-Facing", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Report Mode: {actual_mode}-Facing", border=0, new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Generated At: {generated_at}", border=0, new_x="LMARGIN", new_y="NEXT")
-    if 'date_range' in report_data:
+    
+    if is_premium:
+        pdf.cell(0, 6, f"Date Range: {report_data.get('period_start', 'N/A')} to {report_data.get('period_end', 'N/A')}", border=0, new_x="LMARGIN", new_y="NEXT")
+    elif 'date_range' in report_data:
         pdf.cell(0, 6, f"Date Range: {report_data['date_range']}", border=0, new_x="LMARGIN", new_y="NEXT")
+        
     if 'analysis_run_id' in report_data:
         pdf.cell(0, 6, f"Run ID: {report_data['analysis_run_id']}", border=0, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
     
-    def _add_markdown_text(pdf_obj, text: str):
-        # Extremely basic markdown to FPDF converter.
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                pdf_obj.ln(4)
-                continue
+    if not is_premium:
+        # Legacy export
+        pdf.set_font("Helvetica", 'B', 14)
+        pdf.cell(0, 10, "Executive Summary", border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", '', 10)
+        _add_markdown_text(pdf, report_data.get("executive_summary", ""))
+        pdf.ln(10)
+        
+        for section in report_data.get("detailed_findings", []):
+            pdf.add_page()
+            pdf.set_font("Helvetica", 'B', 14)
+            pdf.cell(0, 10, section.get("category", "Findings"), border=0, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", '', 10)
+            _add_markdown_text(pdf, section.get("content", ""))
             
-            if line.startswith('### '):
-                pdf_obj.set_font("Helvetica", 'B', 12)
-                pdf_obj.multi_cell(0, 8, line[4:].replace('**', ''))
-                pdf_obj.set_font("Helvetica", '', 10)
-            elif line.startswith('## '):
-                pdf_obj.set_font("Helvetica", 'B', 14)
-                pdf_obj.multi_cell(0, 10, line[3:].replace('**', ''))
-                pdf_obj.set_font("Helvetica", '', 10)
-            else:
-                # remove bold markdown since fpdf2 multi_cell handles markdown if we use HTML, but using basic text here
-                clean_line = line.replace('**', '')
-                pdf_obj.multi_cell(0, 6, clean_line)
+        pdf.add_page()
+        pdf.set_font("Helvetica", 'B', 14)
+        pdf.cell(0, 10, "Appendix & Transcripts", border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", '', 10)
+        _add_markdown_text(pdf, report_data.get("appendix", ""))
+        
+        return bytes(pdf.output())
 
-    # Executive Summary
+    # Premium Contract Export
     pdf.set_font("Helvetica", 'B', 14)
     pdf.cell(0, 10, "Executive Summary", border=0, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", '', 10)
-    _add_markdown_text(pdf, report_data.get("executive_summary", ""))
+    summary_text = report_data.get("client_mode_summary", "") if actual_mode.lower() == 'client' else report_data.get("auditor_mode_summary", "")
+    _add_markdown_text(pdf, summary_text)
     pdf.ln(10)
-    
+
+    # Financial Snapshot
+    fs = report_data.get("financial_statements_snapshot", {})
+    pdf.set_font("Helvetica", 'B', 12)
+    pdf.cell(0, 8, "Financial Statements Proxy Snapshot", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", '', 10)
+    pnl = fs.get("pnl_summary", {})
+    pdf.cell(0, 6, f"Total Revenue: ${pnl.get('total_revenue', 0):,.2f}", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Total Expenses: ${pnl.get('total_expenses', 0):,.2f}", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Net Income Proxy: ${pnl.get('net_income_proxy', 0):,.2f}", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+
+    cf = fs.get("cash_flow_summary", {})
+    pdf.cell(0, 6, f"Net Operating Cash Flow Proxy: ${cf.get('net_operating', 0):,.2f}", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    pdf.multi_cell(0, 6, f"Note: {fs.get('bs_summary', {}).get('note', '')}")
+    pdf.ln(5)
+
+    # Risk Register
+    pdf.set_font("Helvetica", 'B', 12)
+    pdf.cell(0, 8, "Risk Register", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", '', 10)
+    for risk in report_data.get("risk_register", []):
+        sev = risk.get('severity', 'info').upper()
+        conf = risk.get('confidence', 0)
+        title = risk.get('title', 'Unknown Risk')
+        pdf.cell(0, 6, f"[{sev}] {title} (Confidence: {conf}%)", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+
     # Detailed Findings
-    for section in report_data.get("detailed_findings", []):
+    pdf.add_page()
+    pdf.set_font("Helvetica", 'B', 14)
+    pdf.cell(0, 10, "Detailed Findings", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    for f in report_data.get("detailed_findings", []):
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(0, 8, f"{f.get('title')} ({f.get('severity', 'info').upper()})", border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", '', 10)
+        pdf.multi_cell(0, 6, f"Plain English: {f.get('plain_english_explanation', '')}")
+        
+        if actual_mode.lower() == 'auditor' and f.get('auditor_rationale'):
+            pdf.ln(2)
+            pdf.set_font("Helvetica", 'I', 10)
+            pdf.multi_cell(0, 6, f"Auditor Rationale: {f.get('auditor_rationale', '')}")
+            pdf.set_font("Helvetica", '', 10)
+            
+        if f.get('recommended_fixes'):
+            pdf.ln(2)
+            pdf.multi_cell(0, 6, f"Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
+            
+        if f.get('next_steps_requests'):
+            pdf.ln(2)
+            pdf.multi_cell(0, 6, f"Next Step: {f.get('next_steps_requests', '')}")
+            
+        pdf.ln(8)
+
+    # Exhibits
+    if report_data.get('exhibits'):
         pdf.add_page()
         pdf.set_font("Helvetica", 'B', 14)
-        pdf.cell(0, 10, section.get("category", "Findings"), border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Exhibits", border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
         pdf.set_font("Helvetica", '', 10)
-        _add_markdown_text(pdf, section.get("content", ""))
-        
+        for exh in report_data.get('exhibits', []):
+            pdf.set_font("Helvetica", 'B', 11)
+            pdf.cell(0, 6, exh.get('title', ''), border=0, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", '', 10)
+            pdf.multi_cell(0, 6, exh.get('description', ''))
+            pdf.ln(4)
+            
+    # Internal Controls
+    if report_data.get('internal_controls_section'):
+        ic = report_data.get('internal_controls_section', {})
+        pdf.add_page()
+        pdf.set_font("Helvetica", 'B', 14)
+        pdf.cell(0, 10, "Internal Controls", border=0, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+        pdf.set_font("Helvetica", '', 10)
+        pdf.multi_cell(0, 6, ic.get('summary', ''))
+        pdf.ln(5)
+        if ic.get('deficiencies'):
+            pdf.cell(0, 6, "Deficiencies:", border=0, new_x="LMARGIN", new_y="NEXT")
+            for d in ic.get('deficiencies', []):
+                pdf.multi_cell(0, 6, f"- {d}")
+
     # Appendix
     pdf.add_page()
     pdf.set_font("Helvetica", 'B', 14)
-    pdf.cell(0, 10, "Appendix & Transcripts", border=0, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "Audit-Ready Appendix", border=0, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", '', 10)
-    _add_markdown_text(pdf, report_data.get("appendix", ""))
+    pdf.ln(5)
+    _add_markdown_text(pdf, report_data.get("audit_ready_appendix", {}).get('note', ''))
     
     return bytes(pdf.output())
 
+def _add_markdown_doc(document, text: str):
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('### '):
+            document.add_heading(line[4:].replace('**', ''), level=3)
+        elif line.startswith('## '):
+            document.add_heading(line[3:].replace('**', ''), level=2)
+        else:
+            p = document.add_paragraph(line.replace('**', ''))
 
-def generate_docx_export(report_data: dict) -> bytes:
+def generate_docx_export(report_data: dict, mode: str = 'client') -> bytes:
     doc = Document()
     doc.add_heading('Forensic AI Audit Report', 0)
     
-    generated_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    doc.add_paragraph(f"Company ID: {report_data.get('company_id', 'Unknown')}")
-    doc.add_paragraph(f"Report Mode: {report_data.get('mode', 'client').title()}-Facing")
+    is_premium = 'financial_statements_snapshot' in report_data
+    generated_at = report_data.get('generated_at', datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'))
+    company_id = report_data.get('company_id', 'Unknown')
+    actual_mode = report_data.get('mode', mode).title()
+    
+    doc.add_paragraph(f"Company ID: {company_id}")
+    doc.add_paragraph(f"Report Mode: {actual_mode}-Facing")
     doc.add_paragraph(f"Generated At: {generated_at}")
-    if 'date_range' in report_data:
+    
+    if is_premium:
+        doc.add_paragraph(f"Date Range: {report_data.get('period_start', 'N/A')} to {report_data.get('period_end', 'N/A')}")
+    elif 'date_range' in report_data:
         doc.add_paragraph(f"Date Range: {report_data['date_range']}")
+        
     if 'analysis_run_id' in report_data:
         doc.add_paragraph(f"Run ID: {report_data['analysis_run_id']}")
         
-    def _add_markdown_doc(document, text: str):
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith('### '):
-                document.add_heading(line[4:].replace('**', ''), level=3)
-            elif line.startswith('## '):
-                document.add_heading(line[3:].replace('**', ''), level=2)
-            else:
-                p = document.add_paragraph(line.replace('**', ''))
-    
-    doc.add_heading('Executive Summary', level=1)
-    _add_markdown_doc(doc, report_data.get("executive_summary", ""))
-    
-    for section in report_data.get("detailed_findings", []):
+    if not is_premium:
+        doc.add_heading('Executive Summary', level=1)
+        _add_markdown_doc(doc, report_data.get("executive_summary", ""))
+        
+        for section in report_data.get("detailed_findings", []):
+            doc.add_page_break()
+            doc.add_heading(section.get("category", "Findings"), level=1)
+            _add_markdown_doc(doc, section.get("content", ""))
+            
         doc.add_page_break()
-        doc.add_heading(section.get("category", "Findings"), level=1)
-        _add_markdown_doc(doc, section.get("content", ""))
+        doc.add_heading('Appendix & Transcripts', level=1)
+        _add_markdown_doc(doc, report_data.get("appendix", ""))
+        
+        f = io.BytesIO()
+        doc.save(f)
+        return f.getvalue()
+
+    # Premium Report Mapping
+    doc.add_heading('Executive Summary', level=1)
+    summary_text = report_data.get("client_mode_summary", "") if actual_mode.lower() == 'client' else report_data.get("auditor_mode_summary", "")
+    _add_markdown_doc(doc, summary_text)
+    
+    fs = report_data.get("financial_statements_snapshot", {})
+    doc.add_heading('Financial Statements Proxy Snapshot', level=2)
+    pnl = fs.get("pnl_summary", {})
+    doc.add_paragraph(f"Total Revenue: ${pnl.get('total_revenue', 0):,.2f}")
+    doc.add_paragraph(f"Total Expenses: ${pnl.get('total_expenses', 0):,.2f}")
+    doc.add_paragraph(f"Net Income Proxy: ${pnl.get('net_income_proxy', 0):,.2f}")
+    
+    cf = fs.get("cash_flow_summary", {})
+    doc.add_paragraph(f"Net Operating Cash Flow Proxy: ${cf.get('net_operating', 0):,.2f}")
+    doc.add_paragraph(f"Note: {fs.get('bs_summary', {}).get('note', '')}")
+    
+    doc.add_heading('Risk Register', level=2)
+    for risk in report_data.get("risk_register", []):
+        sev = risk.get('severity', 'info').upper()
+        conf = risk.get('confidence', 0)
+        title = risk.get('title', 'Unknown Risk')
+        doc.add_paragraph(f"[{sev}] {title} (Confidence: {conf}%)")
         
     doc.add_page_break()
-    doc.add_heading('Appendix & Transcripts', level=1)
-    _add_markdown_doc(doc, report_data.get("appendix", ""))
-    
+    doc.add_heading('Detailed Findings', level=1)
+    for f in report_data.get("detailed_findings", []):
+        doc.add_heading(f"{f.get('title')} ({f.get('severity', 'info').upper()})", level=2)
+        doc.add_paragraph(f"Plain English: {f.get('plain_english_explanation', '')}")
+        if actual_mode.lower() == 'auditor' and f.get('auditor_rationale'):
+            doc.add_paragraph(f"Auditor Rationale: {f.get('auditor_rationale', '')}")
+        if f.get('recommended_fixes'):
+            doc.add_paragraph(f"Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
+        if f.get('next_steps_requests'):
+            doc.add_paragraph(f"Next Step: {f.get('next_steps_requests', '')}")
+
+    if report_data.get('exhibits'):
+        doc.add_page_break()
+        doc.add_heading('Exhibits', level=1)
+        for exh in report_data.get('exhibits', []):
+            doc.add_heading(exh.get('title', ''), level=2)
+            doc.add_paragraph(exh.get('description', ''))
+            
+    if report_data.get('internal_controls_section'):
+        ic = report_data.get('internal_controls_section', {})
+        doc.add_page_break()
+        doc.add_heading('Internal Controls', level=1)
+        doc.add_paragraph(ic.get('summary', ''))
+        if ic.get('deficiencies'):
+            doc.add_paragraph("Deficiencies:")
+            for d in ic.get('deficiencies', []):
+                doc.add_paragraph(f"- {d}")
+                
+    doc.add_page_break()
+    doc.add_heading('Audit-Ready Appendix', level=1)
+    _add_markdown_doc(doc, report_data.get("audit_ready_appendix", {}).get('note', ''))
+
     f = io.BytesIO()
     doc.save(f)
     return f.getvalue()
@@ -131,7 +304,6 @@ def build_finding_report(company_id: int, finding_id: str, mode: str = 'client')
     if not f:
         return {}
     
-    # Render into minimal report structure compatible with our doc generators
     ev_graph = f.get('evidence_graph', [])
     ev_str = ", ".join([f"[EVID-{e['type']}-{e['id']}]" for e in ev_graph if 'id' in e])
     

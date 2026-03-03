@@ -3598,11 +3598,15 @@ def api_export_audit_report():
     mode = request.args.get('mode', 'client')
     fmt = request.args.get('format', 'pdf').lower()
     
-    from report_builder import generate_advisor_report
-    report_data = generate_advisor_report(company_id, mode)
-    
-    if report_data.get('status') == 'empty':
-        return jsonify(report_data), 400
+    from advisor_report_contract import build_premium_client_report
+    try:
+        report_data = build_premium_client_report(company_id)
+        report_data['mode'] = mode
+        
+        if not report_data.get('analysis_run_id') or report_data['analysis_run_id'] == 'N/A' or not report_data.get('detailed_findings'):
+            return jsonify({'status': 'empty', 'message': 'No findings available to export.'}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
         
     import io
     from flask import send_file

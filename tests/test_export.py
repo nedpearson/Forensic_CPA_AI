@@ -13,9 +13,17 @@ def client():
         yield client
 
 def setup_mock_data():
+    from database import init_db
+    init_db()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO advisor_findings (company_id, analysis_run_id, title, category, severity, plain_english_explanation, forensic_rationale) VALUES (1, 'RUN-1234', 'Test Finding', 'key_findings', 'high', 'Simple words', 'Complex words')")
+    cursor.execute("DELETE FROM advisor_findings WHERE analysis_run_id = 'RUN-999'")
+    cursor.execute("""
+        INSERT INTO advisor_findings 
+        (company_id, finding_id, analysis_run_id, category, severity, confidence, title, plain_english_explanation, forensic_rationale) 
+        VALUES 
+        (1, 'finding-101', 'RUN-999', 'category-A', 'danger', 95, 'Critical Contract Anomaly', 'Client description', 'Auditor rationale')
+    """)
     conn.commit()
     conn.close()
 
@@ -27,19 +35,16 @@ def test_export_audit_report_pdf(client):
     assert b'PDF' in res.data[0:10]
 
 def test_export_audit_report_docx(client):
+    setup_mock_data()
     res = client.get('/api/export/audit_report?format=docx&mode=auditor')
     assert res.status_code == 200
     assert 'wordprocessingml.document' in res.headers['Content-Type']
     assert len(res.data) > 0
     
 def test_export_single_finding(client):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM advisor_findings WHERE company_id=1 LIMIT 1")
-    f_id = cursor.fetchone()['id']
-    conn.close()
+    setup_mock_data()
     
-    res = client.get(f'/api/export/finding/{f_id}?format=pdf&mode=client')
+    res = client.get(f'/api/export/finding/finding-101?format=pdf&mode=client')
     assert res.status_code == 200
     assert res.headers['Content-Type'] == 'application/pdf'
     assert len(res.data) > 0
