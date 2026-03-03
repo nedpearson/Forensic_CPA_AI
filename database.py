@@ -128,11 +128,7 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        -- Safe migration injected for Phase 9D: add new column to existing local tables without crashing
-        try:
-            cursor.execute("ALTER TABLE advisor_company_state ADD COLUMN last_result_json TEXT")
-        except sqlite3.OperationalError:
-            pass # Column exists
+
 
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
