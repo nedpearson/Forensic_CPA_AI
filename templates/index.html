@@ -5255,7 +5255,7 @@
 
         // ===== INIT =====
         (async () => {
-            fetchUserProfile();
+            await fetchUserProfile();
             allCategories = await api('/api/categories');
             loadDashboard();
             updateAlertBadge();
