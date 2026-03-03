@@ -3490,6 +3490,87 @@ def api_remediation_tasks():
     tasks = get_remediation_tasks(company_id)
     return jsonify({"status": "success", "data": tasks})
 
+# ==========================================================
+# PHASE 1: PREMIUM AUDIT REPORT CONTRACT ENDPOINTS
+# ==========================================================
+
+@app.route('/api/advisor/report/contract', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_report_contract():
+    company_id = session.get('active_company_id')
+    from advisor_report_contract import build_premium_client_report
+    contract = build_premium_client_report(company_id)
+    return jsonify({"status": "success", "data": contract})
+
+@app.route('/api/advisor/report/summary', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_report_summary():
+    company_id = session.get('active_company_id')
+    mode = request.args.get('mode', 'client')
+    from advisor_report_contract import build_premium_client_report
+    contract = build_premium_client_report(company_id)
+    
+    summary = {
+        "report_id": contract["report_id"],
+        "company_id": contract["company_id"],
+        "analysis_run_id": contract["analysis_run_id"],
+        "period_start": contract["period_start"],
+        "period_end": contract["period_end"],
+        "summary_text": contract["client_mode_summary"] if mode == 'client' else contract["auditor_mode_summary"],
+        "financial_statements_snapshot": contract["financial_statements_snapshot"],
+    }
+    return jsonify({"status": "success", "data": summary})
+
+@app.route('/api/advisor/report/sections', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_report_sections():
+    company_id = session.get('active_company_id')
+    from advisor_report_contract import build_premium_client_report
+    contract = build_premium_client_report(company_id)
+    
+    sections = {
+        "risk_register": contract["risk_register"],
+        "detailed_findings": contract["detailed_findings"],
+        "exhibits": contract["exhibits"],
+        "internal_controls_section": contract["internal_controls_section"],
+        "remediation_plan": contract["remediation_plan"]
+    }
+    return jsonify({"status": "success", "data": sections})
+
+@app.route('/api/advisor/report/appendix', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_report_appendix():
+    company_id = session.get('active_company_id')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 50))
+    offset = (page - 1) * per_page
+    
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT count(*) as total FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE company_id = ?)", (company_id,))
+    total = cursor.fetchone()['total']
+    
+    cursor.execute("SELECT * FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE company_id = ?) LIMIT ? OFFSET ?", (company_id, per_page, offset))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    
+    return jsonify({
+        "status": "success", 
+        "data": rows, 
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": (total + per_page - 1) // per_page
+        }
+    })
+
 @app.route('/api/remediation/tasks/<int:task_id>', methods=['PUT', 'PATCH'])
 @login_required
 @require_company_role(['owner', 'admin', 'operator'])
