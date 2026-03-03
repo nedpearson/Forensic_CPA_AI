@@ -1513,28 +1513,28 @@
                 <div class="col-md-3">
                     <div class="list-group list-group-flush bg-dark rounded border border-secondary" id="advisor-nav"
                         style="position: sticky; top: 20px;">
-                        <a href="#adv-exec-summary"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-exec-summary')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-clipboard-list fa-fw text-purple"></i> Executive Summary</a>
-                        <a href="#adv-financials"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-financials')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-chart-line fa-fw text-success"></i> Financials</a>
-                        <a href="#adv-risk-register"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-risk-register')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-exclamation-triangle fa-fw text-danger"></i> Risk Register</a>
-                        <a href="#adv-detailed"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-detailed')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-search fa-fw text-info"></i> Detailed Findings</a>
-                        <a href="#adv-exhibits"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-exhibits')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-project-diagram fa-fw text-warning"></i> Exhibits</a>
-                        <a href="#adv-controls"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-controls')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-shield-alt fa-fw text-primary"></i> Internal Controls</a>
-                        <a href="#adv-simulator"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-simulator')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-balance-scale fa-fw text-purple"></i> Scenario Engine</a>
-                        <a href="#adv-appendix"
+                        <a href="#" onclick="scrollToAdvSection(event, 'adv-appendix')"
                             class="list-group-item list-group-item-action bg-dark text-white border-secondary"><i
                                 class="fas fa-gavel fa-fw text-secondary"></i> Evidence Appendix</a>
                     </div>
@@ -5935,7 +5935,7 @@
                 let detHtml = '';
                 contract.detailed_findings.forEach(f => {
                     let badge = f.severity === 'danger' ? 'bg-danger' : (f.severity === 'warning' ? 'bg-warning text-dark' : 'bg-info');
-                    let rationaleText = mode === 'auditor' ? `<div class="p-3 bg-dark border-start border-3 border-secondary text-secondary small mt-3"><i class="fas fa-user-tie me-2"></i><strong>Auditor Rationale:</strong><br>${esc(f.auditor_rationale)}</div>` : '';
+                    let rationaleText = mode === 'auditor' ? `<div class="p-3 bg-dark border-start border-3 border-secondary text-light small mt-3"><i class="fas fa-user-tie me-2"></i><strong>Auditor Rationale:</strong><br>${esc(f.auditor_rationale)}</div>` : '';
 
                     detHtml += `
                     <div class="card bg-dark border-secondary mb-3" id="finding-${f.finding_id}">
@@ -5951,7 +5951,7 @@
                                 <ul class="text-muted small mb-0 ps-3">
                                     ${f.recommended_fixes.map(r => `<li>${esc(r)}</li>`).join('')}
                                 </ul>
-                                <div class="mt-2 pt-2 border-top border-secondary text-warning small"><i class="fas fa-fast-forward"></i> Next Step: ${esc(f.next_steps_requests)}</div>
+                                <div class="mt-2 pt-2 border-top border-secondary text-warning small fw-bold"><i class="fas fa-fast-forward"></i> Next Step: ${esc(f.next_steps_requests)}</div>
                             </div>
                         </div>
                     </div>
@@ -5965,7 +5965,7 @@
                     exhHtml += `
                     <div class="mb-3">
                         <h6 class="text-warning">${esc(e.title)}</h6>
-                        <p class="text-muted small mb-0">${esc(e.description)}</p>
+                        <p class="text-light small mb-0">${esc(e.description)}</p>
                     </div>
                 `;
                 });
@@ -5974,7 +5974,7 @@
                 // Controls
                 document.getElementById('adv-controls-content').innerHTML = `
                 <p class="text-light">${esc(contract.internal_controls_section.summary)}</p>
-                <div class="text-muted small"><strong>Deficiencies:</strong><ul class="ps-3 mb-0">${contract.internal_controls_section.deficiencies.map(d => `<li>${esc(d)}</li>`).join('')}</ul></div>
+                <div class="text-light small mt-2"><strong>Deficiencies:</strong><ul class="ps-3 mb-0">${contract.internal_controls_section.deficiencies.map(d => `<li>${esc(d)}</li>`).join('')}</ul></div>
             `;
 
                 // Load Appendix
@@ -6020,7 +6020,13 @@
             window.open('/api/export/audit_report?format=pdf&mode=' + mode, '_blank');
         }
 
-
+        window.scrollToAdvSection = function (e, id) {
+            e.preventDefault();
+            const target = document.getElementById(id);
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        };
 
         window.showFindingDrawer = function (encodedFinding) {
             const f = JSON.parse(decodeURIComponent(encodedFinding));
