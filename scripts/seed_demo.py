@@ -130,8 +130,12 @@ def seed_demo_environment():
             account_ids.get(doc_meta["account"], account_ids['bank']), 
             doc_meta["statement_start_date"], 
             doc_meta["statement_end_date"],
+            status='approved',
             company_id=company_id
         )
+        
+        # Inject realistic parsed UI counts so the table looks healthy
+        cursor.execute("UPDATE documents SET parsed_transaction_count = ?, import_transaction_count = ? WHERE id = ?", (records_inserted, records_inserted, doc_id))
 
     # Adding mock proof link just to populate the drill down
     if doc_id:

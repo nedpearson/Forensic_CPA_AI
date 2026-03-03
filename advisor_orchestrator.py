@@ -21,33 +21,33 @@ def run_advisor_orchestration(aggregated_payload: Dict[str, Any]) -> Dict[str, A
     all_findings = raw_fraud + raw_key + raw_red + raw_doc + raw_ctrl
     
     # Self-validation layer explicitly wrapping findings
-    fraud_flags = _validate_findings(raw_fraud, company_id)
-    key_finds = _validate_findings(raw_key, company_id)
-    red_flags = _validate_findings(raw_red, company_id)
-    doc_intel = _validate_findings(raw_doc, company_id)
-    controls = _validate_findings(raw_ctrl, company_id)
-    validated_scenarios = _validate_findings(run_scenarios(user_id, company_id, all_findings), company_id)
+    fraud_flags = _validate_findings(raw_fraud, company_id, "fraud_red_flags")
+    key_finds = _validate_findings(raw_key, company_id, "key_findings")
+    red_flags = _validate_findings(raw_red, company_id, "fraud_red_flags")
+    doc_intel = _validate_findings(raw_doc, company_id, "document_intelligence")
+    controls = _validate_findings(raw_ctrl, company_id, "internal_controls")
+    validated_scenarios = _validate_findings(run_scenarios(user_id, company_id, all_findings), company_id, "scenario_simulator")
 
     results = {
         "company_id": company_id,
         "executive_summary": _construct_executive_summary(aggregated_payload),
-        "fraud_red_flags": fraud_flags + red_flags,
-        "key_findings": key_finds,
-        "document_intelligence": doc_intel,
-        "internal_controls": controls,
+        "fraud_red_flags": _enforce_minimum_findings(fraud_flags + red_flags, "Fraud & Red Flags"),
+        "key_findings": _enforce_minimum_findings(key_finds, "Key Findings"),
+        "document_intelligence": _enforce_minimum_findings(doc_intel, "Document Intelligence"),
+        "internal_controls": _enforce_minimum_findings(controls, "Internal Controls"),
         "risk_scoring": calculate_risk_scores(user_id, company_id, all_findings),
-        "scenario_simulator": validated_scenarios,
+        "scenario_simulator": _enforce_minimum_findings(validated_scenarios, "Scenario Simulator"),
         "audit_ready_appendix": _compile_audit_appendix(aggregated_payload)
     }
     
     return results
 
-def _validate_findings(findings: List[Dict[str, Any]], expected_company_id: int) -> List[Dict[str, Any]]:
+def _validate_findings(findings: List[Dict[str, Any]], expected_company_id: int, category: str = None) -> List[Dict[str, Any]]:
+    import hashlib
     """Final Self-Validation Step: Assures schema correctness and traceability."""
     valid = []
     for f in findings:
         if f.get('status') == 'insufficient_evidence':
-            valid.append(f)
             continue
             
         # 1. Schema Validation (Must be structured correctly)
@@ -59,15 +59,43 @@ def _validate_findings(findings: List[Dict[str, Any]], expected_company_id: int)
             continue
             
         # 3. Security/Isolation (Reject cross-company data if embedded directly in finding)
-        # Note: Payloads are already strictly SQL-bound by company_id, but this acts as an absolute fail-safe.
         if expected_company_id and f.get('company_id') and f.get('company_id') != expected_company_id:
             continue
 
+        if category:
+            h = hashlib.sha256(f"{expected_company_id}_{category}_{f['title']}".encode()).hexdigest()
+            f['finding_id'] = h
+            f['company_id'] = expected_company_id
+            f['category'] = category
+            
+            # Enforce the new DB schema defaults
+            desc = f.get('description', '')
+            if 'executive_summary' not in f:
+                f['executive_summary'] = desc.split('.')[0] + "." if desc else ""
+            if 'plain_english_explanation' not in f:
+                f['plain_english_explanation'] = desc
+            if 'forensic_rationale' not in f:
+                f['forensic_rationale'] = f"Algorithmic match for {category} heuristics based on deterministic inputs."
+            if 'financial_impact' not in f:
+                f['financial_impact'] = {}
+            if 'recommended_actions' not in f:
+                f['recommended_actions'] = []
+            if 'drilldown_queries' not in f:
+                f['drilldown_queries'] = {}
+            if 'evidence_graph' not in f:
+                f['evidence_graph'] = f.get('evidence_links', [])
+            if 'confidence' not in f:
+                f['confidence'] = f.get('confidence_score', 0)
+
         valid.append(f)
         
-    if not valid:
-        return [{"status": "insufficient_evidence", "message": "All analytical outputs were rejected by the self-validation layer due to missing traceability hashes."}]
     return valid
+
+def _enforce_minimum_findings(findings: List[Dict[str, Any]], section_name: str) -> List[Dict[str, Any]]:
+    """Ensures empty lists are cleanly replaced by a single placeholder object for the UI."""
+    if not findings:
+        return [{"status": "insufficient_evidence", "message": f"No anomalous or statistically significant findings met the confidence threshold for {section_name}."}]
+    return findings
 
 def _create_finding(title: str, description: str, severity: str, confidence: int, evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Helper to enforce strict finding schema with confidence scoring and traceability."""
@@ -113,9 +141,9 @@ def _detect_fraud_exceptions(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     # 2. Deposit Aging Rapid Drain
     aging = payload.get("analytics", {}).get("deposit_aging", [])
-    rapid_drains = [d for d in aging if d.get('days_to_deplete', 99) <= 3 and d.get('percent_depleted', 0) >= 80]
+    rapid_drains = [d for d in aging if d.get('pct_3day', 0) >= 80]
     if rapid_drains:
-        evidence = [{"type": "transaction", "id": d["deposit_id"], "amount": d["deposit_amount"]} for d in rapid_drains[:3]]
+        evidence = [{"type": "transaction", "id": d["deposit"]["id"], "amount": d["amount"]} for d in rapid_drains[:3]]
         findings.append(_create_finding(
             title="Rapid Deposit Drain",
             description=f"Found {len(rapid_drains)} deposits where >80% of funds were withdrawn within 3 days.",
@@ -136,7 +164,7 @@ def _extract_key_findings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     recipients = payload.get("analytics", {}).get("recipient_analysis", [])
     if recipients:
         top_recipients = recipients[:3]
-        evidence = [{"type": "entity", "name": r["recipient"], "total_amount": r["total_amount"]} for r in top_recipients]
+        evidence = [{"type": "entity", "name": r["name"], "total_amount": r["total"]} for r in top_recipients]
         
         findings.append(_create_finding(
             title="Concentrated Spending Destinations",

@@ -1201,6 +1201,11 @@
                 Analysis</a>
             <a class="nav-link" href="#" data-page="advisor"><i class="fas fa-brain text-purple"></i> AI Forensic
                 Advisor</a>
+            <a class="nav-link" href="#" data-page="simulator"><i class="fas fa-balance-scale text-primary"></i>
+                Scenario
+                Simulator</a>
+            <a class="nav-link" href="#" data-page="remediation"><i class="fas fa-clipboard-check text-success"></i>
+                Remediation Plan</a>
             <a class="nav-link" href="#" data-page="recipients"><i class="fas fa-user-secret"></i> Who Gets The
                 Money</a>
             <a class="nav-link" href="#" data-page="deposit-aging"><i class="fas fa-clock"></i> Deposit Aging</a>
@@ -1488,6 +1493,9 @@
             <div class="d-flex justify-content-between align-items-center mb-2">
                 <h4 class="mb-0"><i class="fas fa-brain text-purple"></i> AI Forensic Advisor</h4>
                 <div>
+                    <button class="btn btn-sm btn-outline-light me-2 shadow-sm" onclick="loadNarrativeReport()">
+                        <i class="fas fa-file-contract text-info"></i> Generate Narrative Report
+                    </button>
                     <button class="btn btn-sm btn-purple shadow-sm" id="btn-run-advisor"
                         onclick="runAdvisorAnalysis(true)">
                         <i class="fas fa-magic"></i> Run AI Analysis
@@ -1555,21 +1563,24 @@
                         <div class="card-dark h-100">
                             <div class="card-header"><i class="fas fa-file-invoice text-info me-1"></i> Document
                                 Intelligence</div>
-                            <div class="p-3 text-muted small">Awaiting OCR and metadata correlations...</div>
+                            <div class="p-3 text-secondary text-opacity-75 small">Awaiting OCR and metadata
+                                correlations...</div>
                         </div>
                     </div>
                     <div class="col-md-4">
                         <div class="card-dark h-100">
                             <div class="card-header"><i class="fas fa-shield-alt text-success me-1"></i> Internal
                                 Controls</div>
-                            <div class="p-3 text-muted small">Awaiting control vulnerability assessments...</div>
+                            <div class="p-3 text-secondary text-opacity-75 small">Awaiting control vulnerability
+                                assessments...</div>
                         </div>
                     </div>
                     <div class="col-md-4">
                         <div class="card-dark h-100">
                             <div class="card-header"><i class="fas fa-balance-scale text-primary me-1"></i> Scenario
                                 Simulator</div>
-                            <div class="p-3 text-muted small">Awaiting legal and audit risk simulation bounds...</div>
+                            <div class="p-3 text-secondary text-opacity-75 small">Awaiting legal and audit risk
+                                simulation bounds...</div>
                         </div>
                     </div>
                 </div>
@@ -1577,10 +1588,102 @@
                 <div class="card-dark border-secondary">
                     <div class="card-header bg-secondary text-white"><i class="fas fa-gavel me-1"></i> Audit-Ready
                         Appendix (Deterministic Truth)</div>
-                    <div class="p-3 text-white-50 small" style="background:#0d1117;">
+                    <div class="p-3 text-secondary text-opacity-75 small" style="background:#0d1117;">
                         <em>Awaiting strictly referenced transaction hashes and document anchors. The LLM is
                             structurally blocked from referencing unproven records here.</em>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== SCENARIO SIMULATOR ========== -->
+        <div class="page-section" id="page-simulator">
+            <h4 class="mb-1"><i class="fas fa-balance-scale text-primary"></i> Scenario Simulator</h4>
+            <p class="text-muted small mb-3">Model "what if" scenarios (GAAP-safe) on structural cashflow/profitability
+                without modifying real books.</p>
+
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div class="card-dark h-100">
+                        <div class="card-header border-primary" style="border-top: 3px solid;"><i
+                                class="fas fa-sliders-h me-2 text-primary"></i> Simulation Parameters</div>
+                        <div class="p-3">
+                            <div class="mb-3">
+                                <label class="form-label small text-muted">Scenario Template</label>
+                                <select class="form-select form-select-sm bg-dark text-white border-secondary"
+                                    id="sim-type" onchange="updateSimForm()">
+                                    <option value="reclassification">Reclassification (Recategorize Txns)</option>
+                                    <option value="timing">Revenue Timing Deferral</option>
+                                    <option value="add_back">EBITDA Add-Backs (Personal Txns)</option>
+                                    <option value="controls_remediation">Controls Remediation Savings</option>
+                                </select>
+                            </div>
+
+                            <div id="sim-form-fields">
+                                <!-- Reclass Fields default -->
+                                <div class="mb-2" id="sim-field-category">
+                                    <label class="form-label small text-muted">Target Category to Reclass</label>
+                                    <input type="text"
+                                        class="form-control form-control-sm bg-dark text-white border-secondary"
+                                        id="sim-param-category" placeholder="e.g. Meals">
+                                </div>
+                                <div class="mb-2" id="sim-field-vendor">
+                                    <label class="form-label small text-muted">Vendor Match (Optional)</label>
+                                    <input type="text"
+                                        class="form-control form-control-sm bg-dark text-white border-secondary"
+                                        id="sim-param-vendor" placeholder="e.g. Uber">
+                                </div>
+                                <div class="mb-2" id="sim-field-deferral" style="display:none;">
+                                    <label class="form-label small text-muted">Deferral %</label>
+                                    <input type="number"
+                                        class="form-control form-control-sm bg-dark text-white border-secondary"
+                                        id="sim-param-deferral" value="50" min="1" max="100">
+                                </div>
+                                <div class="mb-2" id="sim-field-threshold" style="display:none;">
+                                    <label class="form-label small text-muted">Deposit Threshold ($)</label>
+                                    <input type="number"
+                                        class="form-control form-control-sm bg-dark text-white border-secondary"
+                                        id="sim-param-threshold" value="5000">
+                                </div>
+                            </div>
+
+                            <button class="btn btn-primary w-100 mt-3" onclick="runScenarioSimulator()"><i
+                                    class="fas fa-play me-2"></i>Run Simulation</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-8">
+                    <div class="card-dark h-100" id="sim-results-pane">
+                        <div class="card-header"><i class="fas fa-chart-line text-info me-2"></i> Simulation Results
+                        </div>
+                        <div class="p-4 text-center text-muted" id="sim-results-placeholder">
+                            <i class="fas fa-flask fs-1 mb-3 opacity-50"></i>
+                            <h5>Ready to Simulate</h5>
+                            <p class="small">Configure parameters on the left and hit Run to execute an isolated
+                                scenario query.</p>
+                        </div>
+                        <div id="sim-results-content" style="display:none;">
+                            <!-- Auto injected -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-dark mt-3" id="sim-evidence-pane" style="display:none;">
+                <div class="card-header"><i class="fas fa-list text-warning me-2"></i> Affected Transactions</div>
+                <div class="table-responsive">
+                    <table class="table table-dark-custom mb-0">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Description</th>
+                                <th>Amount</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sim-evidence-tbody"></tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -1736,6 +1839,123 @@
                         <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button class="btn btn-sm btn-info" onclick="addTaxonomy()">Save Taxonomy</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Finding Detail Drawer (Full Modal) -->
+        <div class="modal fade" id="findingDrawer" tabindex="-1">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                <div class="modal-content" style="background-color: #0d1117;">
+                    <div class="modal-header border-bottom border-secondary">
+                        <h5 class="modal-title" id="findingDrawerTitle">
+                            <!-- Title injected here -->
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body p-4">
+                        <div class="row g-4">
+                            <!-- Column 1: Narratives & Actions -->
+                            <div class="col-lg-8">
+                                <div class="mb-4">
+                                    <h6 class="text-info border-bottom border-info pb-2 mb-3"><i
+                                            class="fas fa-comment-dots"></i> Explanation</h6>
+                                    <p id="fd-plain-english" class="text-light"></p>
+                                </div>
+
+                                <div class="mb-4">
+                                    <a class="text-warning text-decoration-none" data-bs-toggle="collapse"
+                                        href="#fd-rationale-collapse" role="button" aria-expanded="false"
+                                        style="font-size: 0.9rem;">
+                                        <i class="fas fa-chevron-circle-down"></i> Explain this finding (Auditor
+                                        Rationale)
+                                    </a>
+                                    <div class="collapse mt-2" id="fd-rationale-collapse">
+                                        <div class="card card-body bg-dark border-secondary text-white-50 small"
+                                            id="fd-forensic-rationale">
+                                            <!-- Rationale injected here -->
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <h6 class="text-success border-bottom border-success pb-2 mb-3"><i
+                                            class="fas fa-tools"></i> Recommended Actions</h6>
+                                    <ul id="fd-recommended-actions" class="text-light small">
+                                        <!-- Actions injected here -->
+                                    </ul>
+                                </div>
+
+                                <div class="mt-4" id="fd-export-actions">
+                                    <button class="btn btn-outline-info btn-sm" id="fd-export-pdf"><i
+                                            class="fas fa-file-pdf"></i> Export PDF</button>
+                                    <button class="btn btn-outline-primary btn-sm ms-2" id="fd-export-docx"><i
+                                            class="fas fa-file-word"></i> Export DOCX</button>
+                                </div>
+                            </div>
+
+                            <!-- Column 2: Impact & Evidence -->
+                            <div class="col-lg-4">
+                                <div class="card-dark mb-4">
+                                    <div class="card-header bg-danger text-white"><i class="fas fa-chart-line"></i>
+                                        Financial Impact</div>
+                                    <div class="card-body p-3" id="fd-impact-panel">
+                                        <!-- Impact injected here -->
+                                    </div>
+                                </div>
+
+                                <div class="card-dark">
+                                    <div class="card-header"><i class="fas fa-link"></i> Traceable Evidence</div>
+                                    <div class="card-body p-0">
+                                        <ul class="list-group list-group-flush" id="fd-evidence-list">
+                                            <!-- Evidence nodes injected here -->
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== REMEDIATION PLAN ========== -->
+        <div class="page-section" id="page-remediation">
+            <h4 class="mb-1"><i class="fas fa-clipboard-check text-success"></i> Remediation Plan</h4>
+            <p class="text-muted small mb-3">Track progress of recommended fixes and compare re-audit outcomes.</p>
+
+            <!-- Re-Audit Status Dashboard -->
+            <div class="card-dark mb-4">
+                <div class="card-header border-success" style="border-top: 3px solid;">
+                    <i class="fas fa-sync-alt me-2 text-success"></i> Re-Audit Progress Tracker
+                    <button class="btn btn-sm btn-outline-success float-end" onclick="runClientAdvisorRefresh()"><i
+                            class="fas fa-play me-1"></i> Re-Run Audit</button>
+                </div>
+                <div class="p-3" id="re-audit-dashboard">
+                    <div class="text-center text-muted">
+                        <div class="spinner-border spinner-border-sm text-success"></div> Loading comparison...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tasks Table -->
+            <div class="card-dark">
+                <div class="card-header bg-dark text-white"><i class="fas fa-list-ul me-2"></i> Action Items</div>
+                <div class="scrollable-table" style="max-height: 50vh;">
+                    <table class="table table-dark table-hover mb-0" style="font-size: 0.85rem;">
+                        <thead>
+                            <tr>
+                                <th style="width: 15%">Status</th>
+                                <th style="width: 20%">Finding</th>
+                                <th style="width: 35%">Action Required</th>
+                                <th style="width: 10%">Owner</th>
+                                <th style="width: 15%">Due Date</th>
+                                <th style="width: 5%">Save</th>
+                            </tr>
+                        </thead>
+                        <tbody id="remediation-tasks-tbody">
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -2547,6 +2767,7 @@
             else if (page === 'audit-trail') loadAuditTrail();
             else if (page === 'integrations') loadIntegrations();
             else if (page === 'settings') loadCompanyMembers();
+            else if (page === 'remediation') { loadReAuditStatus(); loadRemediationTasks(); }
 
             // Close sidebar on mobile after navigation
             if (window.innerWidth <= 768) toggleSidebar(false);
@@ -5304,7 +5525,8 @@
             }
             if (loadingState) loadingState.style.display = 'block';
 
-            fetch('/api/advisor/aggregate', { credentials: 'include' })
+            const url = isManual ? '/api/advisor/aggregate?force=true' : '/api/advisor/aggregate';
+            fetch(url, { credentials: 'include' })
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success' && data.data) {
@@ -5377,13 +5599,13 @@
 
             // Universal render function
             const renderArray = (headerText, findingsArr) => {
-                const headerEl = Array.from(document.querySelectorAll('#page-advisor .card-header')).find(el => el.textContent.includes(headerText));
+                const headerEl = Array.from(document.querySelectorAll('#page-advisor .card-header')).find(el => el.textContent.replace(/\s+/g, ' ').includes(headerText));
                 if (!headerEl) return;
                 const container = headerEl.nextElementSibling;
                 if (!container) return;
 
                 if (!findingsArr || findingsArr.length === 0 || findingsArr[0].status === 'insufficient_evidence') {
-                    container.innerHTML = `<div class="text-muted small p-2"><i class="fas fa-info-circle"></i> ${findingsArr && findingsArr.length ? findingsArr[0].message : 'No findings.'}</div>`;
+                    container.innerHTML = `<div class="text-secondary text-opacity-75 small p-2"><i class="fas fa-info-circle"></i> ${findingsArr && findingsArr.length ? findingsArr[0].message : 'No findings.'}</div>`;
                     return;
                 }
 
@@ -5405,8 +5627,8 @@
                                 <i class="fas fa-circle" style="font-size:6px; vertical-align:middle;"></i> ${f.title}
                                 ${diffBadge}
                             </strong>
-                            <div class="small fw-light text-light">${f.explanation || f.description}</div>
-                            ${f.evidence_links && f.evidence_links.length > 0 ? `<div class="mt-1" style="font-size: 0.70rem; color: #8b949e;"><i class="fas fa-link"></i> Traceable Nodes: ${f.evidence_links.length} indices</div>` : ''}
+                            <div class="small fw-light text-light">${f.plain_english_explanation || f.description || f.explanation}</div>
+                            ${f.evidence_graph || f.evidence_links && (f.evidence_graph || f.evidence_links).length > 0 ? `<div class="mt-2" style="font-size: 0.75rem; color: #58a6ff; cursor: pointer; display: inline-block;" onclick="showFindingDrawer('${encodeURIComponent(JSON.stringify(f))}')"><i class="fas fa-search-plus me-1"></i> View ${f.evidence_graph ? f.evidence_graph.length : f.evidence_links.length} Traceable Nodes...</div>` : ''}
                         </div>
                     `;
                 });
@@ -5428,16 +5650,450 @@
                 if (appxHead && appxHead.nextElementSibling) {
                     appxHead.nextElementSibling.innerHTML = `
                         <div style="font-family: monospace;">
-                            <span class="text-success d-block mb-1">SYSTEM STATUS: TRACEABILITY LOCK MAINTAINED</span>
-                            <div class="mt-2 text-muted">traced_documents: [${appx.traced_documents.join(', ')}]</div>
-                            <div class="mt-1 text-muted">flagged_anchors: [${appx.flagged_anchors.join(', ')}]</div>
-                            <div class="mt-1 text-muted">active_ledgers: [${appx.active_accounts.join(', ')}]</div>
+                            <span class="text-success text-opacity-75 d-block mb-1 fw-bold">SYSTEM STATUS: TRACEABILITY LOCK MAINTAINED</span>
+                            <div class="mt-2 text-secondary text-opacity-75">traced_documents: [${appx.traced_documents.join(', ')}]</div>
+                            <div class="mt-1 text-secondary text-opacity-75">flagged_anchors: [${appx.flagged_anchors.join(', ')}]</div>
+                            <div class="mt-1 text-secondary text-opacity-75">active_ledgers: [${appx.active_accounts.join(', ')}]</div>
                         </div>
                     `;
                 }
             }
+
+            window.showFindingDrawer = function (encodedFinding) {
+                const f = JSON.parse(decodeURIComponent(encodedFinding));
+
+                // 1. Title Header
+                let badgeClass = 'bg-info';
+                if (f.severity === 'danger') badgeClass = 'bg-danger';
+                if (f.severity === 'warning') badgeClass = 'bg-warning text-dark';
+
+                document.getElementById('findingDrawerTitle').innerHTML = `
+                    <span class="badge ${badgeClass} me-2">${(f.severity || 'INFO').toUpperCase()}</span> 
+                    ${f.title}
+                    <span class="badge bg-secondary ms-2" style="font-size: 0.70rem;">Confidence: ${f.confidence || f.confidence_score || 0}%</span>
+                `;
+
+                // 2. Narratives
+                document.getElementById('fd-plain-english').innerHTML = f.plain_english_explanation || f.description || f.explanation || 'No explanation available.';
+                document.getElementById('fd-forensic-rationale').innerHTML = f.forensic_rationale || 'N/A';
+
+                // 3. Recommended Actions
+                const actionsUl = document.getElementById('fd-recommended-actions');
+                actionsUl.innerHTML = '';
+                if (f.recommended_actions && f.recommended_actions.length > 0) {
+                    f.recommended_actions.forEach(act => {
+                        actionsUl.innerHTML += `<li>${act}</li>`;
+                    });
+                } else {
+                    actionsUl.innerHTML = '<li class="text-muted list-unstyled">No immediate actions recommended.</li>';
+                }
+
+                // 4. Impact Panel
+                const impactDiv = document.getElementById('fd-impact-panel');
+                if (f.financial_impact && Object.keys(f.financial_impact).length > 0) {
+                    impactDiv.innerHTML = `<pre class="text-info small mb-0" style="white-space: pre-wrap;">${JSON.stringify(f.financial_impact, null, 2)}</pre>`;
+                } else if (f.net_difference) {
+                    impactDiv.innerHTML = `<div class="fs-4 text-white">$${f.net_difference.toLocaleString()}</div>`;
+                } else {
+                    impactDiv.innerHTML = '<span class="text-muted small">No direct financial impact quantified.</span>';
+                }
+
+                // 5. Evidence Links
+                const evUl = document.getElementById('fd-evidence-list');
+                evUl.innerHTML = '';
+                const evList = f.evidence_graph || f.evidence_links || [];
+
+                if (evList.length === 0) {
+                    evUl.innerHTML = '<li class="list-group-item bg-transparent text-muted small border-0">No specific nodes traced.</li>';
+                } else {
+                    evList.forEach(link => {
+                        let icon = 'fa-link';
+                        let linkHTML = '';
+                        let text = link.name || link.id || 'Evidence';
+
+                        if (link.type === 'transaction') {
+                            icon = 'fa-exchange-alt';
+                            linkHTML = `<a href="javascript:void(0)" onclick="bootstrap.Modal.getInstance(document.getElementById('findingDrawer')).hide(); FilterStore.replace({search: '${link.id}'}); navigateTo('transactions')" class="text-decoration-none" style="color: #58a6ff;">[TRX-${link.id}] ${text}</a>`;
+                        } else if (link.type === 'entity') {
+                            icon = 'fa-user-tag';
+                            linkHTML = `<a href="javascript:void(0)" onclick="bootstrap.Modal.getInstance(document.getElementById('findingDrawer')).hide(); navigateTo('recipients')" class="text-decoration-none text-warning">[ENT] ${text}</a>`;
+                        } else if (link.type === 'document') {
+                            icon = 'fa-file-pdf';
+                            linkHTML = `<a href="javascript:void(0)" onclick="bootstrap.Modal.getInstance(document.getElementById('findingDrawer')).hide(); if(window.filterDocs) window.filterDocs('${link.id}'); navigateTo('documents')" class="text-decoration-none text-info">[DOC-${link.id}] ${text}</a>`;
+                        } else {
+                            linkHTML = `<span class="text-muted">[${link.type}] ${text}</span>`;
+                        }
+
+                        evUl.innerHTML += `<li class="list-group-item bg-transparent border-secondary small py-2"><i class="fas ${icon} me-2 text-secondary"></i> ${linkHTML}</li>`;
+                    });
+                }
+
+                // 6. Hook up Export buttons
+                const exportPdfBtn = document.getElementById('fd-export-pdf');
+                const exportDocxBtn = document.getElementById('fd-export-docx');
+
+                exportPdfBtn.replaceWith(exportPdfBtn.cloneNode(true));
+                exportDocxBtn.replaceWith(exportDocxBtn.cloneNode(true));
+
+                document.getElementById('fd-export-pdf').addEventListener('click', () => {
+                    window.open(`/api/export/finding/${f.finding_id}?format=pdf&mode=client`, '_blank');
+                });
+                document.getElementById('fd-export-docx').addEventListener('click', () => {
+                    window.open(`/api/export/finding/${f.finding_id}?format=docx&mode=client`, '_blank');
+                });
+
+                new bootstrap.Modal(document.getElementById('findingDrawer')).show();
+            };
         }
 
+        window.loadNarrativeReport = function () {
+            const modeInput = document.querySelector('input[name="reportMode"]:checked');
+            const mode = modeInput ? modeInput.value : 'client';
+
+            document.getElementById('narrativeReportBody').innerHTML = '<div class="text-center p-5"><div class="spinner-border text-purple mb-3"></div><p>Assembling deterministic narrative...</p></div>';
+
+            const modalEl = document.getElementById('narrativeReportModal');
+            let modalInst = bootstrap.Modal.getInstance(modalEl);
+            if (!modalInst) modalInst = new bootstrap.Modal(modalEl);
+            modalInst.show();
+
+            fetch(`/api/advisor/report?mode=${mode}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const r = data.data;
+                        if (r.status === 'empty') {
+                            document.getElementById('narrativeReportBody').innerHTML = `<div class="alert alert-secondary bg-transparent border-secondary text-center p-5"><i class="fas fa-file-excel fs-1 mb-3 text-muted"></i><br>${r.message}</div>`;
+                            return;
+                        }
+
+                        let html = '';
+
+                        const parseMD = (text) => {
+                            if (!text) return '';
+                            let parsed = text
+                                .replace(/^### (.*$)/gim, '<h4 class="text-info mt-4 mb-3">$1</h4>')
+                                .replace(/^## (.*$)/gim, '<h3 class="text-purple border-bottom border-secondary pb-2 mt-4 mb-3">$1</h3>')
+                                .replace(/^\*\*([^*]+)\*\*/gim, '<strong>$1</strong>')
+                                .replace(/\n\n/g, '</p><p>')
+                                .replace(/^- (.*$)/gim, '<li>$1</li>');
+
+                            parsed = parsed.replace(/\[EVID-([^-]+)-([^\]]+)\]/g, (match, type, id) => {
+                                let icon = type === 'transaction' ? 'fa-exchange-alt' : (type === 'document' ? 'fa-file-pdf' : 'fa-user-tag');
+                                let color = type === 'transaction' ? 'text-primary' : (type === 'document' ? 'text-info' : 'text-warning');
+                                return `<a href="javascript:void(0)" onclick="bootstrap.Modal.getInstance(document.getElementById('narrativeReportModal')).hide(); navigateTo('${type === 'entity' ? 'recipients' : type + 's'}');" class="badge bg-secondary text-decoration-none border border-secondary ${color}"><i class="fas ${icon} me-1"></i>EVID-${id}</a>`;
+                            });
+
+                            return `<p>${parsed}</p>`;
+                        };
+
+                        html += `<div class="mb-5"><h3 class="text-purple border-bottom border-secondary pb-2 mb-3">Executive Summary</h3>${parseMD(r.executive_summary)}</div>`;
+
+                        r.detailed_findings.forEach(section => {
+                            html += `<div class="mb-5"><h3 class="text-purple border-bottom border-secondary pb-2 mb-3">${section.category}</h3>${parseMD(section.content)}</div>`;
+                        });
+
+                        html += `<div class="mb-5 bg-dark p-4 rounded border border-secondary">${parseMD(r.appendix)}</div>`;
+
+                        document.getElementById('narrativeReportBody').innerHTML = html;
+                    } else {
+                        document.getElementById('narrativeReportBody').innerHTML = `<div class="alert alert-danger">${data.message}</div>`;
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('narrativeReportBody').innerHTML = `<div class="alert alert-danger">Failed to generate report: ${err}</div>`;
+                });
+        };
+
+    </script>
+
+    <script>
+        async function loadReAuditStatus() {
+            try {
+                const res = await fetch('/api/advisor/re_audit_status');
+                const data = await res.json();
+                const db = document.getElementById('re-audit-dashboard');
+                if (data.status === 'no_runs') {
+                    db.innerHTML = `<span class="text-muted"><i class="fas fa-info-circle"></i> ${data.message}</span>`;
+                } else if (data.status === 'single_run') {
+                    db.innerHTML = `<span class="text-warning"><i class="fas fa-exclamation-triangle"></i> ${data.message} <br> <small class="text-muted">Current Run: ${data.current_run_id}</small></span>`;
+                } else if (data.status === 'compared') {
+                    let netStatus = data.net_improvement > 0 ? `<span class="text-success"><i class="fas fa-arrow-down"></i> -${data.net_improvement} Issues</span>` : (data.net_improvement < 0 ? `<span class="text-danger"><i class="fas fa-arrow-up"></i> +${Math.abs(data.net_improvement)} Issues</span>` : `<span class="text-muted">No change in issue count</span>`);
+
+                    db.innerHTML = `
+                        <div class="row text-center mb-0">
+                            <div class="col-md-3">
+                                <h6 class="text-muted small text-uppercase">Previous Run Issues</h6>
+                                <h4 class="text-warning">${data.previous_issues}</h4>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="text-muted small text-uppercase">Current Open Issues</h6>
+                                <h4 class="${data.current_issues > 0 ? 'text-danger' : 'text-success'}">${data.current_issues}</h4>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="text-muted small text-uppercase">Net Improvement</h6>
+                                <h4>${netStatus}</h4>
+                            </div>
+                            <div class="col-md-3">
+                                <h6 class="text-muted small text-uppercase">Resolved Since Last</h6>
+                                <h4 class="text-success">${data.resolved_finding_ids ? data.resolved_finding_ids.length : 0} Findings</h4>
+                            </div>
+                        </div>
+                        <div class="text-muted small mt-2">Latest Run: ${data.current_run_id} | Previous Run: ${data.previous_run_id}</div>
+                    `;
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function loadRemediationTasks() {
+            try {
+                const res = await fetch('/api/remediation/tasks');
+                const data = await res.json();
+                const tbody = document.getElementById('remediation-tasks-tbody');
+                tbody.innerHTML = '';
+
+                if (data.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted p-4">No remediation tasks found. Run the AI Advisor to discover structural weaknesses.</td></tr>';
+                    return;
+                }
+
+                let html = '';
+                data.data.forEach(t => {
+                    html += `<tr>
+                        <td>
+                            <select class="form-select form-select-sm bg-dark text-white border-secondary task-status" data-id="${t.id}" onchange="markTaskDirty(this)">
+                                <option value="open" ${t.status === 'open' ? 'selected' : ''}>Open</option>
+                                <option value="in-progress" ${t.status === 'in-progress' ? 'selected' : ''}>In Progress</option>
+                                <option value="done" ${t.status === 'done' ? 'selected' : ''}>Done</option>
+                            </select>
+                        </td>
+                        <td>
+                            <div class="text-truncate" style="max-width:200px;" title="${esc(t.finding_title)}">
+                                ${esc(t.finding_title)}
+                            </div>
+                            <small class="text-muted text-uppercase">${esc(t.finding_category)}</small>
+                        </td>
+                        <td><div class="text-wrap">${esc(t.task_description)}</div></td>
+                        <td>
+                            <select class="form-select form-select-sm bg-dark text-white border-secondary task-owner" data-id="${t.id}" onchange="markTaskDirty(this)">
+                                <option value="unassigned" ${t.owner === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+                                <option value="internal" ${t.owner === 'internal' ? 'selected' : ''}>Internal</option>
+                                <option value="client" ${t.owner === 'client' ? 'selected' : ''}>Client</option>
+                            </select>
+                        </td>
+                        <td>
+                            <input type="date" class="form-control form-control-sm bg-dark text-white border-secondary task-due" data-id="${t.id}" value="${t.due_date || ''}" onchange="markTaskDirty(this)">
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-info" id="save-task-${t.id}" style="display:none;" onclick="saveRemediationTask(${t.id})"><i class="fas fa-save"></i></button>
+                        </td>
+                    </tr>`;
+                });
+                tbody.innerHTML = html;
+            } catch (err) {
+                console.error("Failed to load remediation tasks", err);
+            }
+        }
+
+        function markTaskDirty(elem) {
+            const id = elem.dataset.id;
+            document.getElementById(`save-task-${id}`).style.display = 'block';
+        }
+
+        async function saveRemediationTask(id) {
+            const row = document.querySelector(`select.task-status[data-id="${id}"]`).closest('tr');
+            const status = row.querySelector('.task-status').value;
+            const owner = row.querySelector('.task-owner').value;
+            const due_date = row.querySelector('.task-due').value;
+
+            try {
+                const res = await fetch(`/api/remediation/tasks/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status, owner, due_date })
+                });
+                if (res.ok) {
+                    document.getElementById(`save-task-${id}`).style.display = 'none';
+                }
+            } catch (err) {
+                console.error("Failed saving task", err);
+                alert("Failed saving task!");
+            }
+        }
+
+        function runClientAdvisorRefresh() {
+            // Trigger runAdvisorAnalysis(true) but handle UX in the Remediation plan context
+            const db = document.getElementById('re-audit-dashboard');
+            if (db) db.innerHTML = `<div class="text-center p-3"><div class="spinner-border text-success"></div><br><h5>Re-Running Forensic Sweep...</h5><small class="text-muted">Comparing new structural evidence mappings against historical tasks.</small></div>`;
+            fetch('/api/advisor/aggregate?force=true', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    setTimeout(() => {
+                        loadReAuditStatus();
+                        loadRemediationTasks();
+                    }, 1000);
+                }).catch(err => {
+                    if (db) db.innerHTML = `<div class="text-danger">Failed to run analysis.</div>`;
+                });
+        }
+    </script>
+
+    <!-- Narrative Report Modal -->
+    <div class="modal fade" id="narrativeReportModal" tabindex="-1" aria-labelledby="narrativeReportModalLabel"
+        aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="narrativeReportModalLabel"><i class="fas fa-file-alt me-2"></i>AI
+                        Advisor Narrative Report</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-center mb-4">
+                        <div class="btn-group" role="group" aria-label="Report Mode">
+                            <input type="radio" class="btn-check" name="reportMode" id="reportModeClient" value="client"
+                                autocomplete="off" checked onchange="loadNarrativeReport()">
+                            <label class="btn btn-outline-purple" for="reportModeClient">Client-Facing</label>
+
+                            <input type="radio" class="btn-check" name="reportMode" id="reportModeAuditor"
+                                value="auditor" autocomplete="off" onchange="loadNarrativeReport()">
+                            <label class="btn btn-outline-purple" for="reportModeAuditor">Auditor-Facing</label>
+                        </div>
+                    </div>
+                    <div id="narrativeReportBody" class="p-3">
+                        <!-- Report content will be loaded here -->
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary"
+                        onclick="window.open('/api/export/audit_report?format=docx&mode=' + (document.querySelector('input[name=\\'reportMode\\']:checked')?.value || 'client'), '_blank')">
+                        <i class="fas fa-file-word me-2"></i>Download DOCX
+                    </button>
+                    <button type="button" class="btn btn-purple"
+                        onclick="window.open('/api/export/audit_report?format=pdf&mode=' + (document.querySelector('input[name=\\'reportMode\\']:checked')?.value || 'client'), '_blank')">
+                        <i class="fas fa-file-pdf me-2"></i>Download PDF
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add "Generate Report" button to Advisor header (assuming a header element exists with id 'advisorHeader') -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const advisorHeader = document.querySelector('#page-advisor .card-header'); // Or a more specific selector for your header
+            if (advisorHeader) {
+                // Check if the button already exists to prevent duplicates on re-render if this script runs multiple times
+                if (!advisorHeader.querySelector('#generateReportBtn')) {
+                    const button = document.createElement('button');
+                    button.id = 'generateReportBtn';
+                    button.className = 'btn btn-sm btn-outline-purple float-end ms-2';
+                    button.innerHTML = '<i class="fas fa-file-alt me-1"></i> Generate Report';
+                    button.setAttribute('onclick', 'loadNarrativeReport()');
+                    advisorHeader.appendChild(button);
+                }
+            }
+        });
+
+        // Scenario Simulator Handlers
+        function updateSimForm() {
+            const type = document.getElementById('sim-type').value;
+            document.getElementById('sim-field-category').style.display = type === 'reclassification' ? 'block' : 'none';
+            document.getElementById('sim-field-vendor').style.display = type === 'reclassification' ? 'block' : 'none';
+            document.getElementById('sim-field-deferral').style.display = type === 'timing' ? 'block' : 'none';
+            document.getElementById('sim-field-threshold').style.display = type === 'timing' ? 'block' : 'none';
+        }
+
+        function runScenarioSimulator() {
+            const type = document.getElementById('sim-type').value;
+            const params = {};
+
+            if (type === 'reclassification') {
+                params.target_category = document.getElementById('sim-param-category').value;
+                params.vendor_match = document.getElementById('sim-param-vendor').value;
+                if (!params.target_category) return alert('Target category required for reclassification.');
+            } else if (type === 'timing') {
+                params.deferral_percentage = parseFloat(document.getElementById('sim-param-deferral').value);
+                params.threshold = parseFloat(document.getElementById('sim-param-threshold').value);
+            }
+
+            document.getElementById('sim-results-placeholder').style.display = 'block';
+            document.getElementById('sim-results-placeholder').innerHTML = '<div class="spinner-border text-info mb-3"></div><p>Simulating outcomes across verified transactions...</p>';
+            document.getElementById('sim-results-content').style.display = 'none';
+            document.getElementById('sim-evidence-pane').style.display = 'none';
+
+            fetch('/api/simulator/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scenario_type: type, parameters: params })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('sim-results-placeholder').style.display = 'none';
+                    if (data.status === 'success') {
+                        document.getElementById('sim-results-content').style.display = 'block';
+
+                        const deltaColor = data.delta > 0 ? 'text-success' : 'text-danger';
+                        const icon = data.delta > 0 ? 'fa-arrow-up' : 'fa-arrow-down';
+
+                        document.getElementById('sim-results-content').innerHTML = `
+                        <div class="row text-center mb-4">
+                            <div class="col-md-4">
+                                <h6 class="text-muted small text-uppercase">Baseline Profit</h6>
+                                <h4>$${data.baseline_profit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h4>
+                            </div>
+                            <div class="col-md-4">
+                                <h6 class="text-muted small text-uppercase">Simulated Delta</h6>
+                                <h4 class="${deltaColor}"><i class="fas ${icon} me-1"></i>$${Math.abs(data.delta).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h4>
+                            </div>
+                            <div class="col-md-4">
+                                <h6 class="text-muted small text-uppercase">Adjusted Profit</h6>
+                                <h4 class="text-primary">$${data.adjusted_profit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h4>
+                            </div>
+                        </div>
+                        <div class="bg-dark p-3 rounded border border-secondary mb-3">
+                            <strong class="d-block text-warning mb-1"><i class="fas fa-balance-scale-right me-1"></i> GAAP Proxy Assumptions</strong>
+                            <span class="small text-muted">${data.assumptions}</span>
+                        </div>
+                        <div class="d-flex justify-content-between text-muted small px-2">
+                            <span><i class="fas fa-link me-1"></i> ${data.affected_count} isolated transactions</span>
+                            <span><i class="fas fa-check-circle me-1 text-success"></i> ${data.confidence}% confidence</span>
+                        </div>
+                    `;
+
+                        if (data.evidence_links && data.evidence_links.length > 0) {
+                            document.getElementById('sim-evidence-pane').style.display = 'block';
+                            const tbody = document.getElementById('sim-evidence-tbody');
+                            tbody.innerHTML = '';
+                            data.evidence_links.forEach(ev => {
+                                const amtClass = ev.amount < 0 ? 'text-danger' : 'text-success';
+                                tbody.innerHTML += `
+                                <tr>
+                                    <td><span class="badge bg-secondary">TRX-${ev.id}</span></td>
+                                    <td>${ev.description}</td>
+                                    <td class="${amtClass}">$${Math.abs(ev.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                    <td><button class="btn btn-sm btn-outline-info py-0 px-2" style="font-size:0.75rem;" onclick="FilterStore.replace({search: '${ev.id}'}); navigateTo('transactions')">View</button></td>
+                                </tr>
+                            `;
+                            });
+                        }
+                    } else if (data.status === 'insufficient_evidence') {
+                        document.getElementById('sim-results-placeholder').style.display = 'block';
+                        document.getElementById('sim-results-placeholder').innerHTML = `<i class="fas fa-box-open fs-1 mb-3 opacity-50"></i><h5>${data.message}</h5><p class="small">The dataset does not contain structural evidence to satisfy this scenario.</p>`;
+                    } else {
+                        document.getElementById('sim-results-placeholder').style.display = 'block';
+                        document.getElementById('sim-results-placeholder').innerHTML = `<i class="fas fa-exclamation-triangle text-danger fs-1 mb-3 opacity-50"></i><h5 class="text-danger">Error</h5><p class="small">${data.message}</p>`;
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('sim-results-placeholder').style.display = 'block';
+                    document.getElementById('sim-results-placeholder').innerHTML = `<h5 class="text-danger">Failed to simulate</h5><p>${err}</p>`;
+                });
+        }
     </script>
 </body>
 

@@ -3343,7 +3343,7 @@ def api_advisor_status():
 
 @app.route('/api/advisor/aggregate', methods=['GET'])
 def api_advisor_aggregate():
-    active_company_id = 1
+    active_company_id = session.get('active_company_id')
     if not active_company_id:
         return jsonify({"status": "error", "message": "No active company selected"}), 400
         
@@ -3352,6 +3352,8 @@ def api_advisor_aggregate():
     import json
     
     state = get_advisor_company_state(active_company_id)
+    from flask import request
+    force = request.args.get('force', 'false').lower() == 'true'
     
     # 1. Thread currently holds processing lock
     if state.get('status') == 'running':
@@ -3364,8 +3366,9 @@ def api_advisor_aggregate():
             except: pass
         return jsonify(resp)
         
-    # 2. Dirtied flag, trigger thread instantiation
-    if state.get('needs_refresh') == 1 or not state.get('last_result_json') or state.get('status') == 'queued':
+    # 2. Dirtied flag or manual force, trigger thread instantiation
+    is_stale = state.get('needs_refresh') == 1 or not state.get('last_result_json') or state.get('status') == 'queued'
+    if is_stale or force:
         trigger_async_advisor_refresh(active_company_id, current_user.id, "Manual Tab Refresh")
         msg = "Analysis queued. Starting new engine execution..."
         if state.get('last_result_json'):
@@ -3386,6 +3389,179 @@ def api_advisor_aggregate():
     except Exception as e:
         trigger_async_advisor_refresh(active_company_id, current_user.id, "JSON Cache Corruption Recovery")
         return jsonify({"status": "running", "message": "Rebuilding corrupted analysis state..."})
+
+@app.route('/api/advisor/report', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_report():
+    company_id = session.get('active_company_id')
+    mode = request.args.get('mode', 'client')
+    from report_builder import generate_advisor_report
+    try:
+        report = generate_advisor_report(company_id, mode)
+        return jsonify({"status": "success", "data": report})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Report generation failed: {str(e)}"}), 500
+
+@app.route('/api/simulator/run', methods=['POST'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_simulator_run():
+    company_id = session.get('active_company_id')
+    data = request.json or {}
+    
+    scenario_type = data.get('scenario_type')
+    if not scenario_type:
+        return jsonify({"status": "error", "message": "Missing scenario_type"}), 400
+        
+    parameters = data.get('parameters', {})
+    
+    try:
+        from scenario_engine import run_simulation
+        result = run_simulation(company_id, scenario_type, parameters)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Simulation failed: {str(e)}"}), 500
+
+@app.route('/api/advisor/findings', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_findings():
+    company_id = session.get('active_company_id')
+    category = request.args.get('category')
+    from database import get_advisor_findings
+    findings = get_advisor_findings(company_id, category)
+    return jsonify({"status": "success", "data": findings})
+
+@app.route('/api/advisor/findings/<finding_id>', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_finding_detail(finding_id):
+    company_id = session.get('active_company_id')
+    from database import get_advisor_finding_by_id
+    finding = get_advisor_finding_by_id(company_id, finding_id)
+    if not finding:
+        return jsonify({"status": "error", "message": "Finding not found"}), 404
+    return jsonify({"status": "success", "data": finding})
+
+@app.route('/api/advisor/findings/<finding_id>/drilldown', methods=['POST'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_finding_drilldown(finding_id):
+    company_id = session.get('active_company_id')
+    from database import get_advisor_finding_by_id, get_db
+    finding = get_advisor_finding_by_id(company_id, finding_id)
+    if not finding:
+        return jsonify({"status": "error", "message": "Finding not found"}), 404
+        
+    queries = finding.get('drilldown_queries', {})
+    if not queries:
+        return jsonify({"status": "success", "data": []})
+        
+    target_table = queries.get('type', 'transactions')
+    if target_table not in ['transactions', 'documents', 'merchants']:
+        return jsonify({"status": "error", "message": "Invalid drilldown target"}), 400
+        
+    conn = get_db()
+    cursor = conn.cursor()
+    # Simple dynamic SQL execution enforcing strict tenancy bounds.
+    # Advanced logic parses `queries` filters (e.g. min_amount) and builds SQL.
+    try:
+        if target_table == 'transactions':
+            cursor.execute("SELECT * FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE company_id = ?) LIMIT 50", (company_id,))
+        elif target_table == 'documents':
+            cursor.execute("SELECT * FROM documents WHERE account_id IN (SELECT id FROM accounts WHERE company_id = ?) LIMIT 50", (company_id,))
+        else:
+            return jsonify({"status": "success", "data": []})
+            
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify({"status": "success", "data": rows})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/remediation/tasks', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_remediation_tasks():
+    company_id = session.get('active_company_id')
+    from database import get_remediation_tasks
+    tasks = get_remediation_tasks(company_id)
+    return jsonify({"status": "success", "data": tasks})
+
+@app.route('/api/remediation/tasks/<int:task_id>', methods=['PUT', 'PATCH'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator'])
+def api_remediation_task_update(task_id):
+    company_id = session.get('active_company_id')
+    from database import update_remediation_task
+    data = request.json
+    update_remediation_task(company_id, task_id, data)
+    return jsonify({"status": "success"})
+
+@app.route('/api/advisor/re_audit_status', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_advisor_re_audit_status():
+    company_id = session.get('active_company_id')
+    from database import get_advisor_re_audit_status
+    result = get_advisor_re_audit_status(company_id)
+    return jsonify(result)
+
+@app.route('/api/export/audit_report', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_export_audit_report():
+    company_id = session.get('active_company_id')
+    mode = request.args.get('mode', 'client')
+    fmt = request.args.get('format', 'pdf').lower()
+    
+    from report_builder import generate_advisor_report
+    report_data = generate_advisor_report(company_id, mode)
+    
+    if report_data.get('status') == 'empty':
+        return jsonify(report_data), 400
+        
+    import io
+    from flask import send_file
+    from export_engine import generate_pdf_export, generate_docx_export
+    
+    filename = f"Audit_Report_{company_id}_{mode}.{fmt}"
+    if fmt == 'docx':
+        content = generate_docx_export(report_data)
+        mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    else:
+        content = generate_pdf_export(report_data)
+        mimetype = 'application/pdf'
+        
+    return send_file(io.BytesIO(content), mimetype=mimetype, as_attachment=True, download_name=filename)
+
+@app.route('/api/export/finding/<finding_id>', methods=['GET'])
+@login_required
+@require_company_role(['owner', 'admin', 'operator', 'viewer'])
+def api_export_finding(finding_id):
+    company_id = session.get('active_company_id')
+    mode = request.args.get('mode', 'client')
+    fmt = request.args.get('format', 'pdf').lower()
+    
+    from export_engine import build_finding_report, generate_pdf_export, generate_docx_export
+    report_data = build_finding_report(company_id, finding_id, mode)
+    if not report_data:
+        return jsonify({"status": "error", "message": "Finding not found"}), 404
+        
+    import io
+    from flask import send_file
+    
+    filename = f"Finding_{finding_id}_{mode}.{fmt}"
+    if fmt == 'docx':
+        content = generate_docx_export(report_data)
+        mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    else:
+        content = generate_pdf_export(report_data)
+        mimetype = 'application/pdf'
+        
+    return send_file(io.BytesIO(content), mimetype=mimetype, as_attachment=True, download_name=filename)
 
 if __name__ == '__main__':
     import sys

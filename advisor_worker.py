@@ -63,6 +63,8 @@ def _advisor_worker_loop(company_id: int, user_id: int):
             try:
                 from advisor_service import get_advisor_aggregation_payload
                 from advisor_orchestrator import run_advisor_orchestration
+                from database import insert_advisor_findings
+                import uuid
                 
                 # Retrieve raw dataset
                 payload = get_advisor_aggregation_payload(user_id, company_id)
@@ -71,6 +73,20 @@ def _advisor_worker_loop(company_id: int, user_id: int):
                 
                 # Deterministically compute insights
                 results = run_advisor_orchestration(payload)
+                
+                # Persist canonical findings to the database
+                analysis_run_id = str(uuid.uuid4())
+                findings_to_insert = []
+                for cat in ["fraud_red_flags", "key_findings", "document_intelligence", "internal_controls", "scenario_simulator"]:
+                    for f in results.get(cat, []):
+                        if "finding_id" in f:
+                            findings_to_insert.append(f)
+                
+                insert_advisor_findings(company_id, analysis_run_id, findings_to_insert)
+                
+                from database import sync_remediation_tasks
+                sync_remediation_tasks(company_id, findings_to_insert)
+                
                 results_json = json.dumps(results)
                 
                 # 4. Success Commit pushing rendered payload cache

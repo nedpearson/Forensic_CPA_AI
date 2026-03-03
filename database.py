@@ -377,6 +377,42 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS advisor_findings (
+            finding_id TEXT PRIMARY KEY,
+            company_id INTEGER NOT NULL,
+            analysis_run_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            severity TEXT NOT NULL, 
+            confidence INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            executive_summary TEXT,
+            plain_english_explanation TEXT,
+            forensic_rationale TEXT,
+            financial_impact TEXT,
+            recommended_actions TEXT,
+            evidence_graph TEXT,
+            drilldown_queries TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (company_id) REFERENCES companies(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS advisor_remediation_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL,
+            finding_id TEXT NOT NULL,
+            analysis_run_id TEXT NOT NULL,
+            task_description TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            owner TEXT DEFAULT 'unassigned',
+            due_date TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (company_id) REFERENCES companies(id),
+            FOREIGN KEY (finding_id) REFERENCES advisor_findings(finding_id) ON DELETE CASCADE,
+            UNIQUE(finding_id, task_description)
+        );
+
         CREATE TABLE IF NOT EXISTS merchant_context_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES users(id),
@@ -2660,3 +2696,226 @@ def update_advisor_company_state(company_id: int, status: str = None, needs_refr
     cursor.execute(query, params)
     conn.commit()
     conn.close()
+
+def insert_advisor_findings(company_id: int, run_id: str, findings: list):
+    """
+    Deterministically bulk-upserts canonical Findings into the database.
+    findings should be a list of dicts matching the advisor_findings schema.
+    """
+    if not findings:
+        return
+        
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    query = """
+    INSERT INTO advisor_findings (
+        finding_id, company_id, analysis_run_id, category, severity, confidence,
+        title, executive_summary, plain_english_explanation, forensic_rationale,
+        financial_impact, recommended_actions, evidence_graph, drilldown_queries
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(finding_id) DO UPDATE SET
+        analysis_run_id = excluded.analysis_run_id,
+        severity = excluded.severity,
+        confidence = excluded.confidence,
+        executive_summary = excluded.executive_summary,
+        plain_english_explanation = excluded.plain_english_explanation,
+        forensic_rationale = excluded.forensic_rationale,
+        financial_impact = excluded.financial_impact,
+        recommended_actions = excluded.recommended_actions,
+        evidence_graph = excluded.evidence_graph,
+        drilldown_queries = excluded.drilldown_queries,
+        created_at = CURRENT_TIMESTAMP
+    """
+    
+    rows = []
+    import json
+    for f in findings:
+        rows.append((
+            f['finding_id'],
+            company_id,
+            run_id,
+            f['category'],
+            f.get('severity', 'info'),
+            f.get('confidence', 0),
+            f['title'],
+            f.get('executive_summary', ''),
+            f.get('plain_english_explanation', ''),
+            f.get('forensic_rationale', ''),
+            json.dumps(f.get('financial_impact', {})),
+            json.dumps(f.get('recommended_actions', [])),
+            json.dumps(f.get('evidence_graph', [])),
+            json.dumps(f.get('drilldown_queries', {}))
+        ))
+        
+    cursor.executemany(query, rows)
+    conn.commit()
+    conn.close()
+
+def get_advisor_findings(company_id: int, category: str = None) -> list:
+    """
+    Fetches persisted AI Advisor findings for a specific company, ensuring strict isolation.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if category:
+        cursor.execute("SELECT * FROM advisor_findings WHERE company_id = ? AND category = ? ORDER BY confidence DESC, created_at DESC", (company_id, category))
+    else:
+        cursor.execute("SELECT * FROM advisor_findings WHERE company_id = ? ORDER BY category, confidence DESC", (company_id,))
+        
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    import json
+    for row in rows:
+        d = dict(row)
+        for key in ['financial_impact', 'recommended_actions', 'evidence_graph', 'drilldown_queries']:
+            if d.get(key) and isinstance(d[key], str):
+                try:
+                    d[key] = json.loads(d[key])
+                except Exception:
+                    pass
+        results.append(d)
+        
+    return results
+
+def get_advisor_finding_by_id(company_id: int, finding_id: str) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM advisor_findings WHERE company_id = ? AND finding_id = ?", (company_id, finding_id))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+        
+    import json
+    d = dict(row)
+    for key in ['financial_impact', 'recommended_actions', 'evidence_graph', 'drilldown_queries']:
+        if d.get(key) and isinstance(d[key], str):
+            try:
+                d[key] = json.loads(d[key])
+            except Exception:
+                pass
+    return d
+
+def sync_remediation_tasks(company_id: int, findings: list):
+    """
+    Creates unassigned, open remediation tasks for new findings' recommended actions.
+    Existing tasks (by finding_id and description) are ignored via INSERT OR IGNORE.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    tasks_to_insert = []
+    for f in findings:
+        actions = f.get('recommended_actions', [])
+        for act in actions:
+            tasks_to_insert.append((
+                company_id,
+                f['finding_id'],
+                f.get('analysis_run_id', 'unknown'),
+                act
+            ))
+            
+    if tasks_to_insert:
+        cursor.executemany('''
+            INSERT OR IGNORE INTO advisor_remediation_tasks 
+            (company_id, finding_id, analysis_run_id, task_description) 
+            VALUES (?, ?, ?, ?)
+        ''', tasks_to_insert)
+        conn.commit()
+    conn.close()
+
+def get_remediation_tasks(company_id: int) -> list:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT t.*, f.title as finding_title, f.category as finding_category, f.severity as finding_severity
+        FROM advisor_remediation_tasks t
+        LEFT JOIN advisor_findings f ON t.finding_id = f.finding_id
+        WHERE t.company_id = ?
+        ORDER BY t.created_at DESC
+    ''', (company_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def update_remediation_task(company_id: int, task_id: int, updates: dict):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    allowed_fields = ['status', 'owner', 'due_date', 'notes']
+    set_clauses = []
+    params = []
+    
+    for k, v in updates.items():
+        if k in allowed_fields:
+            set_clauses.append(f"{k} = ?")
+            params.append(v)
+            
+    if set_clauses:
+        set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+        params.extend([company_id, task_id])
+        cursor.execute(f"UPDATE advisor_remediation_tasks SET {', '.join(set_clauses)} WHERE company_id = ? AND id = ?", params)
+        conn.commit()
+    conn.close()
+    
+def get_advisor_re_audit_status(company_id: int) -> dict:
+    """
+    Compares the current findings vs historical findings to determine remediation progress.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT analysis_run_id, created_at FROM advisor_findings WHERE company_id = ? ORDER BY created_at DESC LIMIT 1", (company_id,))
+    latest = cursor.fetchone()
+    if not latest:
+        conn.close()
+        return {"status": "no_runs", "message": "No audits have been run for this company."}
+        
+    latest_run_id = latest['analysis_run_id']
+    
+    cursor.execute("SELECT DISTINCT analysis_run_id, MAX(created_at) as run_time FROM advisor_findings WHERE company_id = ? GROUP BY analysis_run_id ORDER BY run_time DESC", (company_id,))
+    runs = cursor.fetchall()
+    
+    if len(runs) <= 1:
+        conn.close()
+        return {"status": "single_run", "message": "Only one audit has been run. Re-run after applying fixes to see changes.", "current_run_id": latest_run_id}
+        
+    previous_run_id = runs[1]['analysis_run_id']
+    
+    cursor.execute("SELECT count(*) as cnt FROM advisor_findings WHERE company_id = ? AND analysis_run_id = ?", (company_id, latest_run_id))
+    current_count = cursor.fetchone()['cnt']
+    
+    cursor.execute("SELECT count(*) as cnt FROM advisor_findings WHERE company_id = ? AND analysis_run_id = ?", (company_id, previous_run_id))
+    previous_count = cursor.fetchone()['cnt']
+    
+    cursor.execute('''
+        SELECT finding_id FROM advisor_findings 
+        WHERE company_id = ? AND analysis_run_id = ? 
+        AND finding_id NOT IN (
+            SELECT finding_id FROM advisor_findings WHERE company_id = ? AND analysis_run_id = ?
+        )
+    ''', (company_id, previous_run_id, company_id, latest_run_id))
+    
+    resolved_ids = [r['finding_id'] for r in cursor.fetchall()]
+    
+    if resolved_ids:
+        placeholders = ','.join(['?']*len(resolved_ids))
+        cursor.execute(f"UPDATE advisor_remediation_tasks SET status = 'done', notes = 'Resolved by Re-Audit' WHERE company_id = ? AND finding_id IN ({placeholders}) AND status != 'done'", [company_id] + resolved_ids)
+        conn.commit()
+    
+    conn.close()
+    
+    return {
+        "status": "compared",
+        "current_run_id": latest_run_id,
+        "previous_run_id": previous_run_id,
+        "current_issues": current_count,
+        "previous_issues": previous_count,
+        "net_improvement": previous_count - current_count,
+        "resolved_finding_ids": resolved_ids
+    }

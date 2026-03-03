@@ -478,7 +478,8 @@ def get_recipient_analysis(user_id, filters=None):
     """Analyze money recipients - who gets the money, how much, how often."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(user_id, filters)
+    company_id = filters.get('company_id') if filters else None
+    where, params = build_filter_clause(user_id, filters, company_id=company_id)
 
     cursor.execute(f"""
         SELECT description, amount, trans_date, cardholder_name, category,
@@ -641,7 +642,8 @@ def get_deposit_aging(user_id, filters=None):
     """Analyze how quickly deposits are followed by withdrawals/transfers."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(user_id, filters)
+    company_id = filters.get('company_id') if filters else None
+    where, params = build_filter_clause(user_id, filters, company_id=company_id)
 
     cursor.execute(f"""
         SELECT id, trans_date, description, amount, cardholder_name
@@ -767,7 +769,8 @@ def get_executive_summary(user_id, filters=None):
     """Generate an executive summary of key forensic findings."""
     conn = get_db()
     cursor = conn.cursor()
-    where, params = build_filter_clause(user_id, filters)
+    company_id = filters.get('company_id') if filters else None
+    where, params = build_filter_clause(user_id, filters, company_id=company_id)
 
     summary = {'findings': [], 'risk_score': 0, 'total_analyzed': 0}
 
@@ -833,7 +836,7 @@ def get_executive_summary(user_id, filters=None):
             summary['risk_score'] += 15
 
     # Finding: Rapid deposit drain
-    where_d, params_d = build_filter_clause(user_id, filters, 'd')
+    where_d, params_d = build_filter_clause(user_id, filters, table_alias='d', company_id=company_id)
     cursor.execute(f"""
         SELECT COUNT(*) as cnt FROM (
             SELECT d.id, d.amount as dep_amt,
