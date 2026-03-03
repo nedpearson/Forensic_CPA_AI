@@ -12,6 +12,7 @@ gunicorn==21.2.0
 python-dotenv==1.0.1
 openai==1.55.0
 pydantic==2.10.2
+psycopg2-binary>=2.9.9
 azure-ai-documentintelligence==1.0.0b4
 azure-core==1.32.0
 flask-login
