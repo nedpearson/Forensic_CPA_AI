@@ -1,12 +1,22 @@
-import os
+import re
 
 with open('database_pg.py', 'r', encoding='utf-8') as f:
     text = f.read()
 
-# Replace all occurrences of wrongly escaped strings
-new_text = text.replace(r"\'id\'", "'id'")
+# Automatically append RETURNING id to all basic INSERT statements
+text = re.sub(
+    r'(?i)(INSERT\s+INTO\s+[\w_]+\s*\([^)]+\)\s*VALUES\s*\([^)]+\))(["\'])', 
+    r'\1 RETURNING id\2', 
+    text
+)
+
+# Replace cursor.lastrowid
+text = text.replace('cursor.lastrowid', "cursor.fetchone()['id']")
+
+# Also handle "RETURNING id" being duplicated inside scripts if run twice
+text = text.replace('RETURNING id RETURNING id', 'RETURNING id')
 
 with open('database_pg.py', 'w', encoding='utf-8') as f:
-    f.write(new_text)
+    f.write(text)
 
-print("Fixed database_pg.py successfully.")
+print("Properly patched lastrowid and RETURNING id.")

@@ -601,8 +601,8 @@ def init_db():
     if not root_user:
         import werkzeug.security
         hashed = werkzeug.security.generate_password_hash("root")
-        cursor.execute("INSERT INTO fcpa_users (email, password_hash) VALUES (%s, %s)", ("root@system.local", hashed))
-        root_id = cursor.lastrowid
+        cursor.execute("INSERT INTO fcpa_users (email, password_hash) VALUES (%s, %s) RETURNING id", ("root@system.local", hashed))
+        root_id = cursor.fetchone()['id']
     else:
         root_id = root_user['id']
 
@@ -688,13 +688,13 @@ def init_db():
         if not cursor.fetchone():
             default_name = f"{u_email.split('@')[0].capitalize()}'s Workspace"
             cursor.execute(
-                "INSERT INTO fcpa_companies (name, created_by, owner_user_id) VALUES (%s, %s, %s)",
+                "INSERT INTO fcpa_companies (name, created_by, owner_user_id) VALUES (%s, %s, %s) RETURNING id",
                 (default_name, u_id, u_id)
             )
-            new_comp_id = cursor.lastrowid
+            new_comp_id = cursor.fetchone()['id']
             
             cursor.execute(
-                "INSERT INTO fcpa_company_memberships (user_id, company_id, role, is_default) VALUES (%s, %s, 'owner', 1)",
+                "INSERT INTO fcpa_company_memberships (user_id, company_id, role, is_default) VALUES (%s, %s, 'owner', 1) RETURNING id",
                 (u_id, new_comp_id)
             )
 
@@ -871,7 +871,7 @@ def create_company_invitation(company_id, email, intended_role, invited_by_user_
             (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at))
-        invite_id = cursor.lastrowid
+        invite_id = cursor.fetchone()['id']
         conn.commit()
         return {'id': invite_id, 'raw_token': raw_token, 'expires_at': expires_at}, None
     except Exception as e:
@@ -970,8 +970,8 @@ def create_user(email, password, role='USER'):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("INSERT INTO fcpa_users (email, password_hash, role) VALUES (%s, %s, %s)", (email, hashed, role))
-        user_id = cursor.lastrowid
+        cursor.execute("INSERT INTO fcpa_users (email, password_hash, role) VALUES (%s, %s, %s) RETURNING id", (email, hashed, role))
+        user_id = cursor.fetchone()['id']
         conn.commit()
         seed_taxonomy(user_id)
         return user_id
@@ -1018,10 +1018,10 @@ def create_demo_user(wipe_data=False):
         else:
             # Create new
             cursor.execute(
-                "INSERT INTO fcpa_users (email, password_hash, is_demo) VALUES (%s, %s, 1)", 
+                "INSERT INTO fcpa_users (email, password_hash, is_demo) VALUES (%s, %s, 1) RETURNING id", 
                 (email, hashed)
             )
-            user_id = cursor.lastrowid
+            user_id = cursor.fetchone()['id']
             
         conn.commit()
         return user_id
@@ -1064,10 +1064,10 @@ def add_account(user_id, account_name, account_number, account_type, institution
     db_conn = conn or get_db()
     cursor = db_conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO fcpa_accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
     )
-    account_id = cursor.lastrowid
+    account_id = cursor.fetchone()['id']
     if not is_external_conn:
         db_conn.commit()
         db_close_db(conn)
@@ -1122,10 +1122,10 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
             return row['id']
 
     cursor.execute(
-        "INSERT INTO fcpa_documents (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO fcpa_documents (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id, status)
     )
-    doc_id = cursor.lastrowid
+    doc_id = cursor.fetchone()['id']
     
     if not is_external_conn:
         db_conn.commit()
@@ -1398,7 +1398,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
         kwargs.get('merchant_id'), kwargs.get('categorization_confidence'), kwargs.get('categorization_source'),
         kwargs.get('categorization_status'), kwargs.get('categorization_explanation')
     ))
-    trans_id = cursor.lastrowid
+    trans_id = cursor.fetchone()['id']
     
     if doc_id:
         try:
@@ -1558,7 +1558,7 @@ def update_transaction(user_id, trans_id, company_id=None, **fields):
         # Log the change
         if str(old.get(field)) != str(value):
             cursor.execute(
-                "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, new_value, field_changed) VALUES (%s, %s, 'update', %s, %s, %s)",
+                "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, new_value, field_changed) VALUES (%s, %s, 'update', %s, %s, %s) RETURNING id",
                 (user_id, trans_id, str(old.get(field)), str(value), field)
             )
 
@@ -1588,7 +1588,7 @@ def delete_transaction(user_id, trans_id, company_id=None):
     old = cursor.fetchone()
     if old:
         cursor.execute(
-            "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (%s, %s, 'delete', %s, 'all')",
+            "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (%s, %s, 'delete', %s, 'all') RETURNING id",
             (user_id, trans_id, str(dict(old)))
         )
     cursor.execute("DELETE FROM fcpa_transactions WHERE id = %s AND user_id = %s AND company_id = %s", (trans_id, user_id, company_id))
@@ -1680,7 +1680,7 @@ def add_category(user_id, name, parent_category=None, category_type='other', col
             INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, company_id, name, parent_category, category_type, color, icon))
-        cat_id = cursor.lastrowid
+        cat_id = cursor.fetchone()['id']
         conn.commit()
         return cat_id
     except Exception as e:
@@ -1973,7 +1973,7 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
     else:
         # Insert a fresh rule
         cursor.execute(
-            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, CURRENT_TIMESTAMP)",
+            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, CURRENT_TIMESTAMP) RETURNING id",
             (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
         )
         
@@ -2067,10 +2067,10 @@ def add_case_note(user_id, title, content, note_type='general', severity='info',
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_case_notes (user_id, company_id, title, content, note_type, severity, linked_transaction_ids) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO fcpa_case_notes (user_id, company_id, title, content, note_type, severity, linked_transaction_ids) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
         (user_id, company_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
     )
-    note_id = cursor.lastrowid
+    note_id = cursor.fetchone()['id']
     conn.commit()
     close_db(conn)
     return note_id
@@ -2125,8 +2125,8 @@ def get_saved_filters(user_id, company_id=None):
 def add_saved_filter(user_id, name, filters):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s)", (user_id, name, json.dumps(filters)))
-    fid = cursor.lastrowid
+    cursor.execute("INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s) RETURNING id", (user_id, name, json.dumps(filters)))
+    fid = cursor.fetchone()['id']
     conn.commit()
     close_db(conn)
     return fid
@@ -2228,11 +2228,11 @@ def add_saved_filter(user_id, name, filters_dict):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s)",
+        "INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s) RETURNING id",
         (user_id, name, json.dumps(filters_dict))
     )
     conn.commit()
-    fid = cursor.lastrowid
+    fid = cursor.fetchone()['id']
     close_db(conn)
     return fid
 
@@ -2260,7 +2260,7 @@ def log_drilldown(user_id, data):
         data.get('metadata')
     ))
     conn.commit()
-    log_id = cursor.lastrowid
+    log_id = cursor.fetchone()['id']
     close_db(conn)
     return log_id
 
@@ -2272,7 +2272,7 @@ def add_document_extraction(user_id, document_id, status='pending'):
         VALUES (%s, %s, %s)
     """, (user_id, document_id, status))
     conn.commit()
-    ext_id = cursor.lastrowid
+    ext_id = cursor.fetchone()['id']
     close_db(conn)
     return ext_id
 
@@ -2337,10 +2337,10 @@ def add_taxonomy_config(user_id, name, description, category_type, severity, com
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute(
-            "INSERT INTO fcpa_taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO fcpa_taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
             (user_id, company_id, name, description, category_type, severity)
         )
-        _id = cursor.lastrowid
+        _id = cursor.fetchone()['id']
         conn.commit()
         return _id
     except psycopg2.IntegrityError:
@@ -2378,7 +2378,7 @@ def add_document_categorization(user_id, document_id, extraction_id, categorizat
         provider, model, next_version, status, error_message
     ))
     conn.commit()
-    cat_id = cursor.lastrowid
+    cat_id = cursor.fetchone()['id']
     close_db(conn)
     return cat_id
 
@@ -2502,7 +2502,7 @@ def seed_taxonomy(user_id, passed_cursor=None, company_id=None):
 
     for cat in default_categories:
         cursor.execute(
-            "INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (user_id, company_id) + cat
         )
 
@@ -2551,7 +2551,7 @@ def seed_taxonomy(user_id, passed_cursor=None, company_id=None):
 
     for rule in default_rules:
         cursor.execute(
-            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (user_id, company_id) + rule
         )
             
@@ -2633,7 +2633,7 @@ def add_merchant_context_rule(user_id: int, merchant_id: int, context_type: str,
         mapped_category_id=excluded.mapped_category_id, priority=excluded.priority
     """, (user_id, merchant_id, context_type, str(context_value), mapped_category_id, priority))
     conn.commit()
-    rule_id = cursor.lastrowid
+    rule_id = cursor.fetchone()['id']
     close_db(conn)
     return rule_id
 
@@ -2684,7 +2684,7 @@ def update_advisor_company_state(company_id: int, status: str = None, needs_refr
     # Ensure a row exists first
     cursor.execute("SELECT 1 FROM fcpa_advisor_company_state WHERE company_id = %s", (company_id,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO fcpa_advisor_company_state (company_id) VALUES (%s)", (company_id,))
+        cursor.execute("INSERT INTO fcpa_advisor_company_state (company_id) VALUES (%s) RETURNING id", (company_id,))
         
     updates = ["updated_at = CURRENT_TIMESTAMP"]
     params = []
