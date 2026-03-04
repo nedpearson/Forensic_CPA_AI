@@ -39,10 +39,16 @@ def seed_demo_environment():
     # 3. Add sample taxonomy configs
     topics = scenario.get("taxonomy", [])
     conn = database.get_db()
+    
+    # Check if we are using Postgres or SQLite to properly format queries
+    is_pg = os.environ.get('DB_DIALECT', 'sqlite').lower() == 'postgres'
+    placeholder = '%s' if is_pg else '?'
+    table_prefix = 'fcpa_' if is_pg else ''
+    
     cursor = conn.cursor()
     for topic in topics:
         cursor.execute(
-            "INSERT INTO taxonomy_config (user_id, name, description, category_type, severity) VALUES (?, ?, ?, ?, ?)",
+            f"INSERT INTO {table_prefix}taxonomy_config (user_id, name, description, category_type, severity) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
             (user_id, topic['name'], topic['description'], topic['category_type'], topic['severity'])
         )
         
@@ -59,22 +65,29 @@ def seed_demo_environment():
             tx_date = (today - timedelta(days=random_days)).strftime('%Y-%m-%d')
             
             # Use query builder directly
-            cursor.execute("""
-                INSERT INTO transactions (
+            cursor.execute(f"""
+                INSERT INTO {table_prefix}transactions (
                     user_id, account_id, trans_date, description, amount, trans_type
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             """, (user_id, account_ids[tx["acc"]], tx_date, tx["desc"], tx["amount"], tx["type"]))
             records_inserted += 1
             
     # Add a specifically flagged anomaly
     flagged = scenario.get("flagged_transaction", {})
     if flagged:
-        cursor.execute("""
-            INSERT INTO transactions (
+        cursor.execute(f"""
+            INSERT INTO {table_prefix}transactions (
                 user_id, account_id, trans_date, description, amount, trans_type, is_flagged, flag_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """, (user_id, account_ids.get(flagged["acc"], account_ids['bank']), today.strftime('%Y-%m-%d'), 
               flagged["desc"], flagged["amount"], flagged["type"], 1, flagged["flag_reason"]))
+
+        # For the flagged anomaly, we need its ID for the proof link
+        if is_pg:
+            cursor.execute(f"SELECT id FROM {table_prefix}transactions WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
+            tx_id_flagged = cursor.fetchone()['id']
+        else:
+            tx_id_flagged = cursor.lastrowid
 
     # Free the write lock so add_document can use its own connection
     conn.commit()
@@ -95,19 +108,22 @@ def seed_demo_environment():
         )
 
     # Adding mock proof link just to populate the drill down
-    if doc_id:
-        tx_id_flagged = cursor.lastrowid
-        cursor.execute("INSERT INTO proof_links (user_id, transaction_id, document_id) VALUES (?, ?, ?)", (user_id, tx_id_flagged, doc_id))
+    if doc_id and flagged:
+        cursor.execute(f"INSERT INTO {table_prefix}proof_links (user_id, transaction_id, document_id) VALUES ({placeholder}, {placeholder}, {placeholder})", (user_id, tx_id_flagged, doc_id))
 
     conn.commit()
     
     # Verification
-    cursor.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
-    count = cursor.fetchone()[0]
-    print(f"DB PATH IS: {database.DB_PATH}")
+    cursor.execute(f"SELECT COUNT(*) FROM {table_prefix}transactions WHERE user_id = {placeholder}", (user_id,))
+    
+    if is_pg:
+        count = cursor.fetchone()['count']
+    else:
+        count = cursor.fetchone()[0]
+        
     print(f"Transactions committed to DB for user {user_id}: {count}")
     
-    conn.close()
+    database.close_db(conn)
     
     print(f"Demo seeding complete. Inserted {records_inserted + 1} realistic mock transactions.")
     return user_id
