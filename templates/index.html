@@ -172,6 +172,43 @@
             color: #fff;
         }
 
+        .btn-outline-purple {
+            color: #bc8cff;
+            border: 1px solid #bc8cff;
+            background: transparent;
+            font-weight: 600;
+        }
+
+        .btn-outline-purple:hover {
+            color: #000;
+            background-color: #bc8cff;
+        }
+
+        .btn-check:checked+.btn-outline-purple {
+            background-color: #bc8cff;
+            color: #000;
+            border-color: #a372eb;
+        }
+
+        .btn-outline-mode {
+            color: #fff;
+            border: 1px solid #8b949e;
+            background: transparent;
+        }
+
+        .btn-outline-mode:hover {
+            color: #fff;
+            background: #21262d;
+            border-color: #c9d1d9;
+        }
+
+        .btn-check:checked+.btn-outline-mode {
+            background-color: #238636;
+            border-color: #2ea043;
+            color: #fff;
+            font-weight: 600;
+        }
+
         .card-dark {
             background: #161b22;
             border: 1px solid #30363d;
@@ -1496,10 +1533,10 @@
                     <div class="btn-group me-3" role="group">
                         <input type="radio" class="btn-check" name="advisorMode" id="advisorModeClient" value="client"
                             autocomplete="off" checked onchange="loadAdvisorReport()">
-                        <label class="btn btn-sm btn-outline-purple" for="advisorModeClient">Client Mode</label>
+                        <label class="btn btn-sm btn-outline-mode" for="advisorModeClient">Client Mode</label>
                         <input type="radio" class="btn-check" name="advisorMode" id="advisorModeAuditor" value="auditor"
                             autocomplete="off" onchange="loadAdvisorReport()">
-                        <label class="btn btn-sm btn-outline-purple" for="advisorModeAuditor">Auditor Mode</label>
+                        <label class="btn btn-sm btn-outline-mode" for="advisorModeAuditor">Auditor Mode</label>
                     </div>
                     <button class="btn btn-sm btn-info shadow-sm me-2" onclick="exportAdvisorReportPDF()"><i
                             class="fas fa-file-pdf"></i> Export PDF</button>
@@ -2545,7 +2582,7 @@
                 </div>
 
                 <!-- User Badge -->
-                <div class="position-absolute bottom-0 end-0 p-3">
+                <div class="d-flex justify-content-end mt-3">
                     <div class="d-flex align-items-center rounded px-3 py-2 shadow-sm"
                         style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
                         <span class="text-muted me-3 small"><i class="fas fa-user-check text-success me-2"></i>{{
@@ -2578,7 +2615,7 @@
             </div>
 
             <!-- User Badge -->
-            <div class="position-absolute bottom-0 end-0 p-3">
+            <div class="d-flex justify-content-end mt-3">
                 <div class="d-flex align-items-center rounded px-3 py-2 shadow-sm"
                     style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
                     <span class="text-muted me-3 small"><i class="fas fa-user-check text-success me-2"></i>{{
@@ -5689,19 +5726,7 @@
                     if (sidebarInfo) {
                         let companyOptions = user.companies ? user.companies.map(c => `<option value="${c.id}" ${c.id === user.active_company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '';
 
-                        sidebarInfo.innerHTML = `
-                            <div class="mt-2 mb-2">
-                                <select class="form-select form-select-sm" style="background-color: rgba(255,255,255,0.05); color: #c9d1d9; border-color: rgba(255,255,255,0.1);" onchange="switchCompany(this.value)">
-                                    ${companyOptions}
-                                    <option disabled>──────────</option>
-                                    <option value="NEW_COMPANY">+ Create New Workspace</option>
-                                </select>
-                            </div>
-                            <div style="color: #58a6ff; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
-                                <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${esc(user.email)}</span>
-                                <i class="fas fa-sign-out-alt ms-1 text-muted hover-white"></i>
-                            </div>
-                        `;
+                        sidebarInfo.innerHTML = '';
                     }
 
                     // Top Bar
@@ -6459,11 +6484,11 @@
                         <div class="btn-group" role="group" aria-label="Report Mode">
                             <input type="radio" class="btn-check" name="reportMode" id="reportModeClient" value="client"
                                 autocomplete="off" checked onchange="loadNarrativeReport()">
-                            <label class="btn btn-outline-purple" for="reportModeClient">Client-Facing</label>
+                            <label class="btn btn-outline-mode" for="reportModeClient">Client-Facing</label>
 
                             <input type="radio" class="btn-check" name="reportMode" id="reportModeAuditor"
                                 value="auditor" autocomplete="off" onchange="loadNarrativeReport()">
-                            <label class="btn btn-outline-purple" for="reportModeAuditor">Auditor-Facing</label>
+                            <label class="btn btn-outline-mode" for="reportModeAuditor">Auditor-Facing</label>
                         </div>
                     </div>
                     <div id="narrativeReportBody" class="p-3">

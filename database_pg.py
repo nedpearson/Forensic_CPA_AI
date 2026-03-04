@@ -1,4 +1,5 @@
 import psycopg2
+import psycopg2.pool
 from psycopg2.extras import RealDictCursor
 """
 Database layer for Forensic Auditor.
@@ -84,9 +85,9 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-    cursor.executescript("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS fcpa_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             is_demo INTEGER DEFAULT 0,
@@ -95,7 +96,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_companies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             legal_name TEXT,
             created_by INTEGER REFERENCES fcpa_users(id),
@@ -106,7 +107,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_company_memberships (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id) ON DELETE CASCADE,
             company_id INTEGER REFERENCES fcpa_companies(id) ON DELETE CASCADE,
             role TEXT NOT NULL DEFAULT 'viewer',
@@ -119,7 +120,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_company_invitations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             company_id INTEGER REFERENCES fcpa_companies(id) ON DELETE CASCADE,
             email TEXT NOT NULL,
             invited_by_user_id INTEGER REFERENCES fcpa_users(id) ON DELETE SET NULL,
@@ -147,7 +148,7 @@ def init_db():
 
 
         CREATE TABLE IF NOT EXISTS fcpa_accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             account_name TEXT NOT NULL,
             account_number TEXT,
@@ -160,7 +161,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             filename TEXT NOT NULL,
             original_path TEXT,
@@ -180,7 +181,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER,
             account_id INTEGER,
@@ -218,7 +219,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             parent_category TEXT,
@@ -237,7 +238,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_category_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             pattern TEXT NOT NULL,
             category TEXT NOT NULL,
@@ -251,7 +252,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER,
             action TEXT NOT NULL,
@@ -263,7 +264,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_proof_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
@@ -274,7 +275,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_transaction_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
@@ -285,7 +286,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_case_notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             title TEXT NOT NULL,
             content TEXT NOT NULL,
@@ -297,7 +298,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_drilldown_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             source_tab TEXT NOT NULL,
             widget_id TEXT NOT NULL,
@@ -308,7 +309,7 @@ def init_db():
         );
         
         CREATE TABLE IF NOT EXISTS fcpa_saved_filters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             filters TEXT NOT NULL,
@@ -316,7 +317,7 @@ def init_db():
         );
         
         CREATE TABLE IF NOT EXISTS fcpa_document_extractions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER NOT NULL,
             extraction_data TEXT,  -- JSON string of the extracted fields/layout
@@ -329,7 +330,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_taxonomy_config (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             description TEXT NOT NULL,
@@ -339,7 +340,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_document_categorizations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER NOT NULL,
             extraction_id INTEGER,
@@ -355,7 +356,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_saved_filters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             filters TEXT NOT NULL,  -- JSON object of filter params
@@ -363,7 +364,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_integrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             provider TEXT NOT NULL,
             account_id TEXT,
@@ -381,7 +382,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchants (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             canonical_name TEXT NOT NULL,
             default_category_id INTEGER REFERENCES fcpa_categories(id),
@@ -413,7 +414,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_advisor_remediation_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             company_id INTEGER NOT NULL,
             finding_id TEXT NOT NULL,
             analysis_run_id TEXT NOT NULL,
@@ -430,7 +431,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchant_context_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             merchant_id INTEGER REFERENCES fcpa_merchants(id) ON DELETE CASCADE,
             context_type TEXT NOT NULL,  -- e.g., 'account_type'
@@ -442,7 +443,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchant_aliases (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES fcpa_users(id),
             merchant_id INTEGER REFERENCES fcpa_merchants(id) ON DELETE CASCADE,
             raw_pattern TEXT NOT NULL,
@@ -450,7 +451,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_lookup_cache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             lookup_key TEXT NOT NULL UNIQUE,
             category_signal TEXT,
             confidence REAL,
@@ -572,7 +573,7 @@ def init_db():
 
     try:
         # Backfill missing cardholder_name from account_name for legacy fcpa_transactions
-        cursor.executescript("""
+        cursor.execute("""
             UPDATE fcpa_transactions 
             SET cardholder_name = (SELECT account_name FROM fcpa_accounts WHERE fcpa_accounts.id = fcpa_transactions.account_id)
             WHERE cardholder_name IS NULL OR cardholder_name IN ('', 'checking', 'credit', 'depository');
@@ -643,9 +644,9 @@ def init_db():
                     break
         
         if needs_integration_rebuild:
-            cursor.executescript('''
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS fcpa_integrations_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     user_id INTEGER REFERENCES fcpa_users(id),
                     company_id INTEGER REFERENCES fcpa_companies(id),
                     provider TEXT NOT NULL,
