@@ -59,6 +59,10 @@ def get_db():
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
+def close_db(conn):
+    if conn:
+        conn.close()
+
 
 def init_db():
     """Initialize all database tables."""

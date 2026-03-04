@@ -2,11 +2,12 @@ import re
 import os
 
 def convert():
-    with open('database.py', 'r', encoding='utf-8') as f:
+    with open('database_sqlite.py', 'r', encoding='utf-8') as f:
         content = f.read()
 
     # 1. Imports
-    content = content.replace('import sqlite3', 'import psycopg2\nfrom psycopg2 import pool\nfrom psycopg2.extras import RealDictCursor')
+    content = 'import psycopg2\nfrom psycopg2 import pool\nfrom psycopg2.extras import RealDictCursor\n' + content
+    content = content.replace('import sqlite3', '')
 
     # 2. Connection Logic
     db_logic = """
@@ -48,7 +49,10 @@ def close_db(conn):
         'users', 'accounts', 'documents', 'transactions', 'categories', 
         'category_rules', 'saved_filters', 'document_extractions', 
         'document_categorizations', 'audit_log', 'case_notes', 
-        'drilldown_logs', 'taxonomy_config', 'proof_links', 'integrations'
+        'drilldown_logs', 'taxonomy_config', 'proof_links', 'integrations',
+        'companies', 'company_memberships', 'company_invitations', 'advisor_company_state',
+        'transaction_sources', 'integrations_new', 'merchants', 'advisor_findings',
+        'advisor_remediation_tasks', 'merchant_context_rules', 'merchant_aliases', 'lookup_cache'
     ]
     
     for t in tables:
@@ -57,6 +61,9 @@ def close_db(conn):
 
     # Undo the accidental replacements of fcpa_users in function params or comments if any, but since these are generic nouns, let's refine:
     # We mainly need to replace them in FROM, INTO, UPDATE, JOIN, TABLE...
+    
+    # 5. Replace SQLite-specific errors with psycopg2 equivalents
+    content = content.replace('except sqlite3.IntegrityError', 'except psycopg2.IntegrityError')
     
     # 5. lastrowid to RETURNING id
     # Since sqlite lastrowid is used after execute, we can modify the execute statement
