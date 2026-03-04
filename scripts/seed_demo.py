@@ -45,7 +45,11 @@ def seed_demo_environment():
     placeholder = '%s' if is_pg else '?'
     table_prefix = 'fcpa_' if is_pg else ''
     
-    cursor = conn.cursor()
+    if is_pg:
+        from psycopg2.extras import RealDictCursor
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cursor = conn.cursor()
     for topic in topics:
         cursor.execute(
             f"INSERT INTO {table_prefix}taxonomy_config (user_id, name, description, category_type, severity) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
@@ -114,10 +118,10 @@ def seed_demo_environment():
     conn.commit()
     
     # Verification
-    cursor.execute(f"SELECT COUNT(*) FROM {table_prefix}transactions WHERE user_id = {placeholder}", (user_id,))
+    cursor.execute(f"SELECT COUNT(*) as cnt FROM {table_prefix}transactions WHERE user_id = {placeholder}", (user_id,))
     
     if is_pg:
-        count = cursor.fetchone()['count']
+        count = cursor.fetchone()['cnt']
     else:
         count = cursor.fetchone()[0]
         
