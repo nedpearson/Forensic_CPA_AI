@@ -1,8 +1,6 @@
 import os
-import sys
 
-from app import app
-from parsers import parse_document, parse_pdf_text
+from parsers import parse_document
 import zipfile
 from dotenv import load_dotenv
 load_dotenv()

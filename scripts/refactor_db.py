@@ -1,4 +1,3 @@
-import sys
 with open("database.py", "r", encoding="utf-8") as f:
     lines = f.readlines()
 

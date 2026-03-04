@@ -44,7 +44,7 @@ def test_export_audit_report_docx(client):
 def test_export_single_finding(client):
     setup_mock_data()
     
-    res = client.get(f'/api/export/finding/finding-101?format=pdf&mode=client')
+    res = client.get('/api/export/finding/finding-101?format=pdf&mode=client')
     assert res.status_code == 200
     assert res.headers['Content-Type'] == 'application/pdf'
     assert len(res.data) > 0

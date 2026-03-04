@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import requests
-import threading
 import subprocess
 from dotenv import load_dotenv
 
@@ -128,7 +127,7 @@ def main():
         if approve_resp.status_code != 200:
             print_fail(f"Could not approve document: {approve_resp.text}")
             return
-        print_pass(f"Document explicitly approved.")
+        print_pass("Document explicitly approved.")
         
         # 4. Verify Document Status
         docs_resp = session.get(f"{BASE_URL}/api/docs/{doc_id}")

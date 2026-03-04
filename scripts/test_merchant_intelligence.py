@@ -1,4 +1,3 @@
-import sqlite3
 import os
 import sys
 
@@ -55,7 +54,7 @@ def run_test():
         parent_id = MerchantNormalizer.learn_merchant_alias(user_id, "CHEVRON CORPORATE", "CHEVRON", category_id=cat_auto)
         
         # 2. Add a new explicit store "CHEVRON 0123" without a default category, but linking to the parent
-        child_id = MerchantNormalizer.learn_merchant_alias(user_id, "CHEVRON 0123", "CHEVRON 0123", category_id=None, parent_merchant_id=parent_id)
+        MerchantNormalizer.learn_merchant_alias(user_id, "CHEVRON 0123", "CHEVRON 0123", category_id=None, parent_merchant_id=parent_id)
         
         # 3. Categorize a new Chevron hit 
         # (It should resolve to 'CHEVRON 0123' via alias string matching, realize it has no category, and gracefully fallback to the 'CHEVRON' auto category)

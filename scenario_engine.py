@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from database import get_db
 
 def _calc_financials(txns: list) -> Dict[str, Any]:

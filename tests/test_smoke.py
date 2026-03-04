@@ -1,8 +1,5 @@
 import os
-import sqlite3
 import pytest
-from flask import g
-from werkzeug.security import generate_password_hash
 
 from app import app
 from database import init_db, get_db, DB_PATH

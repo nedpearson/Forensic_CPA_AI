@@ -10,7 +10,6 @@ import shutil
 import uuid
 import time
 import logging
-import glob as glob_mod
 import threading
 from concurrent.futures import ThreadPoolExecutor
 # Global executor for background ZIP processing
@@ -23,7 +22,7 @@ import urllib.parse
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g, session
 from werkzeug.utils import secure_filename
 from database import (
-    init_db, get_db, add_account, get_or_create_account, add_document, get_duplicate_document,
+    init_db, get_db, get_or_create_account, add_document, get_duplicate_document,
     add_transaction, update_transaction, delete_transaction,
     get_transactions, get_categories, get_accounts, get_documents,
     get_summary_stats, add_category, add_category_rule, get_category_rules,
@@ -35,16 +34,16 @@ from database import (
     add_taxonomy_config, delete_taxonomy_config,
     get_saved_filters, add_saved_filter, delete_saved_filter,
     get_integration, get_integrations, upsert_integration, delete_integration,
-    find_duplicate_transactions, delete_category, delete_category_rule,
+    find_duplicate_transactions, delete_category, delete_category_rule,  get_case_notes, add_case_note, update_case_note, delete_case_note,
     reset_user_taxonomy
 )
 from shared.encryption import encrypt_token, decrypt_token
 from query_builder import QueryBuilder
 from document_analyzer import AzureDocumentIntelligenceAdapter
 from auto_categorizer import AutoCategorizer
-from parsers import parse_document, parse_pdf_text
+from parsers import parse_document
 from categorizer import (
-    categorize_transaction, recategorize_all,
+    recategorize_all,
     detect_deposit_transfer_patterns, get_cardholder_spending_summary,
     get_recipient_analysis, get_deposit_aging, get_cardholder_comparison,
     get_audit_trail, suggest_rule_from_edit,
@@ -2193,7 +2192,6 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
         import zipfile
         import shutil
         import hashlib
-        from flask import current_app
 
         logger = logging.getLogger('forensic_cpa_ai')
 
@@ -2891,7 +2889,7 @@ def api_upload_commit():
 @login_required
 def api_document_approve(doc_id):
     """Approve a document and its parsed transactions."""
-    from database import get_db, update_document_status, document_lock
+    from database import get_db, document_lock
     
     with document_lock(doc_id):
         conn = get_db()
@@ -3386,7 +3384,7 @@ def api_advisor_aggregate():
             "status": "success",
             "data": cached_data
         })
-    except Exception as e:
+    except Exception:
         trigger_async_advisor_refresh(active_company_id, current_user.id, "JSON Cache Corruption Recovery")
         return jsonify({"status": "running", "message": "Rebuilding corrupted analysis state..."})
 

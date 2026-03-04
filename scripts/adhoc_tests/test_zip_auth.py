@@ -17,7 +17,7 @@ with open('test.zip', 'rb') as f:
         r2 = s.post('http://127.0.0.1:5000/api/upload/commit', json=req)
         print("Commit Response:", r2.status_code, r2.json())
         
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
 

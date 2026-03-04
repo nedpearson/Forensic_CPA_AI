@@ -153,7 +153,7 @@ def main():
         cursor.execute("SELECT COUNT(*) as c FROM transaction_sources WHERE transaction_id = ?", (shared_txn_id,))
         src_count = cursor.fetchone()['c']
         if src_count == 2:
-            print_pass(f"transaction_sources shows 2 sources for the overlapping txn.")
+            print_pass("transaction_sources shows 2 sources for the overlapping txn.")
         else:
             print_fail(f"Expected 2 sources, found {src_count}.")
             return

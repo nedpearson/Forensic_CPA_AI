@@ -3,7 +3,6 @@ import sys
 import time
 import requests
 import subprocess
-import threading
 from dotenv import load_dotenv
 
 # Ensure we have the base project path
@@ -27,7 +26,7 @@ def print_fail(msg):
     sys.exit(1)
 
 def main():
-    print(f"\n=== FORENSIC CPA AI - SUPER ADMIN DOCTOR ===\n")
+    print("\n=== FORENSIC CPA AI - SUPER ADMIN DOCTOR ===\n")
     
     # 1. Validate Env Vars
     print_step("Validating environment variables...")

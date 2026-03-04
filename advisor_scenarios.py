@@ -1,4 +1,3 @@
-import sqlite3
 from typing import Dict, Any, List
 from database import get_db, build_filter_clause
 

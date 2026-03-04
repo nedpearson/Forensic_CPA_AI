@@ -13,6 +13,6 @@ try:
             DELETE FROM saved_filters WHERE user_id = 4;
         ''')
         print("Success clear_all_data")
-except Exception as e:
+except Exception:
     import traceback
     traceback.print_exc()

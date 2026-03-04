@@ -1,7 +1,6 @@
 import os
-import json
 import pytest
-from flask import Flask, jsonify, g
+from flask import jsonify, g
 from werkzeug.security import generate_password_hash
 
 from app import app, require_auth, require_admin, require_super_admin, User

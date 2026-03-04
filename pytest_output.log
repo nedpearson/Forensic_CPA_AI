@@ -1,0 +1,254 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\dev\github\business\Forensic_CPA_AI
+plugins: anyio-4.12.1, mock-3.15.1
+collected 50 items
+
+tests\test_advisor_isolation.py EEEE                                     [  8%]
+tests\test_advisor_refresh.py FFF                                        [ 14%]
+tests\test_advisor_report.py FF                                          [ 18%]
+tests\test_analytics.py .EE                                              [ 24%]
+tests\test_categorization.py .F                                          [ 28%]
+tests\test_docs.py .FF                                                   [ 34%]
+tests\test_export.py FFF                                                 [ 40%]
+tests\test_integrations.py ...F                                          [ 48%]
+tests\test_pdf_extraction.py .                                           [ 50%]
+tests\test_remediation.py .FFF                                           [ 58%]
+tests\test_roles.py ....                                                 [ 66%]
+tests\test_simulator.py FFFFF                                            [ 76%]
+tests\test_smoke.py EEE                                                  [ 82%]
+tests\test_upload_formats.py .FFFF                                       [ 92%]
+tests\test_workspace_integrations.py ....                                [100%]
+
+=================================== ERRORS ====================================
+________________ ERROR at setup of test_unauthenticated_access ________________
+tests\test_advisor_isolation.py:29: in setup_test_client
+    conn.execute("DELETE FROM company_users")
+E   sqlite3.OperationalError: no such table: company_users
+---------------------------- Captured stdout setup ----------------------------
+Super admin verified: nedpearson@gmail.com created.
+_______________ ERROR at setup of test_missing_company_context ________________
+tests\test_advisor_isolation.py:29: in setup_test_client
+    conn.execute("DELETE FROM company_users")
+E   sqlite3.OperationalError: no such table: company_users
+______________ ERROR at setup of test_authorized_company_access _______________
+tests\test_advisor_isolation.py:29: in setup_test_client
+    conn.execute("DELETE FROM company_users")
+E   sqlite3.OperationalError: no such table: company_users
+________________ ERROR at setup of test_cross_tenant_isolation ________________
+tests\test_advisor_isolation.py:29: in setup_test_client
+    conn.execute("DELETE FROM company_users")
+E   sqlite3.OperationalError: no such table: company_users
+_____________ ERROR at setup of test_query_builder_faceted_counts _____________
+tests\test_analytics.py:13: in setup_database
+    init_db()
+database_sqlite.py:673: in init_db
+    cursor.execute(
+E   sqlite3.OperationalError: database is locked
+________________ ERROR at setup of test_api_analytics_overview ________________
+tests\test_analytics.py:13: in setup_database
+    init_db()
+database_sqlite.py:673: in init_db
+    cursor.execute(
+E   sqlite3.OperationalError: database is locked
+__________ ERROR at setup of test_super_admin_empty_state_and_login ___________
+tests\test_smoke.py:27: in smoke_client
+    init_db()
+database_sqlite.py:587: in init_db
+    cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", ("root@system.local", hashed))
+E   sqlite3.OperationalError: database is locked
+___________ ERROR at setup of test_new_user_signup_and_empty_state ____________
+tests\test_smoke.py:27: in smoke_client
+    init_db()
+database_sqlite.py:587: in init_db
+    cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", ("root@system.local", hashed))
+E   sqlite3.OperationalError: database is locked
+______________ ERROR at setup of test_demo_login_idempotent_seed ______________
+tests\test_smoke.py:27: in smoke_client
+    init_db()
+database_sqlite.py:587: in init_db
+    cursor.execute("INSERT INTO users (email, password_hash) VALUES (?, ?)", ("root@system.local", hashed))
+E   sqlite3.OperationalError: database is locked
+================================== FAILURES ===================================
+____ AdvisorRefreshTestCase.test_01_trigger_sets_queued_and_needs_refresh _____
+tests\test_advisor_refresh.py:28: in setUp
+    cursor.execute("DELETE FROM advisor_company_state WHERE company_id IN (?, ?)", (self.company_id_1, self.company_id_2))
+E   sqlite3.OperationalError: database is locked
+__ AdvisorRefreshTestCase.test_02_running_status_is_protected_during_bursts ___
+tests\test_advisor_refresh.py:28: in setUp
+    cursor.execute("DELETE FROM advisor_company_state WHERE company_id IN (?, ?)", (self.company_id_1, self.company_id_2))
+E   sqlite3.OperationalError: database is locked
+__________ AdvisorRefreshTestCase.test_03_failed_status_allow_retry ___________
+tests\test_advisor_refresh.py:28: in setUp
+    cursor.execute("DELETE FROM advisor_company_state WHERE company_id IN (?, ?)", (self.company_id_1, self.company_id_2))
+E   sqlite3.OperationalError: database is locked
+___________________ test_premium_report_contract_structure ____________________
+tests\test_advisor_report.py:35: in test_premium_report_contract_structure
+    teardown_mock_data()
+tests\test_advisor_report.py:30: in teardown_mock_data
+    cursor.execute("DELETE FROM advisor_findings WHERE analysis_run_id = 'RUN-999'")
+E   sqlite3.OperationalError: database is locked
+________________________ test_premium_report_endpoints ________________________
+tests\test_advisor_report.py:63: in test_premium_report_endpoints
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+________________________ test_api_categorize_endpoint _________________________
+tests\test_categorization.py:85: in test_api_categorize_endpoint
+    assert response.status_code == 202
+E   assert 400 == 202
+E    +  where 400 = <WrapperTestResponse streamed [400 BAD REQUEST]>.status_code
+---------------------------- Captured stdout setup ----------------------------
+Super admin verified: nedpearson@gmail.com already active and correct.
+________________________ test_api_docs_upload_success _________________________
+tests\test_docs.py:55: in test_api_docs_upload_success
+    assert response.status_code == 202
+E   assert 400 == 202
+E    +  where 400 = <WrapperTestResponse streamed [400 BAD REQUEST]>.status_code
+______________________________ test_api_docs_get ______________________________
+tests\test_docs.py:75: in test_api_docs_get
+    test_doc = next((d for d in docs if d['filename'] == 'test_upload.pdf'), None)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_docs.py:75: in <genexpr>
+    test_doc = next((d for d in docs if d['filename'] == 'test_upload.pdf'), None)
+                                        ^^^^^^^^^^^^^
+E   TypeError: string indices must be integers, not 'str'
+________________________ test_export_audit_report_pdf _________________________
+tests\test_export.py:33: in test_export_audit_report_pdf
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+---------------------------- Captured stdout call -----------------------------
+Super admin verified: nedpearson@gmail.com already active and correct.
+________________________ test_export_audit_report_docx ________________________
+tests\test_export.py:40: in test_export_audit_report_docx
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+---------------------------- Captured stdout call -----------------------------
+Super admin verified: nedpearson@gmail.com already active and correct.
+_________________________ test_export_single_finding __________________________
+tests\test_export.py:48: in test_export_single_finding
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+---------------------------- Captured stdout call -----------------------------
+Super admin verified: nedpearson@gmail.com already active and correct.
+______________________ test_integration_token_db_storage ______________________
+tests\test_integrations.py:77: in test_integration_token_db_storage
+    assert record is not None
+E   assert None is not None
+---------------------------- Captured stdout setup ----------------------------
+Super admin verified: nedpearson@gmail.com already active and correct.
+_________________________ test_api_remediation_tasks __________________________
+tests\test_remediation.py:69: in test_api_remediation_tasks
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+______________________ test_api_remediation_task_update _______________________
+tests\test_remediation.py:90: in test_api_remediation_task_update
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+__________________________ test_re_audit_comparison ___________________________
+tests\test_remediation.py:119: in test_re_audit_comparison
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+_______________________ test_scenario_reclassification ________________________
+tests\test_simulator.py:28: in test_scenario_reclassification
+    setup_mock_data()
+tests\test_simulator.py:21: in setup_mock_data
+    cursor.execute("INSERT INTO transactions (company_id, user_id, trans_date, description, amount, category, is_personal, is_flagged) VALUES (1, 1, '2023-01-01', 'Uber Eats', -50.0, 'Meals', 1, 0)")
+E   sqlite3.IntegrityError: NOT NULL constraint failed: transactions.trans_type
+____________________________ test_scenario_timing _____________________________
+tests\test_simulator.py:51: in test_scenario_timing
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+___________________________ test_scenario_add_back ____________________________
+tests\test_simulator.py:63: in test_scenario_add_back
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+_____________________ test_scenario_controls_remediation ______________________
+tests\test_simulator.py:74: in test_scenario_controls_remediation
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+________________________ test_scenario_capitalization _________________________
+tests\test_simulator.py:85: in test_scenario_capitalization
+    assert res.status_code == 200
+E   assert 302 == 200
+E    +  where 302 = <WrapperTestResponse streamed [302 FOUND]>.status_code
+______________________________ test_upload_xlsx _______________________________
+tests\test_upload_formats.py:65: in test_upload_xlsx
+    assert res.status_code == 200
+E   assert 400 == 200
+E    +  where 400 = <WrapperTestResponse 69 bytes [400 BAD REQUEST]>.status_code
+---------------------------- Captured stdout call -----------------------------
+XLSX ERROR: {"error":"No active company context. Switch or create a workspace."}
+
+______________________________ test_upload_docx _______________________________
+tests\test_upload_formats.py:79: in test_upload_docx
+    assert res.status_code == 200
+E   assert 400 == 200
+E    +  where 400 = <WrapperTestResponse streamed [400 BAD REQUEST]>.status_code
+_______________________________ test_upload_zip _______________________________
+tests\test_upload_formats.py:97: in test_upload_zip
+    assert res.status_code == 200
+E   assert 400 == 200
+E    +  where 400 = <WrapperTestResponse streamed [400 BAD REQUEST]>.status_code
+__________________ test_existing_upload_behaves_identically ___________________
+tests\test_upload_formats.py:108: in test_existing_upload_behaves_identically
+    assert json_data['status'] == 'ok'
+           ^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'status'
+============================== warnings summary ===============================
+tests/test_roles.py::test_user_role
+tests/test_roles.py::test_admin_role
+tests/test_roles.py::test_super_admin_role
+tests/test_upload_formats.py::test_upload_pdf
+tests/test_workspace_integrations.py::test_workspace_connect_user_denied
+tests/test_workspace_integrations.py::test_workspace_connect_admin_allowed
+tests/test_workspace_integrations.py::test_workspace_disconnect_user_denied
+tests/test_workspace_integrations.py::test_workspace_disconnect_admin_allowed
+  C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask_login\login_manager.py:488: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    expires = datetime.utcnow() + duration
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_advisor_refresh.py::AdvisorRefreshTestCase::test_01_trigger_sets_queued_and_needs_refresh
+FAILED tests/test_advisor_refresh.py::AdvisorRefreshTestCase::test_02_running_status_is_protected_during_bursts
+FAILED tests/test_advisor_refresh.py::AdvisorRefreshTestCase::test_03_failed_status_allow_retry
+FAILED tests/test_advisor_report.py::test_premium_report_contract_structure
+FAILED tests/test_advisor_report.py::test_premium_report_endpoints - assert 3...
+FAILED tests/test_categorization.py::test_api_categorize_endpoint - assert 40...
+FAILED tests/test_docs.py::test_api_docs_upload_success - assert 400 == 202
+FAILED tests/test_docs.py::test_api_docs_get - TypeError: string indices must...
+FAILED tests/test_export.py::test_export_audit_report_pdf - assert 302 == 200
+FAILED tests/test_export.py::test_export_audit_report_docx - assert 302 == 200
+FAILED tests/test_export.py::test_export_single_finding - assert 302 == 200
+FAILED tests/test_integrations.py::test_integration_token_db_storage - assert...
+FAILED tests/test_remediation.py::test_api_remediation_tasks - assert 302 == 200
+FAILED tests/test_remediation.py::test_api_remediation_task_update - assert 3...
+FAILED tests/test_remediation.py::test_re_audit_comparison - assert 302 == 200
+FAILED tests/test_simulator.py::test_scenario_reclassification - sqlite3.Inte...
+FAILED tests/test_simulator.py::test_scenario_timing - assert 302 == 200
+FAILED tests/test_simulator.py::test_scenario_add_back - assert 302 == 200
+FAILED tests/test_simulator.py::test_scenario_controls_remediation - assert 3...
+FAILED tests/test_simulator.py::test_scenario_capitalization - assert 302 == 200
+FAILED tests/test_upload_formats.py::test_upload_xlsx - assert 400 == 200
+FAILED tests/test_upload_formats.py::test_upload_docx - assert 400 == 200
+FAILED tests/test_upload_formats.py::test_upload_zip - assert 400 == 200
+FAILED tests/test_upload_formats.py::test_existing_upload_behaves_identically
+ERROR tests/test_advisor_isolation.py::test_unauthenticated_access - sqlite3....
+ERROR tests/test_advisor_isolation.py::test_missing_company_context - sqlite3...
+ERROR tests/test_advisor_isolation.py::test_authorized_company_access - sqlit...
+ERROR tests/test_advisor_isolation.py::test_cross_tenant_isolation - sqlite3....
+ERROR tests/test_analytics.py::test_query_builder_faceted_counts - sqlite3.Op...
+ERROR tests/test_analytics.py::test_api_analytics_overview - sqlite3.Operatio...
+ERROR tests/test_smoke.py::test_super_admin_empty_state_and_login - sqlite3.O...
+ERROR tests/test_smoke.py::test_new_user_signup_and_empty_state - sqlite3.Ope...
+ERROR tests/test_smoke.py::test_demo_login_idempotent_seed - sqlite3.Operatio...
+============ 24 failed, 17 passed, 8 warnings, 9 errors in 58.63s =============

@@ -1,4 +1,3 @@
-import sqlite3
 import pytest
 import os
 from database import init_db, get_db

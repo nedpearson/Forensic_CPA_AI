@@ -1,6 +1,6 @@
 import pytest
 from app import app
-from database import get_db, create_user, clear_all_data
+from database import get_db, create_user
 
 @pytest.fixture
 def client():

@@ -1,4 +1,3 @@
-import sqlite3
 from database import get_db, delete_document, add_document
 
 def test_delete():

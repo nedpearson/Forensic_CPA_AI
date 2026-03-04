@@ -1,6 +1,5 @@
 import os
 import pytest
-from flask import g
 from werkzeug.security import generate_password_hash
 
 from app import app
@@ -26,7 +25,7 @@ def setup_test_client():
     conn.execute("PRAGMA foreign_keys = OFF;")
     conn.execute("DELETE FROM users")
     conn.execute("DELETE FROM companies")
-    conn.execute("DELETE FROM company_users")
+    conn.execute("DELETE FROM fcpa_company_memberships")
     conn.execute("PRAGMA foreign_keys = ON;")
     
     cursor = conn.cursor()
@@ -35,12 +34,12 @@ def setup_test_client():
     # User 1 -> Company 1 (Owner)
     cursor.execute("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)", (1, "user1@example.com", hashed, "USER"))
     cursor.execute("INSERT INTO companies (id, name, created_by) VALUES (?, ?, ?)", (1, "Company Alpha", 1))
-    cursor.execute("INSERT INTO company_users (company_id, user_id, role) VALUES (?, ?, ?)", (1, 1, "owner"))
+    cursor.execute("INSERT INTO fcpa_company_memberships (company_id, user_id, role) VALUES (?, ?, ?)", (1, 1, "owner"))
     
     # User 2 -> Company 2 (Owner)
     cursor.execute("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)", (2, "user2@example.com", hashed, "USER"))
     cursor.execute("INSERT INTO companies (id, name, created_by) VALUES (?, ?, ?)", (2, "Company Beta", 2))
-    cursor.execute("INSERT INTO company_users (company_id, user_id, role) VALUES (?, ?, ?)", (2, 2, "owner"))
+    cursor.execute("INSERT INTO fcpa_company_memberships (company_id, user_id, role) VALUES (?, ?, ?)", (2, 2, "owner"))
     
     conn.commit()
     conn.close()

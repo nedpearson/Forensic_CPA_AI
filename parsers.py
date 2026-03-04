@@ -7,12 +7,9 @@ import os
 import hashlib
 import pdfplumber
 import pandas as pd
-from datetime import datetime
-from openpyxl import load_workbook
 from docx import Document as DocxDocument
 from pydantic import BaseModel, Field
 from typing import List, Optional
-import json
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
 
@@ -258,7 +255,6 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
     # We'll determine deposit vs withdrawal by comparing to previous balance
 
     prev_balance = None
-    in_transactions = False
 
     for page_text in pages:
         lines = page_text.split('\n')
@@ -269,7 +265,6 @@ def parse_bank_statement(filepath, pre_extracted_pages=None):
 
             # Detect transaction section
             if 'ACCOUNT TRANSACTIONS' in line.upper():
-                in_transactions = True
                 continue
 
             # Skip headers and footers

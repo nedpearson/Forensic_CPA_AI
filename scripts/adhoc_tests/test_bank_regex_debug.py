@@ -4,7 +4,7 @@ import re
 project_root = r"c:\dev\github\business\Forensic_CPA_AI"
 sys.path.insert(0, project_root)
 
-from parsers import parse_bank_statement, parse_pdf_text
+from parsers import parse_pdf_text
 
 pdf_path = os.path.join(project_root, "uploads", "EStatement_0109_D_20251031_000000_000.pdf")
 pages = parse_pdf_text(pdf_path)

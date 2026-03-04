@@ -5,7 +5,6 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app import app
-from database import get_db
 
 app.config['TESTING'] = True
 

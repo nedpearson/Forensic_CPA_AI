@@ -1,4 +1,3 @@
-from app import app
 from parsers import parse_document
 import zipfile
 import os

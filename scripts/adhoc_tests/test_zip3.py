@@ -1,5 +1,5 @@
 import app
-from database import get_documents, get_transactions, get_db
+from database import get_documents, get_db
 
 with app.app.test_client() as client:
     # 1. Login

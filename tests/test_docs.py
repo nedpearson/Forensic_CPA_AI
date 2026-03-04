@@ -1,5 +1,4 @@
 import os
-import json
 import pytest
 
 # Required to load environment correctly with mock tokens
@@ -8,7 +7,7 @@ os.environ['AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT'] = 'https://mock.cognitiveserv
 os.environ['AZURE_DOCUMENT_INTELLIGENCE_KEY'] = 'mock-key'
 
 from app import app
-from database import init_db, get_db
+from database import init_db
 
 @pytest.fixture(scope="module")
 def setup_test_client():

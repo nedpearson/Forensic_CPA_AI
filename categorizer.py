@@ -853,7 +853,7 @@ def get_executive_summary(user_id, filters=None):
     if rapid > 0:
         summary['findings'].append({
             'severity': 'danger', 'title': f"{rapid} Rapid Deposit Drains",
-            'detail': f"Deposits with 80%+ withdrawn within 3 days."
+            'detail': "Deposits with 80%+ withdrawn within 3 days."
         })
         summary['risk_score'] += min(20, rapid * 5)
 
@@ -863,7 +863,7 @@ def get_executive_summary(user_id, filters=None):
     if round_nums >= 5:
         summary['findings'].append({
             'severity': 'warning', 'title': f"{round_nums} Round-Number Payments",
-            'detail': f"Multiple payments in exact $500 increments - potential structuring."
+            'detail': "Multiple payments in exact $500 increments - potential structuring."
         })
         summary['risk_score'] += 10
 

@@ -1,4 +1,3 @@
-import json
 from typing import Dict, Any, List
 from database import get_advisor_findings
 
@@ -62,7 +61,7 @@ def _build_executive_summary(findings: List[Dict[str, Any]], mode: str) -> str:
     
     if mode == 'client':
         lines = [
-            f"**Executive Summary**",
+            "**Executive Summary**",
             f"Our AI analysis has reviewed the recent financial activity and identified {len(high_sev)} critical areas requiring immediate attention, along with {len(med_sev)} items to monitor.",
         ]
         if high_sev:
@@ -78,7 +77,7 @@ def _build_executive_summary(findings: List[Dict[str, Any]], mode: str) -> str:
     else:
         # Auditor Mode
         lines = [
-            f"**Forensic Audit Summary**",
+            "**Forensic Audit Summary**",
             f"Automated analytic procedures identified {len(high_sev)} high-risk anomalies and {len(med_sev)} medium-risk flags.",
             "Systematic review of the internal control environment and transaction ledgers indicates the following primary risk vectors:"
         ]
@@ -115,20 +114,20 @@ def _build_detailed_findings(sections: Dict[str, List[Dict]], mode: str) -> List
                 if ev_str:
                     p.append(f"**Evidence:** This finding is based on {len(ev_graph)} specific items in your records ({ev_str}).")
                 else:
-                    p.append(f"**Evidence:** No direct node evidence attached, derived from aggregate metadata.")
+                    p.append("**Evidence:** No direct node evidence attached, derived from aggregate metadata.")
                 
                 impact = f.get('financial_impact')
                 if impact:
                     p.append(f"**Financial impact:** Based on available data, the impact is noted. (Method: {impact.get('method', 'transaction aggregation')} | Est: {impact.get('amount', 'N/A')})")
                 else:
-                    p.append(f"**Financial impact:** Unknown precise financial value.")
+                    p.append("**Financial impact:** Unknown precise financial value.")
                     
                 if f.get('recommended_actions'):
-                    p.append(f"**How to fix:** " + " ".join(f['recommended_actions']))
+                    p.append("**How to fix:** " + " ".join(f['recommended_actions']))
                 else:
-                    p.append(f"**How to fix:** Review the referenced records and update your system.")
+                    p.append("**How to fix:** Review the referenced records and update your system.")
                 
-                p.append(f"**Next questions / missing documents:** Please review the attached evidence. If any supporting documentation is missing, please upload it to the workspace.")
+                p.append("**Next questions / missing documents:** Please review the attached evidence. If any supporting documentation is missing, please upload it to the workspace.")
             else:
                 p.append(f"### {i+1}. {f['title']} (Sev: {f.get('severity', 'none').upper()})")
                 p.append(f"**Forensic Rationale:** {f.get('forensic_rationale', 'N/A')}")
@@ -137,16 +136,16 @@ def _build_detailed_findings(sections: Dict[str, List[Dict]], mode: str) -> List
                 if ev_str:
                     p.append(f"**Traceability (Evidence):** Nodes {ev_str}")
                 else:
-                    p.append(f"**Traceability (Evidence):** Aggregate level alert.")
+                    p.append("**Traceability (Evidence):** Aggregate level alert.")
 
                 impact = f.get('financial_impact')
                 if impact:
                     p.append(f"**Financial impact:** Quantitative Est: {impact.get('amount', 'N/A')} (Method: {impact.get('method', 'N/A')})")
                 
                 if f.get('recommended_actions'):
-                    p.append(f"**Control Recommendations (How to fix):** " + " ".join(f['recommended_actions']))
+                    p.append("**Control Recommendations (How to fix):** " + " ".join(f['recommended_actions']))
                 
-                p.append(f"**Audit Next Steps (Next questions / missing documents):** Verify all identified transactions against direct bank statements and request original receipts for unmatched items.")
+                p.append("**Audit Next Steps (Next questions / missing documents):** Verify all identified transactions against direct bank statements and request original receipts for unmatched items.")
             
             narratives.append("\n\n".join(p))
             

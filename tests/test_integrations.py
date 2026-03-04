@@ -1,9 +1,8 @@
 import os
 import pytest
-import sqlite3
 import base64
 from shared.encryption import encrypt_token, decrypt_token, get_cipher
-from database import init_db, upsert_integration, get_integration, get_db
+from database import upsert_integration, get_integration
 
 @pytest.fixture(autouse=True)
 def setup_encryption_env():

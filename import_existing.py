@@ -5,7 +5,6 @@ Imports:
   2. FINAL_ANALYSIS_NO_ELI.xlsx - Venmo details, Green Card, Silver Card data
 """
 import os
-import sys
 import openpyxl
 from database import (
     init_db, get_db, get_or_create_account, add_document, add_transaction
@@ -168,7 +167,7 @@ def import_venmo_transactions():
             desc += f" (via {str(funding_source)[:30]})"
 
         cat_result = categorize_transaction(desc, -amt, 'debit', 'venmo')
-        cat_result['category'] = f"Venmo - Payment"
+        cat_result['category'] = "Venmo - Payment"
 
         # Check if it's a James payment
         is_flagged = 0
@@ -495,8 +494,8 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"IMPORT COMPLETE: {total} total transactions loaded")
     print(f"{'=' * 60}")
-    print(f"\nRun the app: python app.py")
-    print(f"Then open: http://localhost:5000")
+    print("\nRun the app: python app.py")
+    print("Then open: http://localhost:5000")
 
 
 if __name__ == '__main__':

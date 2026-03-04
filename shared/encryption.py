@@ -1,6 +1,5 @@
 import os
 from cryptography.fernet import Fernet
-import base64
 
 def get_cipher():
     """

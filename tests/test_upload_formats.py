@@ -5,7 +5,7 @@ import pytest
 import pandas as pd
 from docx import Document
 from app import app
-from database import init_db, get_db, DB_PATH
+from database import init_db, DB_PATH
 
 @pytest.fixture(scope="module")
 def auth_client():
@@ -27,7 +27,7 @@ def auth_client():
     client = app.test_client()
     
     # Login
-    res = client.post('/api/auth/login', json={
+    client.post('/api/auth/login', json={
         "email": "nedpearson@gmail.com",
         "password": "test_admin_pass"
     })

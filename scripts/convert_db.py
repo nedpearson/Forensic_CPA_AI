@@ -1,5 +1,4 @@
 import re
-import os
 
 def convert():
     with open('database_sqlite.py', 'r', encoding='utf-8') as f:

@@ -1,22 +1,19 @@
 import os
 import sys
-import sqlite3
-import pytest
 import uuid
 
 # Add the project root to the python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from database import (
-    get_db, create_user, add_company_member, get_company_members, 
-    get_company_member_role, update_company_member_role, remove_company_member, 
+    get_db, create_user, add_company_member, get_company_member_role, update_company_member_role, remove_company_member, 
     transfer_company_ownership, soft_delete_company, upsert_integration, 
-    get_integrations, delete_integration
+    get_integrations
 )
 
 def setup_test_users():
     conn = get_db()
-    cursor = conn.cursor()
+    conn.cursor()
     # Create two unique users
     u1_email = f"test_owner_{uuid.uuid4()}@example.com"
     u2_email = f"test_target_{uuid.uuid4()}@example.com"
@@ -41,27 +38,27 @@ def test_company_admin_flow():
     conn.commit()
     
     # 2. Add Member (u2)
-    assert add_company_member(comp_id, u2, 'operator') == True
+    assert add_company_member(comp_id, u2, 'operator')
     assert get_company_member_role(comp_id, u2) == 'operator'
     
     # 3. Update Member Role
-    assert update_company_member_role(comp_id, u2, 'admin') == True
+    assert update_company_member_role(comp_id, u2, 'admin')
     assert get_company_member_role(comp_id, u2) == 'admin'
     
     # 4. Transfer Ownership to u2
     success, msg = transfer_company_ownership(comp_id, u1, u2)
-    assert success == True, msg
+    assert success, msg
     assert get_company_member_role(comp_id, u2) == 'owner'
     assert get_company_member_role(comp_id, u1) == 'admin'
     
     # 5. Remove u1
     success, msg = remove_company_member(comp_id, u1)
-    assert success == True, msg
+    assert success, msg
     assert get_company_member_role(comp_id, u1) is None
     
     # Attempt removing the only owner (u2)
     success, msg = remove_company_member(comp_id, u2)
-    assert success == False, "Should not be able to remove the only owner"
+    assert not success, "Should not be able to remove the only owner"
     
     # 6. Integrations Isolation Test
     # Create another company
@@ -83,7 +80,7 @@ def test_company_admin_flow():
     assert len(ints_c2) == 0
     
     # 7. Soft Delete
-    assert soft_delete_company(comp_id) == True
+    assert soft_delete_company(comp_id)
     cursor.execute("SELECT status FROM companies WHERE id = ?", (comp_id,))
     assert cursor.fetchone()['status'] == 'deleted'
     

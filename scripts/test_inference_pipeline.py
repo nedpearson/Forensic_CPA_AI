@@ -1,6 +1,5 @@
 import os
 os.environ['TESTING'] = 'true'
-import json
 
 import database
 from auto_categorizer import AutoCategorizer, TransactionCategory, TransactionCategorizationBatch
@@ -89,8 +88,6 @@ def run_test():
     uid, t1, t2 = setup_db()
     
     # Run bulk job manually using mock
-    from categorizer import run_bulk_ai_categorization
-    import threading
     
     conn = database.get_db()
     cursor = conn.cursor()

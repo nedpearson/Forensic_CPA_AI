@@ -1,4 +1,3 @@
-import sqlite3
 from typing import Dict, Any, List
 from database import get_db, build_filter_clause
 
@@ -110,7 +109,7 @@ def detect_fraud(user_id: int, company_id: int) -> List[Dict[str, Any]]:
             evidence = [{"type": "transaction", "id": int(gp['ids'].split(',')[0]), "amount": gp['amt']} for gp in ghost_payroll[:2]]
             findings.append(_create_finding(
                 title="Ghost Employee / Payroll Anomaly",
-                description=f"Multiple identical payroll amounts issued on the same exact date.",
+                description="Multiple identical payroll amounts issued on the same exact date.",
                 severity="danger",
                 confidence=75,
                 evidence=evidence

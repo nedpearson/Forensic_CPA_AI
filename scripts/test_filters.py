@@ -1,6 +1,3 @@
-import sys
-import os
-import json
 from app import app, get_transactions
 
 def test_api():

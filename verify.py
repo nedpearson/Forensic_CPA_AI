@@ -1,11 +1,8 @@
 import os
-import io
 import pandas as pd
 from docx import Document
-import zipfile
 from parsers import parse_document
 from database import init_db
-from app import app
 from categorizer import categorize_transaction
 
 os.environ['TESTING'] = 'true'

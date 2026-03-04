@@ -30,10 +30,10 @@ def test_all_pdfs():
                     break
                 else:
                     lines = pages[0].split('\n')
-                    print(f"Raw text preview (first 10 lines):")
+                    print("Raw text preview (first 10 lines):")
                     for i, line in enumerate(lines[:10]):
                         print(f"  {i}: {line}")
-        except Exception as e:
+        except Exception:
             pass
 
     if not found_any:

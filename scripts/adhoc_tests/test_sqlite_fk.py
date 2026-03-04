@@ -28,7 +28,7 @@ try:
         
         # Now try to delete doc1 Using delete_document logic!
         # 3. Delete from transaction_sources
-        conn.execute(f"DELETE FROM transaction_sources WHERE document_id IN (?) AND user_id = 1", (doc1,))
+        conn.execute("DELETE FROM transaction_sources WHERE document_id IN (?) AND user_id = 1", (doc1,))
         
         # 4. Remove orphan transactions
         conn.execute("""
@@ -38,10 +38,10 @@ try:
         """)
         
         # 5. Delete documents
-        conn.execute(f"DELETE FROM documents WHERE id IN (?) AND user_id = 1", (doc1,))
+        conn.execute("DELETE FROM documents WHERE id IN (?) AND user_id = 1", (doc1,))
         
         print("Success!")
-except Exception as e:
+except Exception:
     traceback.print_exc()
 finally:
     # Cleanup

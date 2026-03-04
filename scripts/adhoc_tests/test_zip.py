@@ -1,7 +1,5 @@
 import app
 from database import get_documents, get_transactions
-from flask_login import login_user
-from database import get_user_by_email
 
 with app.app.test_client() as client:
     # Login via route
@@ -26,7 +24,7 @@ with app.app.test_client() as client:
         for t in txns: # root is 5
             print(f" - {t['description']} -> Doc ID: {t.get('document_id')}")
 
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
 

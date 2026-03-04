@@ -1,5 +1,4 @@
 import os
-import json
 from abc import ABC, abstractmethod
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.documentintelligence import DocumentIntelligenceClient

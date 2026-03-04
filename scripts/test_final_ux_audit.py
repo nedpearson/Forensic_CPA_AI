@@ -1,6 +1,3 @@
-import sys
-import os
-import sqlite3
 from app import app, get_db
 
 def test_api():

@@ -1,7 +1,5 @@
 import os
-import sys
 
-from app import app
 from parsers import parse_pdf_text, parse_bank_statement
 import zipfile
 
@@ -31,7 +29,7 @@ try:
                 print(f"Extracted {len(full_text)} characters.")
                 
                 if len(full_text) < 100:
-                    print(f"Warning: Very little text extracted. OCR might have failed.")
+                    print("Warning: Very little text extracted. OCR might have failed.")
                     print(f"Sample: {full_text[:200]}")
                 else:
                     print("Text extraction succeeded. Running LLM categorization...")

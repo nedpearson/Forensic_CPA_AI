@@ -1,7 +1,6 @@
 import os
 import zipfile
-import uuid
-from database import get_db, add_document, add_transaction, get_documents, get_transactions
+from database import add_document, add_transaction, get_documents, get_transactions
 
 os.makedirs('test_zip_dir2', exist_ok=True)
 with open('test_zip_dir2/doc3.csv', 'w') as f:

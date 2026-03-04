@@ -1,5 +1,3 @@
-import os
-import re
 
 db_path = "database.py"
 with open(db_path, "r", encoding="utf-8") as f:

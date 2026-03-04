@@ -1,6 +1,5 @@
 import requests
 import sys
-import os
 
 base_url = "http://127.0.0.1:3004"
 session_1 = requests.Session()

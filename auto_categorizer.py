@@ -1,7 +1,6 @@
-from typing import List, Optional, Dict
+from typing import List, Optional
 from pydantic import BaseModel, Field
 from llm_provider import LLMProvider, get_llm_provider
-import json
 
 # --- Structured Output Pydantic Schemas ---
 

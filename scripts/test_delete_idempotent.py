@@ -106,7 +106,7 @@ def main():
         doc_id_1 = commit_resp_1.json().get('document_id')
         print_pass(f"Doc 1 committed (ID: {doc_id_1})")
         
-        approve_resp1 = session.post(f"{BASE_URL}/api/documents/{doc_id_1}/approve")
+        session.post(f"{BASE_URL}/api/documents/{doc_id_1}/approve")
         
         # Upload Doc 2 (Duplicate transactions)
         print("\nUploading Doc 2 (Duplicate)...")
@@ -126,7 +126,7 @@ def main():
         txns = cursor.fetchall()
         
         if len(txns) == 1:
-            print_pass(f"Deduplication preserved 1 unique transaction row.")
+            print_pass("Deduplication preserved 1 unique transaction row.")
             txn_id = txns[0]['id']
         else:
             print_fail(f"Expected 1 duplicate transaction, found {len(txns)}")

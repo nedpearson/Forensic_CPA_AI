@@ -1,6 +1,5 @@
 import os
 os.environ['TESTING'] = 'true'
-import json
 from database import init_db, get_db
 from merchant_normalizer import MerchantNormalizer
 from categorizer import categorize_transaction
@@ -39,7 +38,7 @@ def test_merchant_normalizer():
     print("OK Normalizer String Cleaning Tests Passed")
 
 def test_pipeline_alias(user_id, cat_auto):
-    m_id = MerchantNormalizer.learn_merchant_alias(
+    MerchantNormalizer.learn_merchant_alias(
         user_id=user_id,
         raw_desc="POS PURCHASE CHEVRON #1234",
         canonical_name="Chevron Corporation",

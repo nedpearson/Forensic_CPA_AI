@@ -21,7 +21,6 @@ def process_zip_background(user_id, parent_doc_id, filepath, file_hash, filename
         import zipfile
         import shutil
         import hashlib
-        from flask import current_app
 
         logger = logging.getLogger('forensic_cpa_ai')
 

@@ -8,7 +8,6 @@ resp = request.urlopen(req)
 cookie = resp.headers.get('Set-Cookie')
 
 # 2. Preview
-import io
 boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
 body = (
     f'--{boundary}\r\n'

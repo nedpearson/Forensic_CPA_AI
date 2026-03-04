@@ -1,5 +1,4 @@
 import sqlite3
-import traceback
 from database import delete_document, get_db
 
 conn = sqlite3.connect('data/forensic_audit.db')

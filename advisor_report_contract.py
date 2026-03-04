@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 def build_premium_client_report(company_id: int) -> Dict[str, Any]:
     """
@@ -36,7 +36,7 @@ def build_premium_client_report(company_id: int) -> Dict[str, Any]:
     # 3. Stratify Findings for Risk Register
     high_findings = [f for f in findings if f.get('severity') == 'danger']
     med_findings = [f for f in findings if f.get('severity') == 'warning']
-    low_findings = [f for f in findings if f.get('severity') == 'info']
+    [f for f in findings if f.get('severity') == 'info']
     
     risk_register = sorted(findings, key=lambda x: (x.get('severity') == 'info', x.get('severity') == 'warning', x.get('severity') == 'danger', -x.get('confidence', 0)))
     
@@ -51,7 +51,6 @@ def build_premium_client_report(company_id: int) -> Dict[str, Any]:
     ]
     
     # Appendices (paged)
-    appendix = []
     
     conn.close()
 

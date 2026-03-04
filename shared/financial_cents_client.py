@@ -1,9 +1,7 @@
-import os
 import requests
 import logging
-from flask import current_app
-from database import get_integrations, upsert_integration, get_db
-from shared.encryption import encrypt_token, decrypt_token
+from database import upsert_integration, get_db
+from shared.encryption import decrypt_token
 import time
 
 logger = logging.getLogger('forensic_cpa_ai')

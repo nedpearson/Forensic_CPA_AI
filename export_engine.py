@@ -1,4 +1,3 @@
-import os
 import io
 from datetime import datetime
 from fpdf import FPDF
@@ -142,7 +141,7 @@ def generate_pdf_export(report_data: dict, mode: str = 'client') -> bytes:
             
         if f.get('recommended_fixes'):
             pdf.ln(2)
-            pdf.multi_cell(0, 6, f"Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
+            pdf.multi_cell(0, 6, "Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
             
         if f.get('next_steps_requests'):
             pdf.ln(2)
@@ -199,7 +198,7 @@ def _add_markdown_doc(document, text: str):
         elif line.startswith('## '):
             document.add_heading(line[3:].replace('**', ''), level=2)
         else:
-            p = document.add_paragraph(line.replace('**', ''))
+            document.add_paragraph(line.replace('**', ''))
 
 def generate_docx_export(report_data: dict, mode: str = 'client') -> bytes:
     doc = Document()
@@ -270,7 +269,7 @@ def generate_docx_export(report_data: dict, mode: str = 'client') -> bytes:
         if actual_mode.lower() == 'auditor' and f.get('auditor_rationale'):
             doc.add_paragraph(f"Auditor Rationale: {f.get('auditor_rationale', '')}")
         if f.get('recommended_fixes'):
-            doc.add_paragraph(f"Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
+            doc.add_paragraph("Recommended Fixes:\n- " + "\n- ".join(f.get('recommended_fixes', [])))
         if f.get('next_steps_requests'):
             doc.add_paragraph(f"Next Step: {f.get('next_steps_requests', '')}")
 
@@ -317,13 +316,13 @@ def build_finding_report(company_id: int, finding_id: str, mode: str = 'client')
         if impact:
             narratives.append(f"**Financial impact:** {impact.get('amount', 'N/A')}")
         if f.get('recommended_actions'):
-            narratives.append(f"**How to fix:** " + " ".join(f['recommended_actions']))
+            narratives.append("**How to fix:** " + " ".join(f['recommended_actions']))
     else:
         narratives.append(f"### {f['title']} (Sev: {f.get('severity', 'none').upper()})")
         narratives.append(f"**Forensic Rationale:** {f.get('forensic_rationale', '')}")
         narratives.append(f"**Traceability (Evidence):** Nodes {ev_str}")
         if f.get('recommended_actions'):
-            narratives.append(f"**Control Recommendations:** " + " ".join(f['recommended_actions']))
+            narratives.append("**Control Recommendations:** " + " ".join(f['recommended_actions']))
             
     return {
         "company_id": company_id,

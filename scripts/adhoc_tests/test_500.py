@@ -9,7 +9,7 @@ opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
 req = urllib.request.Request("http://127.0.0.1:3004/api/auth/demo", method="POST")
 try:
     opener.open(req)
-except Exception as e:
+except Exception:
     pass
 
 # Retrieve API Integrations Status

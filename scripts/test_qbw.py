@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import app
-from database import get_db
 
 app.config['TESTING'] = True
 
@@ -20,7 +19,6 @@ def run_tests():
         
     auth_token = os.getenv("UPLOAD_AUTH_TOKEN", "test_token")
     os.environ["UPLOAD_AUTH_TOKEN"] = auth_token
-    headers = {"Authorization": f"Bearer {auth_token}"}
     
     client = app.test_client()
     

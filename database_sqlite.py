@@ -696,7 +696,7 @@ def init_db():
                 )
                 WHERE company_id IS NULL AND user_id IS NOT NULL
             """)
-        except sqlite3.OperationalError as e:
+        except sqlite3.OperationalError:
             pass
 
     conn.commit()

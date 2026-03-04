@@ -1,5 +1,4 @@
 import app
-from flask_login import current_user
 
 with app.app.test_client() as client:
     # Login as nedpearson@gmail.com

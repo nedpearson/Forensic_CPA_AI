@@ -1,5 +1,4 @@
 import psycopg2
-from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 """
 Database layer for Forensic Auditor.
@@ -483,24 +482,24 @@ def init_db():
     # Dynamic migrations for fcpa_documents table tracking fields
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN status TEXT DEFAULT 'queued'")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parsed_transaction_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN import_transaction_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN failure_reason TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_merchants ADD COLUMN parent_merchant_id INTEGER REFERENCES fcpa_merchants(id)")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     
     # Categories dynamic migrations
@@ -516,27 +515,27 @@ def init_db():
         ('reimbursable_default', 'INTEGER DEFAULT 0')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_categories ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN content_sha256 TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN txn_fingerprint TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN deduped_skipped_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parent_document_id INTEGER REFERENCES fcpa_documents(id)")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     # Add advanced categorization foundation columns
@@ -548,14 +547,14 @@ def init_db():
         ('categorization_explanation', 'TEXT')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_transactions ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
 
     for col, ctype in [
         ('hit_count', 'INTEGER DEFAULT 1'),
         ('last_applied', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_category_rules ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
 
     try:
         # Backfill fcpa_transaction_sources for existing fcpa_transactions
@@ -564,11 +563,11 @@ def init_db():
             SELECT user_id, id, document_id FROM fcpa_transactions WHERE document_id IS NOT NULL
         """)
         conn.commit()
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     try:
@@ -583,7 +582,7 @@ def init_db():
             WHERE card_last_four IS NULL OR card_last_four = '';
         """)
         conn.commit()
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     # Create uniqueness constraints after all columns are confirmed to exist
@@ -668,7 +667,7 @@ def init_db():
                 ALTER TABLE fcpa_integrations_new RENAME TO fcpa_integrations;
             ''')
             conn.commit()
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     # Phase 1: Multi-Tenant Schema Compatibility Backfill
@@ -709,7 +708,7 @@ def init_db():
                 )
                 WHERE company_id IS NULL AND user_id IS NOT NULL
             """)
-        except sqlite3.OperationalError as e:
+        except psycopg2.Error:
             pass
 
     conn.commit()
@@ -1371,7 +1370,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
                         VALUES (%s, %s, %s)
                     """, (user_id, trans_id, doc_id))
                     conn.commit()
-                except sqlite3.OperationalError:
+                except psycopg2.Error:
                     pass
             close_db(conn)
             return trans_id, False
@@ -1402,7 +1401,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
                 INSERT OR IGNORE INTO fcpa_transaction_sources (user_id, transaction_id, document_id)
                 VALUES (%s, %s, %s)
             """, (user_id, trans_id, doc_id))
-        except sqlite3.OperationalError:
+        except psycopg2.Error:
             pass
             
     conn.commit()

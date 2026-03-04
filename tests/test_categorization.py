@@ -1,5 +1,4 @@
 import os
-import json
 import pytest
 
 from database import init_db, get_db, add_document, add_document_extraction

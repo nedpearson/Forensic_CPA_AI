@@ -4,7 +4,6 @@ Generates a formatted PDF report with executive summary, findings,
 key transactions, and analysis data.
 """
 import os
-import io
 from datetime import datetime
 from fpdf import FPDF
 from database import get_db, build_filter_clause
@@ -171,7 +170,6 @@ def generate_forensic_report(user_id, filters=None):
     # Risk Score
     risk = summary.get('risk_score', 0)
     risk_label = 'HIGH RISK' if risk >= 60 else 'MEDIUM RISK' if risk >= 30 else 'LOW RISK'
-    risk_sev = 'danger' if risk >= 60 else 'warning' if risk >= 30 else 'success'
     pdf.sub_title(f'Overall Risk Assessment: {risk_label} ({risk}/100)')
     pdf.body_text(f'Analysis covers {summary.get("total_analyzed", 0)} transactions from {summary.get("date_range", "N/A")}.')
 
