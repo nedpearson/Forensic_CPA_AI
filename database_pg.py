@@ -1066,7 +1066,7 @@ def add_account(user_id, account_name, account_number, account_type, institution
     account_id = cursor.fetchone()['id']
     if not is_external_conn:
         db_conn.commit()
-        db_close_db(conn)
+        close_db(conn)
     return account_id
 
 
@@ -1084,10 +1084,10 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
     row = cursor.fetchone()
     if row:
         if not is_external_conn:
-            db_close_db(conn)
+            close_db(conn)
         return row['id']
     if not is_external_conn:
-        db_close_db(conn)
+        close_db(conn)
     return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn, company_id=company_id)
 
 def get_duplicate_document(user_id, content_sha256):
@@ -1114,7 +1114,7 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
         row = cursor.fetchone()
         if row:
             if not is_external_conn:
-                db_close_db(conn)
+                close_db(conn)
             return row['id']
 
     cursor.execute(
@@ -1125,7 +1125,7 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
     
     if not is_external_conn:
         db_conn.commit()
-        db_close_db(conn)
+        close_db(conn)
         
     return doc_id
 
@@ -1147,14 +1147,14 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
         doc = cursor.fetchone()
         if not doc:
             if not is_external_conn:
-                db_close_db(conn)
+                close_db(conn)
             return False
             
         # Block deleting fcpa_documents currently locked by background threads
         if doc['status'] == 'processing':
             print(f"Cannot delete document {doc_id} while it is actively processing.")
             if not is_external_conn:
-                db_close_db(conn)
+                close_db(conn)
             return False
             
         doc_ids_to_delete = [doc_id]
@@ -1203,11 +1203,11 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
                 db_conn.rollback()
             print(f"Error during document deletion: {e}")
             if not is_external_conn:
-                db_close_db(conn)
+                close_db(conn)
             return False
             
         if not is_external_conn:
-            db_close_db(conn)
+            close_db(conn)
         return True
 
 
@@ -1247,7 +1247,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                 if current_status == 'approved':
                     print(f"Workflow State Error: Document {doc_id} is already in terminal state ('approved') and cannot be modified.")
                     if not is_external_conn:
-                        db_close_db(conn)
+                        close_db(conn)
                     return False
                     
                 if status is not None and current_status != status: # If it's a real transition attempt
@@ -1255,7 +1255,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                         print(f"Workflow State Error: Invalid transition from '{current_status}' to '{status}' for document {doc_id}")
                         if not is_external_conn:
                             db_conn.rollback()
-                            db_close_db(conn)
+                            close_db(conn)
                         else:
                             raise ValueError(f"Invalid transition from '{current_status}' to '{status}'")
                         return False
@@ -1281,7 +1281,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                 
             if not updates:
                 if not is_external_conn:
-                    db_close_db(conn)
+                    close_db(conn)
                 return True
                 
             params.extend([doc_id, user_id, company_id])
@@ -1298,7 +1298,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             raise e
         finally:
             if not is_external_conn:
-                db_close_db(conn)
+                close_db(conn)
             
         return True
 
@@ -1527,7 +1527,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         raise e
     finally:
         if not is_external_conn:
-            db_close_db(conn)
+            close_db(conn)
         
     return added_count, skipped_count, doc_stats
 
