@@ -19,7 +19,7 @@ import hashlib
 import base64
 import requests
 import urllib.parse
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, g, session, flash
 from werkzeug.utils import secure_filename
 from database import (
     init_db, get_db, get_or_create_account, add_document, get_duplicate_document,
@@ -42,6 +42,7 @@ from query_builder import QueryBuilder
 from document_analyzer import AzureDocumentIntelligenceAdapter
 from auto_categorizer import AutoCategorizer
 from parsers import parse_document
+from shared.quickbooks_client import QuickBooksOAuthService
 from categorizer import (
     recategorize_all,
     detect_deposit_transfer_patterns, get_cardholder_spending_summary,
@@ -85,7 +86,7 @@ def inject_feature_flags():
     return dict(
         enable_integrations=os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true',
         enable_google=os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true',
-        enable_qb=os.environ.get('ENABLE_QB', 'false').lower() == 'true'
+        enable_qb=os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true'
     )
 
 @app.before_request
@@ -115,7 +116,7 @@ def health_check():
         configured_providers = []
         if os.environ.get('ENABLE_GOOGLE', 'false').lower() == 'true':
             configured_providers.append('google')
-        if os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+        if os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true':
             configured_providers.append('quickbooks')
             
         return jsonify({
@@ -718,18 +719,25 @@ def api_integrations_status():
         
         active_company_id = session.get('active_company_id')
         saved = get_integrations(current_user.id, active_company_id)
-        connected_map = {c['provider']: c['status'] for c in saved}
-        meta_map = {c['provider']: c['metadata'] for c in saved}
-        
+        def build_payload(provider_id):
+            conn = next((c for c in saved if c['provider'] == provider_id), None)
+            if not conn: return {"provider": provider_id, "status": "Not connected", "metadata": None}
+            res = {"provider": provider_id, "status": conn['status'], "metadata": conn['metadata']}
+            if provider_id == 'quickbooks':
+                res['account_name'] = conn.get('account_name')
+                res['last_error'] = conn.get('last_error')
+                res['last_sync_completed_at'] = conn.get('last_sync_completed_at')
+            return res
+            
         return jsonify({
             "status": "success",
             "role": getattr(current_user, 'role', 'USER'),
             "integrations": [
-                {"provider": "google_drive", "status": connected_map.get("google_drive", "Not connected"), "metadata": meta_map.get("google_drive", None)},
-                {"provider": "google_calendar", "status": connected_map.get("google_calendar", "Not connected"), "metadata": meta_map.get("google_calendar", None)},
-                {"provider": "gmail", "status": connected_map.get("gmail", "Not connected"), "metadata": meta_map.get("gmail", None)},
-                {"provider": "quickbooks", "status": connected_map.get("quickbooks", "Not connected"), "metadata": meta_map.get("quickbooks", None)},
-                {"provider": "financial_cents", "status": connected_map.get("financial_cents", "Not connected"), "metadata": meta_map.get("financial_cents", None)}
+                build_payload("google_drive"),
+                build_payload("google_calendar"),
+                build_payload("gmail"),
+                build_payload("quickbooks"),
+                build_payload("financial_cents")
             ]
         })
     except Exception as e:
@@ -944,37 +952,42 @@ def api_integrations_quickbooks_connect():
     if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
         return jsonify({"error": "Integrations disabled"}), 403
     
-    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+    if not os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true':
         return jsonify({"error": "QuickBooks Integration disabled"}), 403
         
     if not check_workspace_access('quickbooks'):
         return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
         
-    client_id = os.environ.get('QUICKBOOKS_CLIENT_ID')
-    if not client_id:
-        return jsonify({"error": "QuickBooks Client ID not configured"}), 501
+    try:
+        config = QuickBooksOAuthService.validate_config()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 501
     
-    # Intuit OAuth Scopes
-    scopes = "com.intuit.quickbooks.accounting"
-    
-    # 1. Generate CSRF State Token
+    # Intuit Strict Redirect Warning (Mismatch Protection)
+    configured_redirect_uri = config['redirect_uri']
+    try:
+        from urllib.parse import urlparse
+        configured_domain = urlparse(configured_redirect_uri).netloc
+        current_domain = urlparse(request.host_url).netloc
+        if current_domain and configured_domain and current_domain != configured_domain:
+            logger.warning(f"QuickBooks Host Mismatch: Your browser is at '{current_domain}' but QUICKBOOKS_REDIRECT_URI is set to '{configured_domain}'. Intuit OAuth callbacks and CSRF state cookies will fail. Please access the app via '{configured_domain}'.")
+            return jsonify({"error": f"Application URI mismatch. Please access this application via http://{configured_domain} to use QuickBooks."}), 400
+    except Exception as e:
+        logger.warning(f"Failed to check redirect URI mismatch: {e}")
+
+    # 1. Generate CSRF State Token and bind to context
     state = secrets.token_urlsafe(32)
-    session['oauth_state_qb'] = state
-    
-    host = request.host_url.rstrip('/')
-    redirect_uri = f"{host}/api/integrations/quickbooks/callback"
-    session['oauth_redirect_qb'] = redirect_uri
-    
-    # 3. Build Authorization URL
-    auth_params = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": scopes,
-        "state": state
+    session['oauth_state_qb'] = {
+        'state': state,
+        'user_id': current_user.id,
+        'company_id': session.get('active_company_id'),
+        'timestamp': int(time.time())
     }
     
-    authorization_url = f"https://appcenter.intuit.com/connect/oauth2?{'&'.join([f'{k}={urllib.parse.quote_plus(v)}' for k, v in auth_params.items()])}"
+    try:
+        authorization_url = QuickBooksOAuthService.buildQuickBooksAuthUrl(state)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
     return jsonify({
         "status": "success",
@@ -988,7 +1001,7 @@ def api_integrations_quickbooks_callback():
     if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
         return "Integrations disabled", 403
         
-    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+    if not os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true':
         return "QuickBooks Integration disabled", 403
         
     if not check_workspace_access('quickbooks'):
@@ -999,68 +1012,118 @@ def api_integrations_quickbooks_callback():
     realm_id = request.args.get('realmId')
     error = request.args.get('error')
     
+    saved_state_obj = session.get('oauth_state_qb', None)
+    
+    debug_mode = os.environ.get('QUICKBOOKS_DEBUG_MODE', 'false').lower() == 'true'
+    if debug_mode:
+        logger.info("--- QUICKBOOKS DIAGNOSTIC MODE: CALLBACK FLOW ---")
+        logger.info(f" - Stored State Found in Session: {bool(saved_state_obj)}")
+        if saved_state_obj:
+            stored_state = saved_state_obj.get('state') if isinstance(saved_state_obj, dict) else saved_state_obj
+            logger.info(f" - State Matches: {state == stored_state}")
+        logger.info(f" - Code Returned: {bool(code)}")
+        logger.info(f" - RealmId Returned: {bool(realm_id)}")
+        if error:
+            logger.info(f" - Top-level Intuit Error: {error}")
+        logger.info("-------------------------------------------------")
+        
     if error:
-        return f"OAuth Error: {error}", 400
+        flash(f"QuickBooks connection denied or failed: {error}", "danger")
+        return redirect(url_for('settings_integrations_page'))
         
-    saved_state = session.pop('oauth_state_qb', None)
-    redirect_uri = session.pop('oauth_redirect_qb', None)
+    # Remove state securely after checked context bounds 
+    saved_state_obj = session.pop('oauth_state_qb', None)
     
-    if not saved_state or state != saved_state:
-        return "Invalid State (CSRF check failed)", 400
+    if not saved_state_obj or not isinstance(saved_state_obj, dict):
+        flash("invalid_state: No secure context found. Please try connecting again.", "danger")
+        return redirect(url_for('settings_integrations_page'))
         
-    if not code or not redirect_uri:
-        return "Invalid OAuth exchange parameters", 400
+    if state != saved_state_obj.get('state'):
+        flash("invalid_state: Security token mismatch. Please try connecting again.", "danger")
+        return redirect(url_for('settings_integrations_page'))
         
-    client_id = os.environ.get('QUICKBOOKS_CLIENT_ID')
-    client_secret = os.environ.get('QUICKBOOKS_CLIENT_SECRET')
-    
-    # HTTP Token Exchange (Intuit requires Basic Auth)
-    auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode('utf-8')).decode('utf-8')
-    token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-    
-    headers = {
-        "Authorization": f"Basic {auth_header}",
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    
-    token_payload = {
-        "code": code,
-        "grant_type": "authorization_code",
-        "redirect_uri": redirect_uri
-    }
-    
+    if int(time.time()) - saved_state_obj.get('timestamp', 0) > 900:
+        flash("invalid_state: Connection request expired (timeout > 15 minutes). Please try again.", "warning")
+        return redirect(url_for('settings_integrations_page'))
+        
+    if not code:
+        flash("missing_code: No authorization code provided by Intuit.", "danger")
+        return redirect(url_for('settings_integrations_page'))
+
+    if not realm_id:
+        flash("missing_realmId: Intuit failed to provide a realm ID.", "danger")
+        return redirect(url_for('settings_integrations_page'))
+        
     try:
-        response = requests.post(token_url, headers=headers, data=token_payload)
-        response.raise_for_status()
-        token_data = response.json()
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"QuickBooks Token Exchange Failed: {e.response.text}")
-        return f"Token Exchange Failed: {e.response.text}", 400
-    except requests.exceptions.RequestException as e:
-        logger.error(f"QuickBooks Token Request Failed: {e}")
-        return "Token Request Failed due to network error", 500
+        # State validated safely, exchange code for tokens
+        token_data = QuickBooksOAuthService.handleQuickBooksOAuthCallback(code, realm_id)
         
-    # Extract & Encrypt
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    if not access_token:
-        return "Missing access token in response", 400
+        # Enforce that the user returned to the EXACT company they initiated from
+        bound_company_id = saved_state_obj.get('company_id')
+        if not bound_company_id or bound_company_id != session.get('active_company_id'):
+            flash("callback_misconfiguration: Active workspace changed during authentication. Connection aborted safely.", "danger")
+            return redirect(url_for('settings_integrations_page'))
+            
+        QuickBooksOAuthService.saveQuickBooksConnection(current_user.id, bound_company_id, token_data, realm_id)
         
-    encrypted_access = encrypt_token(access_token)
-    encrypted_refresh = encrypt_token(refresh_token) if refresh_token else None
-    
-    upsert_integration(
-        user_id=current_user.id, 
-        provider="quickbooks", 
-        status="Connected", 
-        access_token=encrypted_access, 
-        refresh_token=encrypted_refresh,
-        scopes=["com.intuit.quickbooks.accounting"],
-        metadata={"realmId": realm_id} if realm_id else {}
-    )
+        flash("QuickBooks Online connected successfully!", "success")
+        
+    except ValueError as e:
+        logger.error(f"QuickBooks OAuth context error: {e}")
+        flash(f"invalid_grant: Failed to authenticate with Intuit. ({e})", "danger")
+    except Exception as e:
+        logger.error(f"QuickBooks Context Callback Failed: {e}")
+        flash(f"QuickBooks sync failed: {str(e)}", "danger")
     
     return redirect(url_for('settings_integrations_page'))
+
+@app.route('/api/integrations/quickbooks/debug', methods=['GET'])
+@login_required
+def api_integrations_quickbooks_debug():
+    if not os.environ.get('QUICKBOOKS_DEBUG', os.environ.get('QUICKBOOKS_DEBUG_MODE', 'false')).lower() == 'true':
+        return jsonify({"error": "Diagnostic mode is disabled. Set QUICKBOOKS_DEBUG=true in .env to enable."}), 403
+        
+    if not check_workspace_access('quickbooks'):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+
+    try:
+        config = QuickBooksOAuthService.validate_config()
+        state = secrets.token_urlsafe(32)
+        url = QuickBooksOAuthService.buildQuickBooksAuthUrl(state)
+        
+        from urllib.parse import urlparse, parse_qs
+        parsed_url = urlparse(url)
+        params = parse_qs(parsed_url.query)
+        
+        # 1. End-To-End Assertions for Smoke Test
+        assert 'client_id' in params, "Missing client_id in OAuth URL"
+        assert 'response_type' in params and params['response_type'][0] == 'code', "Missing or incorrect response_type"
+        assert 'redirect_uri' in params, "Missing redirect_uri"
+        assert 'scope' in params and 'com.intuit.quickbooks.accounting' in params['scope'][0], "Missing accounting scope"
+        assert 'state' in params, "Missing state parameter"
+        
+        # 2. Prevent Placeholder leaks
+        for block in ["your_qb_id", "your_qb_secret", "undefined", "null"]:
+            assert block not in url, f"Dangerous placeholder '{block}' leaked into OAuth URL"
+            
+        client_id_val = params.get('client_id', [''])[0]
+        sanitized_client_id = f"{client_id_val[:5]}...{client_id_val[-3:]}" if len(client_id_val) > 10 else "***"
+        
+        sanitized_url = f"https://appcenter.intuit.com/connect/oauth2?client_id={sanitized_client_id}&redirect_uri={config['redirect_uri']}&response_type=code&scope={params.get('scope', [''])[0]}&state=..."
+        
+        return jsonify({
+            "status": "Diagnostic Passed",
+            "environment": config['environment'],
+            "client_id_present": bool(config['client_id']),
+            "client_secret_present": bool(config['client_secret']),
+            "exact_redirect_uri": config['redirect_uri'],
+            "exact_callback_path": urlparse(config['redirect_uri']).path,
+            "generated_state_attached": 'state' in params,
+            "required_scope_attached": 'scope' in params,
+            "sanitized_url": sanitized_url
+        })
+    except Exception as e:
+        return jsonify({"error": "Diagnostic validation failed", "details": str(e)}), 400
 
 @app.route('/api/integrations/quickbooks/test', methods=['POST'])
 @login_required
@@ -1068,18 +1131,18 @@ def api_integrations_quickbooks_test():
     if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
         return jsonify({"error": "Integrations disabled"}), 403
         
-    if not os.environ.get('ENABLE_QB', 'false').lower() == 'true':
+    if not os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true':
         return jsonify({"error": "QuickBooks Integration disabled"}), 403
         
     if not check_workspace_access('quickbooks'):
         return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
         
-    integration = get_integration(current_user.id, "quickbooks")
-    if not integration or integration.get("status") != "Connected":
-        return jsonify({"error": "QuickBooks integration not connected"}), 400
-        
+    active_company_id = session.get('active_company_id')
     try:
-        access_token = decrypt_token(integration["access_token"])
+        access_token = QuickBooksOAuthService.getValidAccessToken(current_user.id, active_company_id)
+        integration = get_integration(current_user.id, "quickbooks", active_company_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception:
         return jsonify({"error": "Stored credentials corrupted"}), 500
         
@@ -1118,6 +1181,81 @@ def api_integrations_quickbooks_test():
         results['company'] = {"status": "error", "message": str(e)}
 
     return jsonify({"status": "success", "test_results": results})
+
+@app.route('/api/integrations/quickbooks/disconnect', methods=['POST'])
+@login_required
+def api_integrations_quickbooks_disconnect():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    if not check_workspace_access('quickbooks'):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+        
+    active_company_id = session.get('active_company_id')
+    try:
+        QuickBooksOAuthService.disconnectQuickBooks(current_user.id, active_company_id)
+        return jsonify({"status": "success", "message": "QuickBooks disconnected safely."})
+    except Exception as e:
+        logger.error(f"Failed to disconnect QuickBooks: {e}")
+        return jsonify({"error": "Error disconnecting integration"}), 500
+
+@app.route('/api/integrations/quickbooks/sync', methods=['POST'])
+@login_required
+def api_integrations_quickbooks_sync():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    if not check_workspace_access('quickbooks'):
+        return jsonify({"error": "Forbidden - Workspace integration restricted to Admins"}), 403
+        
+    active_company_id = session.get('active_company_id')
+    try:
+        from shared.quickbooks_sync import QuickBooksSyncService
+        res = QuickBooksSyncService.sync_all(current_user.id, active_company_id)
+        return jsonify(res)
+    except Exception as e:
+        logger.error(f"QuickBooks Sync API Failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/integrations/quickbooks/webhook', methods=['POST'])
+def api_integrations_quickbooks_webhook():
+    if not os.environ.get('ENABLE_INTEGRATIONS', 'false').lower() == 'true':
+        return jsonify({"error": "Integrations disabled"}), 403
+        
+    try:
+        from shared.quickbooks_webhooks import QuickBooksWebhookService
+        signature = request.headers.get('intuit-signature')
+        if not signature:
+            logger.warning("Rejected Quickbooks webhook missing intuit-signature")
+            return "Missing Signature", 401
+            
+        payload = request.get_data()
+        
+        # 1. Enforce Webhook Payload Hash Authenticity
+        if not QuickBooksWebhookService.validate_signature(signature, payload):
+            logger.warning("Forged or invalid intuit-signature presented to Webhook")
+            return "Unauthorized", 401
+            
+        json_payload = request.get_json()
+        if not json_payload or not json_payload.get('eventNotifications'):
+            return "OK", 200 # Blank payloads are just connection tests
+            
+        # 2. Iterate array of grouped payload entities from Intuit
+        for notification in json_payload.get('eventNotifications', []):
+            realm_id = notification.get('realmId')
+            if not realm_id: continue
+            
+            # 3. Offload raw footprint to the DB natively
+            QuickBooksWebhookService.log_webhook(str(realm_id), json.dumps(notification))
+            
+        # 4. Trigger async incremental fetcher safely avoiding lock conditions
+        QuickBooksWebhookService.start_background_processor()
+            
+        return "OK", 200
+        
+    except Exception as e:
+        logger.error(f"QuickBooks Webhook Execution Failed: {e}")
+        return "Webhook Execution Failed", 500
 
 # Generic fallback for other providers
 @app.route('/api/integrations/<provider>/connect', methods=['POST'])
@@ -3653,6 +3791,25 @@ if __name__ == '__main__':
 
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     init_db()
+    
+    # PRODUCTION-SAFE CONFIG GUARDS for QuickBooks
+    qb_enabled = os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true'
+    if qb_enabled:
+        print("  [INIT] QuickBooks Integration: ENABLED. Validating config...")
+        try:
+            from shared.quickbooks_client import QuickBooksOAuthService
+            QuickBooksOAuthService.validate_config()
+            print("  [INIT] QuickBooks config validation PASSED.")
+            
+            qb_debug = os.environ.get('QUICKBOOKS_DEBUG', os.environ.get('QUICKBOOKS_DEBUG_MODE', 'false')).lower() == 'true'
+            if qb_debug:
+                print("  [WARNING] QuickBooks Diagnostic Debugging is ENABLED. Do not use in production!")
+        except Exception as e:
+            print(f"\n  [FATAL STARTUP ERROR] QUICKBOOKS_ENABLED=true but config is invalid:\n  --> {e}\n")
+            print("  Shutting down. Either fix your .env file or set QUICKBOOKS_ENABLED=false.\n")
+            sys.exit(1)
+    else:
+        print("  [INIT] QuickBooks Integration: DISABLED.")
 
     # Support PORT from environment (LocalProgramControlCenter) or command-line arg
     port = int(os.environ.get('PORT', 3004))

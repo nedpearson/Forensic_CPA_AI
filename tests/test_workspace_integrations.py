@@ -7,8 +7,12 @@ from app import app
 def setup_test_client():
     os.environ['TESTING'] = 'true'
     os.environ['ENABLE_INTEGRATIONS'] = 'true'
+    os.environ['QUICKBOOKS_ENABLED'] = 'true'
     os.environ['ENABLE_QB'] = 'true'
-    os.environ['QUICKBOOKS_CLIENT_ID'] = 'mock_client_id'
+    os.environ['QUICKBOOKS_CLIENT_ID'] = 'test_client_id'
+    os.environ['QUICKBOOKS_CLIENT_SECRET'] = 'test_secret'
+    os.environ['QUICKBOOKS_REDIRECT_URI'] = 'https://localhost/cb'
+    os.environ['QUICKBOOKS_ENVIRONMENT'] = 'sandbox'
     app.config['TESTING'] = True
     client = app.test_client()
     

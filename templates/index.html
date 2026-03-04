@@ -2645,6 +2645,38 @@
         </div>
     </div>
 
+    <!-- QuickBooks Connect Guidance Modal -->
+    <div class="modal fade" id="qbConnectModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h6 class="modal-title"><i class="fas fa-leaf text-success"></i> Connect QuickBooks Online</h6>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body pb-0">
+                    <p>You are about to connect your company's QuickBooks Online account to <strong>Forensic CPA
+                            AI</strong>.</p>
+                    <p>This secure connection process will:</p>
+                    <ul>
+                        <li>Redirect you to <strong>Intuit's</strong> official login portal.</li>
+                        <li>Ask you to select the accounting firm or company ledger to link.</li>
+                        <li>Grant read-only access to import Chart of Accounts, Merchants, Invoices, and Transactions
+                            automatically.</li>
+                    </ul>
+                    <div class="alert alert-info py-2 small mb-4">
+                        <i class="fas fa-shield-alt me-1"></i> We use OAuth 2.0. We will never see or store your
+                        QuickBooks passwords.
+                    </div>
+                </div>
+                <div class="modal-footer pt-3">
+                    <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button class="btn btn-sm btn-success" onclick="qbProceedWithConnect()"><i
+                            class="fas fa-external-link-alt me-1"></i> Proceed to Intuit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Add Transaction Modal -->
     <div class="modal fade" id="addTransModal" tabindex="-1">
         <div class="modal-dialog">
@@ -3409,6 +3441,13 @@
                         if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason || '')}">FLAG</span>`;
                         if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
 
+                        if (t.source_provider === 'quickbooks_online') {
+                            tags += `<span class="badge bg-success text-white me-1" title="Imported from QuickBooks: ${esc(t.source_entity_type || 'Entity')} ${esc(t.source_entity_id || '')}"><i class="fas fa-leaf me-1"></i>QBO</span>`;
+                        } else if (t.doc_filename) {
+                            tags += `<span class="badge bg-secondary me-1" title="From document: ${esc(t.doc_filename)}"><i class="fas fa-file-pdf me-1"></i>Doc</span>`;
+                        }
+
+
                         let catUI = `<select class="category-select" style="max-width:200px;" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select>`;
 
                         if (t.categorization_status === 'review_required' || t.categorization_status === 'suggested') {
@@ -3897,8 +3936,13 @@
             for (const acct of accounts) {
                 const typeClass = acct.account_type === 'bank' ? 'bank' : acct.account_type === 'venmo' ? 'venmo' : 'credit';
                 const icon = acct.account_type === 'bank' ? 'university' : acct.account_type === 'venmo' ? 'mobile-alt' : 'credit-card';
+                let sourceBadge = '';
+                if (acct.source_provider === 'quickbooks_online') {
+                    sourceBadge = `<span class="badge bg-success float-end text-white" style="font-size: 0.65rem;" title="Imported from QuickBooks: ${esc(acct.source_entity_type || '')} ${esc(acct.source_entity_id || '')}"><i class="fas fa-leaf me-1"></i>QBO</span>`;
+                }
                 html += `<div class="col-md-4"><div class="card-dark p-3">
                 <div class="account-card ${typeClass}">
+                    ${sourceBadge}
                     <h6><i class="fas fa-${icon} me-1"></i> ${esc(acct.account_name)}</h6>
                     <div class="small text-muted">${esc(acct.institution || '')} | #${esc(acct.account_number || '')}</div>
                     <div class="small text-muted">Type: ${acct.account_type} ${acct.cardholder_name ? '| ' + esc(acct.cardholder_name) : ''}</div>
@@ -4291,11 +4335,16 @@
                         { key: 'category_type', label: 'Type', sortable: true, type: 'text' },
                         { key: 'actions', label: 'Actions', sortable: false }
                     ],
-                    renderRow: c => `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})">
-                        <td><span style="color:${c.color}"><i class="fas fa-${c.icon || 'tag'}"></i></span> ${c.name}</td>
+                    renderRow: c => {
+                        let badge = (c.source_provider === 'quickbooks_online')
+                            ? `<span class="badge bg-success float-end text-white ms-2" style="font-size: 0.65rem;" title="Imported from QuickBooks"><i class="fas fa-leaf me-1"></i>QBO</span>`
+                            : '';
+                        return `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})">
+                        <td><span style="color:${c.color}"><i class="fas fa-${c.icon || 'tag'}"></i></span> ${c.name} ${badge}</td>
                         <td>${c.category_type || ''}</td>
                         <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteCategory(${c.id})"><i class="fas fa-trash"></i></button></td>
-                    </tr>`
+                    </tr>`;
+                    }
                 });
             }
             catsTable.updateData(allCategories);
@@ -4669,23 +4718,78 @@
                 let html = '';
                 providers.forEach(p => {
                     const connObj = connectedList.find(c => c.provider === p.id);
-                    const isConnected = connObj && connObj.status === 'Connected';
+                    const status = connObj ? connObj.status : 'Not connected';
                     const isWorkspace = (p.id === 'quickbooks');
                     const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes(userRole);
 
-                    let metaHtml = '';
-                    if (isConnected && connObj.metadata) {
-                        try {
-                            const meta = typeof connObj.metadata === 'string' ? JSON.parse(connObj.metadata) : connObj.metadata;
-                            if (meta.last_sync) {
-                                const localTime = new Date(meta.last_sync).toLocaleString();
-                                metaHtml = `<div class="small text-muted mt-2 border-top border-secondary pt-2">
-                                    <i class="fas fa-history me-1"></i>Last Sync: ${localTime}<br>
-                                    <span style="font-size:0.75rem;">Synced: ${meta.synced_count || 0} | Skipped: ${meta.skipped_count || 0}</span>
-                                </div>`;
-                            }
-                        } catch (e) { }
+                    let statusBadge = '';
+                    let actionButtons = '';
+
+                    if (status === 'Connected') {
+                        statusBadge = `<span class="badge bg-success"><i class="fas fa-check"></i> Connected</span>`;
+                    } else if (status === 'Needs Reauth' || status === 'Expired') {
+                        statusBadge = `<span class="badge bg-warning text-dark"><i class="fas fa-exclamation-triangle"></i> Needs Reauth</span>`;
+                    } else if (status === 'Error') {
+                        statusBadge = `<span class="badge bg-danger"><i class="fas fa-times-circle"></i> Sync Error</span>`;
+                    } else if (status === 'Disconnected') {
+                        statusBadge = `<span class="badge bg-secondary"><i class="fas fa-unlink"></i> Disconnected</span>`;
+                    } else {
+                        statusBadge = `<span class="badge bg-secondary">Not connected</span>`;
                     }
+
+                    if (canManage) {
+                        if (['Connected', 'Error'].includes(status)) {
+                            actionButtons = `<div>
+                                ${p.id === 'google_drive' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testGoogleIntegration()">Test Connection</button>` : ''}
+                                ${p.id === 'quickbooks' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testQuickBooksIntegration()">Test Connection</button><button class="btn btn-sm btn-outline-success py-0 px-2 me-2" onclick="syncQuickBooksIntegration()"><i class="fas fa-sync-alt me-1"></i>Sync Data</button>` : ''}
+                                ${p.id === 'financial_cents' ? `<button class="btn btn-sm btn-outline-success py-0 px-2 me-2" onclick="syncFCIntegration()"><i class="fas fa-sync-alt me-1"></i>Sync Clients</button>` : ''}
+                                <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="disconnectIntegration('${p.id}')">Disconnect</button>
+                            </div>`;
+                        } else if (['Needs Reauth', 'Expired', 'Disconnected'].includes(status)) {
+                            actionButtons = `<button class="btn btn-sm btn-outline-warning py-0 px-2" onclick="connectIntegration('${p.id}')"><i class="fas fa-link me-1"></i>Reconnect</button>`;
+                        } else {
+                            actionButtons = `<button class="btn btn-sm btn-outline-light py-0 px-2" onclick="connectIntegration('${p.id}')"><i class="fas fa-link me-1"></i>Connect</button>`;
+                        }
+                    } else {
+                        actionButtons = `<span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-lock me-1"></i>Admin setup required</span>`;
+                    }
+
+                    let metaHtml = '';
+                    if (['Connected', 'Needs Reauth', 'Error'].includes(status) && connObj) {
+                        if (p.id === 'quickbooks' && (connObj.account_name || connObj.last_sync_completed_at || connObj.last_error)) {
+                            let lastSyncStr = connObj.last_sync_completed_at ? new Date(connObj.last_sync_completed_at).toLocaleString() : 'Never';
+                            let qbMeta = `<div class="small text-muted mt-2 border-top border-secondary pt-2">`;
+                            if (connObj.account_name) {
+                                qbMeta += `<i class="fas fa-building me-1"></i>Company: <strong>${esc(connObj.account_name)}</strong><br>`;
+                            }
+                            if (connObj.metadata) {
+                                try {
+                                    const meta = typeof connObj.metadata === 'string' ? JSON.parse(connObj.metadata) : connObj.metadata;
+                                    if (meta.realmId) {
+                                        qbMeta += `<i class="fas fa-fingerprint me-1"></i>Realm ID: ${esc(meta.realmId)}<br>`;
+                                    }
+                                } catch (e) { }
+                            }
+                            qbMeta += `<i class="fas fa-history me-1"></i>Last Sync: ${lastSyncStr}<br>`;
+                            if (connObj.last_error) {
+                                qbMeta += `<span class="text-danger"><i class="fas fa-exclamation-circle me-1"></i>Debug: ${esc(connObj.last_error)}</span>`;
+                            }
+                            qbMeta += `</div>`;
+                            metaHtml = qbMeta;
+                        } else if (connObj.metadata) {
+                            try {
+                                const meta = typeof connObj.metadata === 'string' ? JSON.parse(connObj.metadata) : connObj.metadata;
+                                if (meta.last_sync) {
+                                    const localTime = new Date(meta.last_sync).toLocaleString();
+                                    metaHtml = `<div class="small text-muted mt-2 border-top border-secondary pt-2">
+                                        <i class="fas fa-history me-1"></i>Last Sync: ${localTime}<br>
+                                        <span style="font-size:0.75rem;">Synced: ${meta.synced_count || 0} | Skipped: ${meta.skipped_count || 0}</span>
+                                    </div>`;
+                                }
+                            } catch (e) { }
+                        }
+                    }
+
                     html += `
                     <div class="col-md-6 mb-3">
                         <div class="stat-card d-flex align-items-start gap-3">
@@ -4695,27 +4799,11 @@
                             <div class="flex-grow-1">
                                 <h6 class="mb-1">${p.name}</h6>
                                 <p class="text-muted small mb-2">${p.desc}</p>
-                                ${isConnected ?
-                            `<div class="d-flex justify-content-between align-items-center">
-                                <span class="badge bg-success"><i class="fas fa-check"></i> Connected</span>
-                                ${canManage ? `
-                                <div>
-                                    ${p.id === 'google_drive' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testGoogleIntegration()">Test Connection</button>` : ''}
-                                    ${p.id === 'quickbooks' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testQuickBooksIntegration()">Test Connection</button>` : ''}
-                                    ${p.id === 'financial_cents' ? `<button class="btn btn-sm btn-outline-success py-0 px-2 me-2" onclick="syncFCIntegration()"><i class="fas fa-sync-alt me-1"></i>Sync Clients</button>` : ''}
-                                    <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="disconnectIntegration('${p.id}')">Disconnect</button>
+                                <div class="d-flex justify-content-between align-items-center">
+                                    ${statusBadge}
+                                    ${actionButtons}
                                 </div>
-                                ` : ''}
-                             </div>` :
-                            `<div class="d-flex justify-content-between align-items-center">
-                                <span class="badge bg-secondary">Not connected</span>
-                                ${canManage ?
-                                `<button class="btn btn-sm btn-outline-light py-0 px-2" onclick="connectIntegration('${p.id}')"><i class="fas fa-link me-1"></i>Connect</button>` :
-                                `<span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-lock me-1"></i>Admin setup required</span>`
-                            }
-                             </div>`
-                        }
-                        ${metaHtml}
+                                ${metaHtml}
                             </div>
                         </div>
                     </div>`;
@@ -4735,6 +4823,11 @@
         }
 
         async function connectIntegration(provider) {
+            if (provider === 'quickbooks') {
+                const qbModal = new bootstrap.Modal(document.getElementById('qbConnectModal'));
+                qbModal.show();
+                return;
+            }
             try {
                 toast(`Starting ${provider} connection...`, 'info');
                 // Use the dedicated google endpoint if applicable, otherwise fallback
@@ -4747,7 +4840,28 @@
                     window.location.href = res.authorization_url;
                 }
             } catch (err) {
-                toast(`Integration ${provider} is not configured on this environment.`, 'danger');
+                console.error("Connection error:", err);
+                toast(err.message || `Integration ${provider} is not configured on this environment.`, 'danger');
+            }
+        }
+
+        async function qbProceedWithConnect() {
+            try {
+                toast("Preparing secure connection...", "info");
+                const res = await api('/api/integrations/quickbooks/connect', 'POST');
+                if (res && res.authorization_url) {
+                    window.location.href = res.authorization_url;
+                } else if (res && res.error) {
+                    if (res.error.includes("Client ID not configured") || res.error.includes("disabled") || res.error.includes("placeholder")) {
+                        bootstrap.Modal.getInstance(document.getElementById('qbConnectModal'))?.hide();
+                        alert(`QuickBooks Integration Setup Required:\n\n${res.error}\n\nPlease update your .env file with your real Intuit Developer keys.`);
+                    } else {
+                        toast(res.error, 'danger');
+                    }
+                }
+            } catch (err) {
+                console.error("QBO error:", err);
+                toast('Integration failed: ' + err.message, 'danger');
             }
         }
 
@@ -4780,6 +4894,19 @@
                 }
             } catch (err) {
                 toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function syncQuickBooksIntegration() {
+            try {
+                toast(`Starting QuickBooks sync...`, 'info');
+                const res = await api('/api/integrations/quickbooks/sync', 'POST');
+                if (res && res.status === 'success') {
+                    toast(`Sync completed! ${res.records_synced} records synced.`, 'success');
+                    loadIntegrations();
+                }
+            } catch (err) {
+                toast(`Sync failed: ${err.message}`, 'danger');
             }
         }
 
@@ -5106,7 +5233,19 @@
 
         function fmt(n) { return (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
         function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-        function toast(msg) { const c = document.getElementById('toast-container'); const el = document.createElement('div'); el.className = 'alert alert-info small py-2 px-3 mb-2'; el.style.cssText = 'min-width:200px;'; el.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${esc(msg)}`; c.appendChild(el); setTimeout(() => el.remove(), 3000); }
+        function toast(msg, type = 'info') {
+            const c = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            el.className = `alert alert-${type} small py-2 px-3 mb-2`;
+            el.style.cssText = 'min-width:200px;';
+            let icon = 'fa-info-circle';
+            if (type === 'success') icon = 'fa-check-circle';
+            if (type === 'danger') icon = 'fa-exclamation-circle';
+            if (type === 'warning') icon = 'fa-exclamation-triangle';
+            el.innerHTML = `<i class="fas ${icon} me-1"></i> ${esc(msg)}`;
+            c.appendChild(el);
+            setTimeout(() => el.remove(), 4000);
+        }
 
         // ===== MOBILE SIDEBAR TOGGLE =====
         function toggleSidebar(forceState) {
