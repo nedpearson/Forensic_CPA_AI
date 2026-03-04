@@ -1233,7 +1233,7 @@ def add_taxonomy_config(user_id, name, description, category_type, severity):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("INSERT INTO fcpa_taxonomy_config (user_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s) RETURNING id", (user_id, name, description, category_type, severity))
-    _id = cursor.fetchone()['id']
+        _id = cursor.fetchone()['id']
         conn.commit()
         return _id
     except psycopg2.IntegrityError:
