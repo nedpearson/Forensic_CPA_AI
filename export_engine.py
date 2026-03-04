@@ -304,7 +304,7 @@ def build_finding_report(company_id: int, finding_id: str, mode: str = 'client')
         return {}
     
     ev_graph = f.get('evidence_graph', [])
-    ev_str = ", ".join([f"[EVID-{e['type']}-{e['id']}]" for e in ev_graph if 'id' in e])
+    ev_str = ", ".join([f"[EVID-{e['type']}-{e['id']}]" for e in (ev_graph or []) if 'id' in e])
     
     narratives = []
     if mode == 'client':

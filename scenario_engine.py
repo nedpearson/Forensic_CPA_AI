@@ -19,7 +19,9 @@ def _calc_financials(txns: list) -> Dict[str, Any]:
         
         # P&L matching
         if amt > 0:
-            if 'revenue' in cat or 'sales' in cat or 'deposit' in cat or 'income' in cat:
+            if 'unearned' in cat or 'liability' in cat or 'loan' in cat:
+                current_liabilities += amt
+            elif 'revenue' in cat or 'sales' in cat or 'deposit' in cat or 'income' in cat:
                 revenue += amt
             elif 'receivable' in cat or 'ar' == cat or 'a/r' in cat:
                 ar += amt

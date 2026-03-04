@@ -6,26 +6,33 @@ from database import get_db
 def client():
     app.config['TESTING'] = True
     with app.test_client() as client:
-        # Mock session for multi-tenancy auth
-        with client.session_transaction() as sess:
-            sess['user_id'] = 1
-            sess['active_company_id'] = 1 
-            sess['company_role'] = 'owner'
+        setup_mock_data()
+        client.post('/api/auth/login', json={'email': 'mock@test.com', 'password': 'password'})
+        client.post('/api/business/switch', json={'company_id': 1})
         yield client
 
 def setup_mock_data():
+    from database import init_db
+    import werkzeug.security
+    init_db()
     conn = get_db()
     cursor = conn.cursor()
+    # Ensure user and company exist
+    hashed = werkzeug.security.generate_password_hash("password")
+    cursor.execute("INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, 'mock@test.com', ?)", (hashed,))
+    cursor.execute("INSERT OR IGNORE INTO companies (id, name, owner_user_id) VALUES (1, 'Mock Company', 1)")
+    cursor.execute("INSERT OR IGNORE INTO company_memberships (company_id, user_id, role) VALUES (1, 1, 'owner')")
+    
     # Insert some dummy transactions for company_id = 1
-    cursor.execute("DELETE FROM transactions WHERE company_id = 1")
-    cursor.execute("INSERT INTO transactions (company_id, user_id, trans_date, description, amount, category, is_personal, is_flagged) VALUES (1, 1, '2023-01-01', 'Uber Eats', -50.0, 'Meals', 1, 0)")
-    cursor.execute("INSERT INTO transactions (company_id, user_id, trans_date, description, amount, category, is_personal, is_flagged) VALUES (1, 1, '2023-01-02', 'Suspicious Vendor', -5000.0, 'Contractors', 0, 1)")
-    cursor.execute("INSERT INTO transactions (company_id, user_id, trans_date, description, amount, category, is_personal, is_flagged) VALUES (1, 1, '2023-01-03', 'Big Client Deposit', 10000.0, 'Revenue', 0, 0)")
+    cursor.execute("DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE user_id = 1)")
+    cursor.execute("INSERT OR IGNORE INTO accounts (id, user_id, account_name, account_type) VALUES (1, 1, 'Mock', 'checking')")
+    cursor.execute("INSERT INTO transactions (account_id, user_id, company_id, trans_date, description, amount, category, is_personal, is_flagged, trans_type) VALUES (1, 1, 1, '2023-01-01', 'Uber Eats', -50.0, 'Meals', 1, 0, 'debit')")
+    cursor.execute("INSERT INTO transactions (account_id, user_id, company_id, trans_date, description, amount, category, is_personal, is_flagged, trans_type) VALUES (1, 1, 1, '2023-01-02', 'Suspicious Vendor', -5000.0, 'Contractors', 0, 1, 'debit')")
+    cursor.execute("INSERT INTO transactions (account_id, user_id, company_id, trans_date, description, amount, category, is_personal, is_flagged, trans_type) VALUES (1, 1, 1, '2023-01-03', 'Big Client Deposit', 10000.0, 'Deposit', 0, 0, 'credit')")
     conn.commit()
     conn.close()
 
 def test_scenario_reclassification(client):
-    setup_mock_data()
     res = client.post('/api/simulator/run', json={
         "scenario_type": "reclassification",
         "parameters": {

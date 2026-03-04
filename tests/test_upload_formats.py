@@ -32,6 +32,11 @@ def auth_client():
         "password": "test_admin_pass"
     })
     
+    with client.session_transaction() as sess:
+        sess['_user_id'] = '1'
+        sess['user_id'] = 1
+        sess['active_company_id'] = 1
+        
     yield client
     
     try:

@@ -56,7 +56,16 @@ def test_encryption_wrapper_invalid_key():
 
 def test_integration_token_db_storage(memory_db):
     user_id = 1
+    company_id = 1
     provider = "google"
+    
+    # Setup dependencies
+    import database
+    conn = database.get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (?, ?, ?)", (user_id, 'test@test.com', 'hash'))
+    cursor.execute("INSERT OR IGNORE INTO companies (id, name, owner_user_id) VALUES (?, ?, ?)", (company_id, 'Company', user_id))
+    conn.commit()
     access_token = "mock_access_token_abc"
     refresh_token = "mock_refresh_token_xyz"
     
@@ -69,10 +78,11 @@ def test_integration_token_db_storage(memory_db):
         status="Connected",
         scopes=['read_drive', 'read_calendar'],
         access_token=encrypted_access,
-        refresh_token=encrypted_refresh
+        refresh_token=encrypted_refresh,
+        company_id=company_id
     )
     
-    record = get_integration(user_id, provider)
+    record = get_integration(user_id, provider, company_id=company_id)
     assert record is not None
     assert record['status'] == "Connected"
     assert record['provider'] == provider

@@ -7,10 +7,17 @@ from database import get_db
 def client():
     app.config['TESTING'] = True
     with app.test_client() as client:
-        with client.session_transaction() as sess:
-            sess['user_id'] = 1
-            sess['active_company_id'] = 1 
-            sess['company_role'] = 'owner'
+        from database import init_db
+        import werkzeug.security
+        init_db()
+        conn = get_db()
+        conn.execute("INSERT OR REPLACE INTO users (id, email, password_hash) VALUES (999, 'mock999@test.com', ?)", (werkzeug.security.generate_password_hash("password"),))
+        conn.execute("INSERT OR REPLACE INTO companies (id, name, owner_user_id) VALUES (999, 'Mock Company', 999)")
+        conn.execute("INSERT OR REPLACE INTO company_memberships (company_id, user_id, role) VALUES (999, 999, 'owner')")
+        conn.commit()
+        
+        client.post('/api/auth/login', json={'email': 'mock999@test.com', 'password': 'password'})
+        client.post('/api/business/switch', json={'company_id': 999})
         yield client
 
 def setup_mock_data():
@@ -21,7 +28,7 @@ def setup_mock_data():
         INSERT INTO advisor_findings 
         (company_id, finding_id, analysis_run_id, category, severity, confidence, title, recommended_actions) 
         VALUES 
-        (1, 'finding-1', 'RUN-1', 'category-A', 'warning', 80, 'Test Finding 1', '["Action 1", "Action 2"]')
+        (999, 'finding-1', 'RUN-1', 'category-A', 'warning', 80, 'Test Finding 1', '["Action 1", "Action 2"]')
     """)
     conn.commit()
     conn.close()
@@ -30,7 +37,7 @@ def setup_mock_data():
     # Fetch and sync
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM advisor_findings WHERE company_id = 1")
+    cursor.execute("SELECT * FROM advisor_findings WHERE company_id = 999")
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     
@@ -38,7 +45,7 @@ def setup_mock_data():
     for r in rows:
         r['recommended_actions'] = json.loads(r['recommended_actions'])
         
-    sync_remediation_tasks(1, rows)
+    sync_remediation_tasks(999, rows)
 
 def teardown_mock_data():
     conn = get_db()
@@ -54,7 +61,7 @@ def test_sync_remediation_tasks():
     
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM advisor_remediation_tasks WHERE company_id = 1")
+    cursor.execute("SELECT * FROM advisor_remediation_tasks WHERE company_id = 999")
     tasks = cursor.fetchall()
     conn.close()
     
@@ -77,7 +84,7 @@ def test_api_remediation_task_update(client):
     
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM advisor_remediation_tasks WHERE company_id = 1 LIMIT 1")
+    cursor.execute("SELECT id FROM advisor_remediation_tasks WHERE company_id = 999 LIMIT 1")
     task_id = cursor.fetchone()['id']
     conn.close()
     
@@ -108,9 +115,9 @@ def test_re_audit_comparison(client):
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO advisor_findings 
-        (company_id, finding_id, analysis_run_id, category, severity, confidence, title) 
+        (company_id, finding_id, analysis_run_id, category, severity, confidence, title, created_at) 
         VALUES 
-        (1, 'finding-2', 'RUN-2', 'category-A', 'danger', 90, 'Test Finding 2')
+        (999, 'finding-2', 'RUN-2', 'category-A', 'danger', 90, 'Test Finding 2', datetime('now', '+1 hour'))
     """)
     conn.commit()
     conn.close()

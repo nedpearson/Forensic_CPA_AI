@@ -49,6 +49,10 @@ def setup_test_client():
     
     app.config['TESTING'] = True
     with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess['_user_id'] = '1'
+            sess['user_id'] = 1
+            sess['active_company_id'] = 1
         yield client, doc_id
 
 def test_auto_categorizer_logic():

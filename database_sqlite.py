@@ -53,9 +53,10 @@ else:
 
 def get_db():
     """Get a database connection with row factory."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -272,7 +273,25 @@ def init_db():
             UNIQUE(transaction_id, document_id)
         );
 
-        CREATE TABLE IF NOT EXISTS case_notes (
+        
+        CREATE TABLE IF NOT EXISTS advisor_company_state (
+            company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+            status TEXT DEFAULT 'never_run',
+            needs_refresh INTEGER DEFAULT 0,
+            last_run_at TIMESTAMP,
+            last_failure_at TIMESTAMP,
+            last_result_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS advisor_report_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            period_start TIMESTAMP,
+            period_end TIMESTAMP,
+            snapshot_json TEXT
+        );
+CREATE TABLE IF NOT EXISTS case_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES users(id),
             title TEXT NOT NULL,
@@ -340,14 +359,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
             FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS saved_filters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER REFERENCES users(id),
-            name TEXT NOT NULL,
-            filters TEXT NOT NULL,  -- JSON object of filter params
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS integrations (

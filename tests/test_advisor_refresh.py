@@ -12,6 +12,7 @@ from advisor_worker import trigger_async_advisor_refresh
 
 class AdvisorRefreshTestCase(unittest.TestCase):
     def setUp(self):
+        os.environ['TESTING'] = 'true'
         app.config['TESTING'] = True
         app.config['WTF_CSRF_ENABLED'] = False
         self.app = app.test_client()
@@ -21,8 +22,15 @@ class AdvisorRefreshTestCase(unittest.TestCase):
         self.company_id_2 = 9992
         self.user_id = 9999
         
+        from database import init_db
+        init_db()
         conn = get_db()
         cursor = conn.cursor()
+        
+        cursor.execute("INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (?, 'user9999@test.com', 'pwd')", (self.user_id,))
+        cursor.execute("INSERT OR IGNORE INTO companies (id, name, owner_user_id) VALUES (?, 'Co 1', ?)", (self.company_id_1, self.user_id))
+        cursor.execute("INSERT OR IGNORE INTO companies (id, name, owner_user_id) VALUES (?, 'Co 2', ?)", (self.company_id_2, self.user_id))
+        
         cursor.execute("DELETE FROM advisor_company_state WHERE company_id IN (?, ?)", (self.company_id_1, self.company_id_2))
         conn.commit()
         conn.close()
@@ -42,11 +50,11 @@ class AdvisorRefreshTestCase(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state['status'], 'queued')
         self.assertEqual(state['needs_refresh'], 1)
-        self.assertEqual(state['trigger_reason'], "Test Upload")
+        self.assertEqual(state['last_trigger_reason'], "Test Upload")
         
         # Verify isolation
         state2 = get_advisor_company_state(self.company_id_2)
-        self.assertIsNone(state2.get('status'))
+        self.assertEqual(state2.get('status'), 'never_run')
 
     def test_02_running_status_is_protected_during_bursts(self):
         """Verify that if the thread is currently executing ('running'), new bursts do not overwrite the status lock."""
@@ -60,7 +68,7 @@ class AdvisorRefreshTestCase(unittest.TestCase):
         state = get_advisor_company_state(self.company_id_1)
         self.assertEqual(state['status'], 'running', "Active thread execution status was unsafely overwritten!")
         self.assertEqual(state['needs_refresh'], 1, "Failed to capture staleness caused by the burst payload.")
-        self.assertEqual(state['trigger_reason'], "Burst Upload")
+        self.assertEqual(state['last_trigger_reason'], "Burst Upload")
 
     def test_03_failed_status_allow_retry(self):
         """Verify that a 'failed' sequence allows subsequent triggers to re-queue."""

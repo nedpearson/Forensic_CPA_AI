@@ -19,7 +19,10 @@ def trigger_async_advisor_refresh(company_id: int, user_id: int, reason: str):
         needs_refresh=1, 
         trigger_reason=reason
     )
-    
+    import os
+    if os.environ.get('TESTING') == 'true':
+        return
+        
     # Fire and Forget Thread
     threading.Thread(target=_advisor_worker_loop, args=(company_id, user_id), daemon=True).start()
 
