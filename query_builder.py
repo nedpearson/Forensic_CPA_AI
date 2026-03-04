@@ -7,8 +7,20 @@ class QueryBuilder:
     def __init__(self, user_id, filters=None):
         self.user_id = user_id
         self.filters = filters or {}
-        self.conditions = ["user_id = ?"]
-        self.params = [user_id]
+        
+        from flask_login import current_user
+        try:
+            is_sup = current_user.is_authenticated and getattr(current_user, 'role', '') == 'SUPER_ADMIN'
+        except Exception:
+            is_sup = False
+
+        if is_sup:
+            self.conditions = []
+            self.params = []
+        else:
+            self.conditions = ["user_id = ?"]
+            self.params = [user_id]
+            
         self._build()
 
     def _build(self):

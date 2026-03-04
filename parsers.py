@@ -10,8 +10,9 @@ import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook
 from docx import Document as DocxDocument
-
-# OCR configuration
+from pydantic import BaseModel, Field
+from typing import List, Optional
+import json
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 POPPLER_PATH = r'C:\Users\nedpe\AppData\Local\poppler\poppler-24.08.0\Library\bin'
 
@@ -28,9 +29,11 @@ def parse_pdf_text(filepath):
     # If pdfplumber got very little text, try OCR
     total_chars = sum(len(p) for p in pages)
     if total_chars < 100:
-        ocr_pages = _ocr_pdf(filepath)
+        ocr_pages, ocr_error = _ocr_pdf(filepath)
         if ocr_pages:
             return ocr_pages
+        elif ocr_error:
+            raise Exception(f"This PDF appears to be a scanned image, but OCR failed: {ocr_error}")
 
     return pages
 
@@ -43,22 +46,64 @@ def _ocr_pdf(filepath):
 
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
+        if not os.path.exists(POPPLER_PATH):
+            return [], "Poppler binary not found at " + POPPLER_PATH
+        if not os.path.exists(TESSERACT_CMD):
+            return [], "Tesseract binary not found at " + TESSERACT_CMD
+
         images = convert_from_path(filepath, dpi=300, poppler_path=POPPLER_PATH)
         pages = []
         for img in images:
             text = pytesseract.image_to_string(img)
             if text and text.strip():
                 pages.append(text)
-        return pages
+        return pages, None
+    except ImportError:
+        return [], "Python packages 'pytesseract' or 'pdf2image' are not installed."
     except Exception as e:
-        print(f"OCR failed for {filepath}: {e}")
-        return []
+        return [], str(e)
 
 
-def compute_transaction_hash(trans_date, description, amount):
-    """Create a hash for duplicate detection."""
-    key = f"{trans_date}|{description}|{amount:.2f}"
-    return hashlib.md5(key.encode()).hexdigest()
+def _normalize_text(text):
+    if not text:
+        return ""
+    # trim, collapse whitespace, uppercase
+    text = str(text)
+    text = re.sub(r'\s+', ' ', text).strip().upper()
+    return text
+
+def compute_transaction_hash(account_scope_id, trans_date, amount, description, merchant=None, currency='USD', post_date=None, check_number=None, running_balance=None):
+    """Create a deterministic hash for duplicate detection."""
+    norm_desc = _normalize_text(description)
+    norm_merch = _normalize_text(merchant) if merchant else ""
+    
+    # Amount in cents
+    try:
+        amount_cents = int(round(float(amount) * 100))
+    except (ValueError, TypeError):
+        amount_cents = 0
+        
+    components = [
+        str(account_scope_id or ""),
+        str(trans_date or ""),
+        str(amount_cents),
+        norm_desc,
+        norm_merch,
+        str(currency).upper(),
+    ]
+    if post_date:
+        components.append(str(post_date))
+    if check_number:
+        components.append(str(check_number))
+    if running_balance is not None:
+        try:
+            bal_cents = int(round(float(running_balance) * 100))
+            components.append(str(bal_cents))
+        except (ValueError, TypeError):
+            pass
+            
+    key = "|".join(components)
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()
 
 
 def parse_pdf_tables(filepath):
@@ -89,22 +134,83 @@ def _normalize_bank_date(date_str, year='2026'):
     return date_str
 
 
-def parse_bank_statement(filepath):
-    """Parse Bank of St. Francisville PDF statements (handles OCR text)."""
-    pages = parse_pdf_text(filepath)
+def parse_bank_statement(filepath, pre_extracted_pages=None):
+    """Parse PDF statements using Generative AI with strict JSON schema."""
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
     transactions = []
     account_info = {
-        'institution': 'Bank of St. Francisville',
+        'institution': 'Unknown',
         'account_type': 'bank',
         'account_number': '',
-        'account_name': 'Gulf Coast Recovery of Baton Rouge, LLC',
+        'account_name': '',
         'statement_start': '',
         'statement_end': '',
     }
 
-    # Extract account number
+    if not full_text.strip():
+        return transactions, account_info
+
+    try:
+        from openai import OpenAI
+        import httpx
+        custom_http_client = httpx.Client()
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=custom_http_client)
+        
+        class TransactionSchema(BaseModel):
+            date: str = Field(description="ISO 8601 date, e.g. 2024-12-17")
+            description: str = Field(description="Cleaned description of the transaction")
+            amount: float = Field(description="Signed float. Negative for debits/withdrawals/fees, positive for credits/deposits.")
+            type: str = Field(description="'debit' or 'credit'")
+            balance: Optional[float] = Field(None, description="Running balance if shown")
+            cardholder_name: Optional[str] = Field(None, description="The specific person's name associated with this debit card swipe or POS transaction, if present.")
+            card_last_four: Optional[str] = Field(None, description="The last 4 digits of the specific debit/credit card used for this POS transaction, if present.")
+
+        class AccountInfoSchema(BaseModel):
+            institution: str = Field(description="Name of the bank or institution")
+            account_type: str = Field(description="'bank', 'credit_card', or 'other'")
+            account_number: str = Field(description="Account number or last 4 digits")
+            statement_start: str = Field(description="Statement start date (YYYY-MM-DD), or empty if unknown")
+            statement_end: str = Field(description="Statement end date (YYYY-MM-DD), or empty if unknown")
+            
+        class StatementExtractionSchema(BaseModel):
+            account_info: AccountInfoSchema
+            transactions: List[TransactionSchema]
+
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a financial parsing assistant. Extract all transactions and account information. Ensure amount is negative for debits and positive for credits. IMPORTANT: If a transaction description indicates a POS PURCHASE, DEBIT CARD swipe, or explicitly mentions a person's name or card number (e.g. '*1234' or 'Jane Doe'), you MUST extract those into cardholder_name and card_last_four."},
+                {"role": "user", "content": full_text[:100000]} # Limit to 100k chars for safety
+            ],
+            response_format=StatementExtractionSchema,
+            temperature=0.0
+        )
+
+        parsed_data = response.choices[0].message.parsed
+        account_info = parsed_data.account_info.model_dump()
+
+        # Map to old standard transactional format
+        for trans in parsed_data.transactions:
+            transactions.append({
+                'trans_date': trans.date,
+                'post_date': trans.date,
+                'description': trans.description,
+                'amount': trans.amount,
+                'trans_type': trans.type,
+                'balance': trans.balance,
+                'cardholder_name': trans.cardholder_name or '',
+                'card_last_four': trans.card_last_four or '',
+                'payment_method': ''
+            })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"LLM Parsing failed: {e}")
+        # Could fallback to regex here if heavily needed...
+        transactions = []
     acct_match = re.search(r'Account\s*(?:Number|#|No\.?)[:\s]*(\d+)', full_text, re.IGNORECASE)
     if acct_match:
         account_info['account_number'] = acct_match.group(1)
@@ -254,9 +360,9 @@ def parse_bank_statement(filepath):
 
 # --- Capital One Credit Card Statement Parser ---
 
-def parse_capital_one_statement(filepath):
+def parse_capital_one_statement(filepath, pre_extracted_pages=None):
     """Parse Capital One Spark Cash Plus credit card PDF statements."""
-    pages = parse_pdf_text(filepath)
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     full_text = "\n".join(pages)
 
     transactions = []
@@ -285,7 +391,70 @@ def parse_capital_one_statement(filepath):
     if name_match:
         account_info['account_name'] = name_match.group(1)
 
-    # Parse transactions by cardholder section
+    # Check for Year-End Summary Format
+    if "Year-End Summary" in full_text[:2000] or "Year-End Summary" in full_text:
+        in_transaction_details = False
+        current_card_last_four = ''
+        year = ''
+        
+        # Extract summary year
+        yr_match = re.search(r'Year-End Summary\s+(\d{4})', full_text[:1000])
+        if yr_match:
+            year = yr_match.group(1)
+        elif '2024' in full_text[:500]:
+            year = '2024'
+
+        for page_text in pages:
+            lines = page_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if "Section 4_Transaction Details" in line:
+                    in_transaction_details = True
+                    
+                if not in_transaction_details:
+                    continue
+                    
+                card_match = re.match(r'Card Ending in (\d{4})', line)
+                if card_match:
+                    current_card_last_four = card_match.group(1)
+                    continue
+                    
+                # Parse transaction lines: "02/07 Merchant Name Amount"
+                trans_match = re.match(r'(\d{2}/\d{2})\s+(.+?)\s+\$?([\d,]+\.\d{2})\s*$', line)
+                if trans_match:
+                    trans_date = trans_match.group(1)
+                    desc = trans_match.group(2).strip()
+                    amount_str = trans_match.group(3).replace(',', '')
+
+                    try:
+                        amount = float(amount_str)
+                    except ValueError:
+                        continue
+                        
+                    # Filter out headers/footers
+                    if desc.startswith("TOTAL CHARGES") or desc.startswith("TOTAL CREDITS") or desc.startswith("TOTAL "):
+                        continue
+                        
+                    # Standard parsing logic
+                    trans_type = 'debit'
+                    full_date = f"{trans_date}/{year}" if year else trans_date
+                    
+                    transactions.append({
+                        'trans_date': full_date,
+                        'post_date': full_date,
+                        'description': desc,
+                        'amount': -amount,
+                        'trans_type': trans_type,
+                        'cardholder_name': account_info['account_name'],
+                        'card_last_four': current_card_last_four,
+                        'payment_method': 'credit',
+                    })
+        return transactions, account_info
+
+    # Parse transactions by cardholder section for standard statement
     # Capital One statements group transactions under each cardholder
     current_cardholder = ''
     current_card = ''
@@ -392,14 +561,14 @@ def parse_capital_one_statement(filepath):
 
 # --- Venmo Statement Parser ---
 
-def parse_venmo_statement(filepath):
+def parse_venmo_statement(filepath, pre_extracted_pages=None):
     """Parse Venmo CSV or PDF exports."""
     ext = os.path.splitext(filepath)[1].lower()
 
     if ext == '.csv':
         return parse_venmo_csv(filepath)
     elif ext == '.pdf':
-        return parse_venmo_pdf(filepath)
+        return parse_venmo_pdf(filepath, pre_extracted_pages=pre_extracted_pages)
     elif ext in ('.xlsx', '.xls'):
         return parse_venmo_excel(filepath)
     return [], {}
@@ -485,9 +654,9 @@ def parse_venmo_excel(filepath):
     return transactions, {'institution': 'Venmo', 'account_type': 'venmo', 'account_number': 'venmo'}
 
 
-def parse_venmo_pdf(filepath):
+def parse_venmo_pdf(filepath, pre_extracted_pages=None):
     """Parse Venmo PDF statement."""
-    pages = parse_pdf_text(filepath)
+    pages = pre_extracted_pages if pre_extracted_pages is not None else parse_pdf_text(filepath)
     transactions = []
 
     for page_text in pages:
@@ -522,8 +691,8 @@ def parse_venmo_pdf(filepath):
 # --- Excel Parser (generic) ---
 
 def parse_excel_transactions(filepath):
-    """Parse transactions from Excel files. Auto-detects column structure."""
-    df = pd.read_excel(filepath)
+    """Parse transactions from Excel files. Auto-detects column structure across all sheets."""
+    all_dfs = pd.read_excel(filepath, sheet_name=None)
     transactions = []
     account_info = {
         'institution': 'Unknown',
@@ -531,73 +700,80 @@ def parse_excel_transactions(filepath):
         'account_number': '',
     }
 
-    # Auto-detect column mappings
-    col_map = {}
-    for col in df.columns:
-        col_lower = str(col).lower()
-        if 'date' in col_lower and 'post' not in col_lower:
-            col_map['trans_date'] = col
-        elif 'post' in col_lower and 'date' in col_lower:
-            col_map['post_date'] = col
-        elif 'desc' in col_lower or 'memo' in col_lower or 'narrative' in col_lower:
-            col_map['description'] = col
-        elif 'amount' in col_lower or 'total' in col_lower:
-            col_map['amount'] = col
-        elif 'debit' in col_lower:
-            col_map['debit'] = col
-        elif 'credit' in col_lower:
-            col_map['credit'] = col
-        elif 'category' in col_lower or 'type' in col_lower:
-            col_map['category'] = col
-        elif 'card' in col_lower or 'holder' in col_lower or 'name' in col_lower:
-            col_map['cardholder'] = col
-        elif 'check' in col_lower and 'num' in col_lower:
-            col_map['check_number'] = col
-
-    for _, row in df.iterrows():
-        try:
-            # Get amount
-            if 'amount' in col_map:
-                amount_val = row[col_map['amount']]
-                if pd.isna(amount_val):
-                    continue
-                amount_str = str(amount_val).replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
-                amount = float(amount_str)
-            elif 'debit' in col_map or 'credit' in col_map:
-                debit = 0
-                credit = 0
-                if 'debit' in col_map and pd.notna(row[col_map['debit']]):
-                    debit = float(str(row[col_map['debit']]).replace('$', '').replace(',', ''))
-                if 'credit' in col_map and pd.notna(row[col_map['credit']]):
-                    credit = float(str(row[col_map['credit']]).replace('$', '').replace(',', ''))
-                amount = credit - debit if credit else -debit
-            else:
-                continue
-
-            # Get description
-            desc = str(row.get(col_map.get('description', ''), 'Unknown'))
-            if desc == 'nan':
-                desc = 'Unknown'
-
-            # Get date
-            date_val = row.get(col_map.get('trans_date', ''), '')
-            if pd.notna(date_val):
-                date_str = str(date_val)
-            else:
-                date_str = ''
-
-            transactions.append({
-                'trans_date': date_str,
-                'post_date': str(row.get(col_map.get('post_date', ''), '')) if 'post_date' in col_map else date_str,
-                'description': desc,
-                'amount': amount,
-                'trans_type': 'credit' if amount > 0 else 'debit',
-                'cardholder_name': str(row.get(col_map.get('cardholder', ''), '')) if 'cardholder' in col_map else '',
-                'card_last_four': '',
-                'payment_method': '',
-            })
-        except (ValueError, TypeError):
+    for sheet_name, df in all_dfs.items():
+        if df.empty:
             continue
+
+        # Clean column names to prevent KeyErrors from trailing whitespace
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # Auto-detect column mappings
+        col_map = {}
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'date' in col_lower and 'post' not in col_lower:
+                col_map['trans_date'] = col
+            elif 'post' in col_lower and 'date' in col_lower:
+                col_map['post_date'] = col
+            elif 'desc' in col_lower or 'memo' in col_lower or 'narrative' in col_lower:
+                col_map['description'] = col
+            elif 'amount' in col_lower or 'total' in col_lower:
+                col_map['amount'] = col
+            elif 'debit' in col_lower:
+                col_map['debit'] = col
+            elif 'credit' in col_lower:
+                col_map['credit'] = col
+            elif 'category' in col_lower or 'type' in col_lower:
+                col_map['category'] = col
+            elif 'card' in col_lower or 'holder' in col_lower or 'name' in col_lower:
+                col_map['cardholder'] = col
+            elif 'check' in col_lower and 'num' in col_lower:
+                col_map['check_number'] = col
+
+        for _, row in df.iterrows():
+            try:
+                # Get amount
+                if 'amount' in col_map:
+                    amount_val = row[col_map['amount']]
+                    if pd.isna(amount_val):
+                        continue
+                    amount_str = str(amount_val).replace('$', '').replace(',', '').replace('(', '-').replace(')', '')
+                    amount = float(amount_str)
+                elif 'debit' in col_map or 'credit' in col_map:
+                    debit = 0
+                    credit = 0
+                    if 'debit' in col_map and pd.notna(row[col_map['debit']]):
+                        debit = float(str(row[col_map['debit']]).replace('$', '').replace(',', ''))
+                    if 'credit' in col_map and pd.notna(row[col_map['credit']]):
+                        credit = float(str(row[col_map['credit']]).replace('$', '').replace(',', ''))
+                    amount = credit - debit if credit else -debit
+                else:
+                    continue
+
+                # Get description
+                desc = str(row.get(col_map.get('description', ''), 'Unknown'))
+                if desc == 'nan':
+                    desc = 'Unknown'
+
+                # Get date
+                date_val = row.get(col_map.get('trans_date', ''), '')
+                if pd.notna(date_val):
+                    date_str = str(date_val)
+                else:
+                    date_str = ''
+
+                transactions.append({
+                    'trans_date': date_str,
+                    'post_date': str(row.get(col_map.get('post_date', ''), '')) if 'post_date' in col_map else date_str,
+                    'description': desc,
+                    'amount': amount,
+                    'trans_type': 'credit' if amount > 0 else 'debit',
+                    'cardholder_name': str(row.get(col_map.get('cardholder', ''), '')) if 'cardholder' in col_map else '',
+                    'card_last_four': '',
+                    'payment_method': '',
+                })
+            except (ValueError, TypeError):
+                continue
 
     return transactions, account_info
 
@@ -797,8 +973,11 @@ def _parse_generic_csv(df):
     transactions = []
     col_map = {}
 
+    # Clean column names to prevent KeyErrors from trailing whitespace
+    df.columns = [str(c).strip() for c in df.columns]
+
     for col in df.columns:
-        cl = str(col).lower()
+        cl = col.lower()
         if 'date' in cl and 'date' not in col_map:
             col_map['date'] = col
         elif 'desc' in cl or 'memo' in cl or 'payee' in cl or 'narrative' in cl:
@@ -859,6 +1038,8 @@ def parse_document(filepath, doc_type='auto'):
     ext = os.path.splitext(filepath)[1].lower()
     filename = os.path.basename(filepath)
 
+    pages = None
+
     if doc_type == 'auto':
         # Auto-detect based on filename and content
         if ext == '.csv':
@@ -878,11 +1059,10 @@ def parse_document(filepath, doc_type='auto'):
             try:
                 pages = parse_pdf_text(filepath)
                 full_text = "\n".join(pages).upper()
-                if 'CAPITAL ONE' in full_text or 'SPARK CASH' in full_text:
+                header_text = full_text[:1000]
+                if 'SPARK CASH' in header_text or 'SPARK BUSINESS' in header_text or 'QUICKSILVER' in header_text or 'YEAR-END SUMMARY' in header_text:
                     doc_type = 'credit_card'
-                elif 'VENMO' in full_text and 'STATEMENT' in full_text:
-                    doc_type = 'venmo'
-                elif 'BANK OF ST' in full_text or 'COMMERCIAL CHECKING' in full_text:
+                elif 'BANK OF ST' in header_text or 'COMMERCIAL CHECKING' in header_text:
                     doc_type = 'bank_statement'
                 else:
                     doc_type = 'bank_statement'  # default for PDFs
@@ -890,11 +1070,11 @@ def parse_document(filepath, doc_type='auto'):
                 doc_type = 'bank_statement'
 
     if doc_type == 'bank_statement':
-        return parse_bank_statement(filepath)
+        return parse_bank_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'credit_card':
-        return parse_capital_one_statement(filepath)
+        return parse_capital_one_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'venmo':
-        return parse_venmo_statement(filepath)
+        return parse_venmo_statement(filepath, pre_extracted_pages=pages)
     elif doc_type == 'csv':
         return parse_csv_transactions(filepath)
     elif doc_type == 'excel':

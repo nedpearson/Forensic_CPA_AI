@@ -1,0 +1,26 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\dev\github\business\Forensic_CPA_AI
+plugins: anyio-4.12.1, mock-3.15.1
+collected 29 items
+
+tests\test_analytics.py ...                                              [ 10%]
+tests\test_categorization.py ..                                          [ 17%]
+tests\test_docs.py ...                                                   [ 27%]
+tests\test_integrations.py ....                                          [ 41%]
+tests\test_pdf_extraction.py .                                           [ 44%]
+tests\test_roles.py ....                                                 [ 58%]
+tests\test_smoke.py ...                                                  [ 68%]
+tests\test_upload_formats.py .....                                       [ 86%]
+tests\test_workspace_integrations.py ....                                [100%]
+
+============================== warnings summary ===============================
+tests/test_roles.py: 3 warnings
+tests/test_smoke.py: 4 warnings
+tests/test_upload_formats.py: 1 warning
+tests/test_workspace_integrations.py: 4 warnings
+  C:\dev\github\business\Forensic_CPA_AI\.venv\Lib\site-packages\flask_login\login_manager.py:488: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    expires = datetime.utcnow() + duration
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 29 passed, 12 warnings in 5.20s =======================

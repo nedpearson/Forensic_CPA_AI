@@ -1,0 +1,418 @@
+[
+    {
+        "name": "Personal Expense",
+        "scope": "personal",
+        "is_active": 1,
+        "sort_order": 1,
+        "categories": [
+            {
+                "name": "Housing",
+                "subcategories": [
+                    "Rent / Mortgage",
+                    "Property Taxes",
+                    "HOA Fees",
+                    "Home Insurance"
+                ]
+            },
+            {
+                "name": "Utilities",
+                "subcategories": [
+                    "Internet",
+                    "Home Maintenance / Repairs",
+                    "Furniture / Appliances",
+                    "Security System",
+                    "Electricity",
+                    "Water / Trash"
+                ]
+            },
+            {
+                "name": "Transportation",
+                "subcategories": [
+                    "Fuel",
+                    "Car Payment",
+                    "Auto Insurance",
+                    "Maintenance / Repairs",
+                    "Tires",
+                    "Registration / Tags",
+                    "Parking",
+                    "Tolls",
+                    "Rideshare / Taxi",
+                    "Public Transit"
+                ]
+            },
+            {
+                "name": "Food",
+                "subcategories": [
+                    "Groceries",
+                    "Dining Out",
+                    "Coffee / Snacks",
+                    "Meal Delivery",
+                    "Alcohol"
+                ]
+            },
+            {
+                "name": "Healthcare",
+                "subcategories": [
+                    "Doctor Visits",
+                    "Dental",
+                    "Vision",
+                    "Prescriptions",
+                    "Therapy / Counseling",
+                    "Health Insurance Premiums",
+                    "Medical Equipment / Supplies",
+                    "Lab / Testing"
+                ]
+            },
+            {
+                "name": "Personal Care",
+                "subcategories": [
+                    "Haircuts / Salon",
+                    "Skincare / Cosmetics",
+                    "Toiletries",
+                    "Spa / Wellness"
+                ]
+            },
+            {
+                "name": "Family / Child Expenses",
+                "subcategories": [
+                    "Childcare",
+                    "School Tuition",
+                    "School Supplies",
+                    "Kids Activities",
+                    "Child Support",
+                    "Baby Supplies"
+                ]
+            },
+            {
+                "name": "Insurance",
+                "subcategories": [
+                    "Life Insurance",
+                    "Disability Insurance",
+                    "Umbrella Insurance",
+                    "Renter’s Insurance"
+                ]
+            },
+            {
+                "name": "Debt Payments",
+                "subcategories": [
+                    "Credit Card Payments",
+                    "Student Loans",
+                    "Personal Loans",
+                    "Medical Debt"
+                ]
+            },
+            {
+                "name": "Savings / Investments",
+                "subcategories": [
+                    "Emergency Fund",
+                    "Retirement Contributions",
+                    "Brokerage Contributions",
+                    "College Savings",
+                    "Other Savings Goals"
+                ]
+            },
+            {
+                "name": "Entertainment / Lifestyle",
+                "subcategories": [
+                    "Streaming Services",
+                    "Hobbies",
+                    "Movies / Events",
+                    "Travel",
+                    "Subscriptions / Memberships",
+                    "Books / Music / Games"
+                ]
+            },
+            {
+                "name": "Clothing",
+                "subcategories": [
+                    "Everyday Clothing",
+                    "Shoes",
+                    "Work Clothing",
+                    "Dry Cleaning"
+                ]
+            },
+            {
+                "name": "Pets",
+                "subcategories": [
+                    "Food",
+                    "Vet",
+                    "Grooming",
+                    "Boarding",
+                    "Pet Insurance"
+                ]
+            },
+            {
+                "name": "Gifts / Donations",
+                "subcategories": [
+                    "Gifts",
+                    "Charitable Donations",
+                    "Holiday Spending"
+                ]
+            },
+            {
+                "name": "Taxes / Government Fees",
+                "subcategories": [
+                    "Personal Income Tax",
+                    "Estimated Tax Payments",
+                    "DMV / License Fees",
+                    "Filing Fees"
+                ]
+            },
+            {
+                "name": "Miscellaneous Personal",
+                "subcategories": [
+                    "Cash Withdrawals",
+                    "Household Misc.",
+                    "One-off Purchases"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Business Expense",
+        "scope": "business",
+        "is_active": 1,
+        "sort_order": 2,
+        "categories": [
+            {
+                "name": "Cost of Goods Sold",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Inventory Purchases",
+                    "Raw Materials",
+                    "Packaging",
+                    "Freight In / Shipping Supplies",
+                    "Merchant Processing tied to sales",
+                    "Production Costs",
+                    "Subcontracted Fulfillment"
+                ]
+            },
+            {
+                "name": "Payroll / Compensation",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Wages / Salaries",
+                    "Contractor Payments",
+                    "Commissions",
+                    "Bonuses",
+                    "Payroll Taxes",
+                    "Employee Benefits",
+                    "Reimbursements"
+                ]
+            },
+            {
+                "name": "Occupancy / Facilities",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Office Rent",
+                    "Warehouse Rent",
+                    "Utilities",
+                    "Janitorial",
+                    "Repairs / Maintenance",
+                    "Property Insurance",
+                    "Security / Access Control"
+                ]
+            },
+            {
+                "name": "Office / Admin",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Office Supplies",
+                    "Printing / Copying",
+                    "Postage / Shipping",
+                    "Phones",
+                    "Internet",
+                    "Small Equipment"
+                ]
+            },
+            {
+                "name": "Software / Technology",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "SaaS Subscriptions",
+                    "Cloud Hosting",
+                    "Domain / DNS",
+                    "Web Services / APIs",
+                    "Licenses",
+                    "IT Support",
+                    "Hardware",
+                    "Cybersecurity Tools"
+                ]
+            },
+            {
+                "name": "Marketing / Sales",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Advertising",
+                    "Social Media Ads",
+                    "SEO / Web Marketing",
+                    "Branding / Design",
+                    "Printing / Signage",
+                    "Promotions / Giveaways",
+                    "CRM Tools",
+                    "Sales Commissions",
+                    "Lead Generation"
+                ]
+            },
+            {
+                "name": "Professional Services",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Legal Fees",
+                    "Accounting / Bookkeeping",
+                    "Tax Preparation",
+                    "Consulting",
+                    "Recruiting / HR Services"
+                ]
+            },
+            {
+                "name": "Travel / Meals",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Airfare",
+                    "Hotels",
+                    "Mileage",
+                    "Fuel (business use)",
+                    "Client Meals",
+                    "Per Diem",
+                    "Parking / Tolls",
+                    "Conference Travel"
+                ]
+            },
+            {
+                "name": "Insurance",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "General Liability",
+                    "Professional Liability / E&O",
+                    "Workers’ Comp",
+                    "Commercial Auto",
+                    "Business Interruption",
+                    "Cyber Insurance"
+                ]
+            },
+            {
+                "name": "Financial / Banking",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Bank Fees",
+                    "Loan Interest",
+                    "Credit Card Processing Fees",
+                    "Wire Fees",
+                    "Financing Charges"
+                ]
+            },
+            {
+                "name": "Taxes / Licenses / Compliance",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Business Licenses",
+                    "Permits",
+                    "Sales Tax Paid",
+                    "Franchise Tax",
+                    "Estimated Business Taxes",
+                    "Filing / Registration Fees",
+                    "Compliance / Audit Costs"
+                ]
+            },
+            {
+                "name": "Operations",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Shipping / Delivery",
+                    "Equipment Rental",
+                    "Repairs / Maintenance",
+                    "Waste Disposal",
+                    "Uniforms",
+                    "Safety Supplies"
+                ]
+            },
+            {
+                "name": "Education / Development",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Training",
+                    "Certifications",
+                    "Courses",
+                    "Conferences",
+                    "Books / Industry Publications"
+                ]
+            },
+            {
+                "name": "Asset Purchases",
+                "tax_deductible_default": 0,
+                "subcategories": [
+                    "Furniture",
+                    "Computers / Devices",
+                    "Machinery / Equipment",
+                    "Vehicles",
+                    "Leasehold Improvements"
+                ]
+            },
+            {
+                "name": "Owner Transactions",
+                "tax_deductible_default": 0,
+                "subcategories": [
+                    "Owner Draw",
+                    "Owner Contribution",
+                    "Partner Distribution",
+                    "Shareholder Distribution"
+                ]
+            },
+            {
+                "name": "Miscellaneous Business",
+                "tax_deductible_default": 1,
+                "subcategories": [
+                    "Uncategorized Business Expense",
+                    "One-time Setup Costs",
+                    "Write-offs / Bad Debt"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Shared / Reimbursable",
+        "scope": "shared",
+        "is_active": 1,
+        "sort_order": 3,
+        "categories": [
+            {
+                "name": "Reimbursable Expenses",
+                "reimbursable_default": 1,
+                "subcategories": [
+                    "Personal Paid for Business",
+                    "Business Paid for Personal",
+                    "Employee Reimbursable",
+                    "Client Billable Expense",
+                    "Split Expense",
+                    "Mileage Reimbursement",
+                    "Home Office Allocation",
+                    "Shared Phone / Internet Allocation"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "Transfers / Non-expense",
+        "scope": "system",
+        "is_active": 1,
+        "sort_order": 4,
+        "categories": [
+            {
+                "name": "Transfers",
+                "subcategories": [
+                    "Transfer Between Accounts",
+                    "Credit Card Payment",
+                    "Loan Principal Payment",
+                    "Savings Transfer",
+                    "Investment Transfer",
+                    "Refund / Reversal",
+                    "Cashback / Rewards",
+                    "Income Deposit (not expense)",
+                    "Tax Refund",
+                    "Internal Account Movement"
+                ]
+            }
+        ]
+    }
+]

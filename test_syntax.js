@@ -1,0 +1,3171 @@
+
+        // =====
+        const initialFilters = hydrateFilters(window.location.search);
+        if (!initialFilters.view_mode) {
+            initialFilters.view_mode = sessionStorage.getItem('viewMode') || 'all';
+        }
+        window.FilterStore = new GlobalFilterStore(initialFilters);
+        window.GlobalBreadcrumbs = new BreadcrumbStore();
+
+        // ===== NAVIGATION HISTORY STATE =====
+        window.NavigationHistory = [];
+        let isNavigatingBack = false;
+
+        function pushHistoryState(page, filters) {
+            if (isNavigatingBack) {
+                isNavigatingBack = false;
+                return;
+            }
+
+            // Only push if different from current top
+            const top = window.NavigationHistory[window.NavigationHistory.length - 1];
+            if (!top || top.page !== page || JSON.stringify(top.filters) !== JSON.stringify(filters)) {
+                window.NavigationHistory.push({ page, filters: JSON.parse(JSON.stringify(filters)) });
+            }
+            updateBackButton();
+        }
+
+        function popHistoryState() {
+            if (window.NavigationHistory.length > 1) {
+                window.NavigationHistory.pop(); // Remove current
+                const prevState = window.NavigationHistory[window.NavigationHistory.length - 1];
+                updateBackButton();
+                return prevState;
+            }
+            return null;
+        }
+
+        function updateBackButton() {
+            const btn = document.getElementById('global-back-btn');
+            if (btn) {
+                const top = window.NavigationHistory.length > 0 ? window.NavigationHistory[window.NavigationHistory.length - 1] : null;
+                const onDashboard = top && top.page === 'dashboard';
+
+                // Show if history > 1 OR we are deep-linked into a detail page
+                if (window.NavigationHistory.length > 1 || !onDashboard) {
+                    btn.classList.remove('d-none');
+                } else {
+                    btn.classList.add('d-none');
+                }
+            }
+        }
+
+        function goBack() {
+            if (window.NavigationHistory.length > 1) {
+                const prevState = popHistoryState();
+                if (prevState) {
+                    isNavigatingBack = true;
+                    window.FilterStore.replace(prevState.filters);
+                    navigateTo(prevState.page, true, false);
+                }
+            } else if (window.history.length > 1 && document.referrer.includes(window.location.host)) {
+                // Native browser back if it's within our app domain limits spanning tabs
+                window.history.back();
+            } else {
+                // Fallback safe route (Dashboard) for deep links
+                window.FilterStore.clear();
+                navigateTo('dashboard', true, true);
+            }
+        }
+
+        // Subscribe to FilterStore to update URL and UI automatically
+        window.FilterStore.subscribe((filters) => {
+            const qs = serializeFilters(filters);
+            const activePage = document.querySelector('.nav-link.active')?.dataset.page || 'dashboard';
+            const newUrl = qs ? `/?${qs}` : '/';
+            window.history.replaceState({ filters, page: activePage }, '', newUrl);
+
+            // Record standard filter changes to internal stack if not navigating back
+            pushHistoryState(activePage, filters);
+
+            // Sync the UI top bar inputs
+            if (typeof syncFilterUI === 'function') syncFilterUI(filters);
+
+            // Persist view_mode to session and update toggle bar
+            if (filters.view_mode) {
+                sessionStorage.setItem('viewMode', filters.view_mode);
+                document.querySelectorAll('.view-toggle-bar .toggle-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.mode === filters.view_mode);
+                });
+            }
+
+            // Sync Date Presets UI
+            if (filters.date_preset) {
+                document.querySelectorAll('.date-picks .btn').forEach(b => {
+                    b.classList.toggle('btn-info', b.dataset.preset === filters.date_preset);
+                    b.classList.toggle('btn-outline-light', b.dataset.preset !== filters.date_preset);
+                });
+            } else {
+                document.querySelectorAll('.date-picks .btn').forEach(b => {
+                    b.classList.remove('btn-info');
+                    b.classList.add('btn-outline-light');
+                });
+            }
+
+            // Reload the active tab's data using the new filters
+            loadPageData(activePage, filters);
+        });
+
+        // Handle browser Back/Forward navigation
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.filters) {
+                window.FilterStore.replace(e.state.filters);
+                if (e.state.page) {
+                    navigateTo(e.state.page, false); // Don't trigger another data load, the replace() via subscription will
+                }
+            } else {
+                const restored = hydrateFilters(window.location.search);
+                window.FilterStore.replace(restored);
+            }
+        });
+
+        let allTransactions = [];
+        let allCategories = [];
+        let selectedIds = new Set();
+        let editingId = null;
+        let dashStats = null;
+        let currentPreviewId = null;
+        let currentPage = 1;
+        let totalPages = 1;
+        let perPage = 100;
+        let recurringData = [];
+        let cardholderTimelineChart = null;
+        let personalBusinessChart = null;
+
+        // ===== BREADCRUMBS =====
+        window.GlobalBreadcrumbs.subscribe(renderBreadcrumbs);
+
+        function renderBreadcrumbs(history) {
+            const container = document.getElementById('global-breadcrumbs');
+            if (history.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+            container.style.display = 'block';
+            let html = '<div class="breadcrumb-bar">';
+
+            history.forEach((crumb, idx) => {
+                html += `<span class="crumb" onclick="restoreBreadcrumb(${idx})">${esc(crumb.label)}</span><span class="separator">/</span>`;
+            });
+
+            // Current view generic label
+            html += '<span class="current-view">Detail View</span></div>';
+            container.innerHTML = html;
+        }
+
+        function restoreBreadcrumb(idx) {
+            const snapshot = window.GlobalBreadcrumbs.pop(idx);
+            if (snapshot) {
+                FilterStore.replace(snapshot.filters);
+                navigateTo(snapshot.target);
+            }
+        }
+
+        async function logDrilldownEvent(record) {
+            try {
+                await fetch('/api/drilldowns', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(record)
+                });
+            } catch (e) { console.error('Drilldown log failed', e); }
+        }
+
+        // ===== VIEW MODE TOGGLE =====
+        function setViewMode(mode) {
+            FilterStore.update({ view_mode: mode });
+        }
+
+        function clearFilters() {
+            FilterStore.clear();
+            syncFilterUI();
+            loadTransactions();
+        }
+
+        function setDateRange(preset) {
+            const updates = { date_preset: preset, date_from: null, date_to: null };
+            const today = new Date();
+            if (preset === '30') {
+                const d = new Date(); d.setDate(d.getDate() - 30);
+                updates.date_from = d.toISOString().split('T')[0];
+            } else if (preset === '90') {
+                const d = new Date(); d.setDate(d.getDate() - 90);
+                updates.date_from = d.toISOString().split('T')[0];
+            } else if (preset === 'ytd') {
+                updates.date_from = `${today.getFullYear()}-01-01`;
+            } else if (preset === '2024') {
+                updates.date_from = '2024-01-01'; updates.date_to = '2024-12-31';
+            } else if (preset === '2023') {
+                updates.date_from = '2023-01-01'; updates.date_to = '2023-12-31';
+            }
+            FilterStore.update(updates);
+        }
+
+        function syncFilterUI(filters) {
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+            filters = filters || FilterStore.getState();
+            // Transaction filters
+            setVal('filter-search', filters.search);
+            setVal('filter-category', filters.category);
+            setVal('filter-cardholder', filters.cardholder);
+            setVal('filter-type', filters.trans_type);
+            setVal('filter-date-from', filters.date_from);
+            setVal('filter-date-to', filters.date_to);
+            setVal('filter-min-amt', filters.min_amount);
+            const elFlags = document.getElementById('filter-flags');
+            if (elFlags) {
+                if (filters.is_flagged) elFlags.value = 'flagged';
+                else if (filters.is_personal) elFlags.value = 'personal';
+                else if (filters.is_business) elFlags.value = 'business';
+                else if (filters.is_transfer) elFlags.value = 'transfer';
+                else elFlags.value = '';
+            }
+
+            // Dashboard filters
+            setVal('dash-date-from', filters.date_from);
+            setVal('dash-date-to', filters.date_to);
+            setVal('dash-account', filters.account_id);
+            setVal('dash-category', filters.category);
+            setVal('dash-cardholder', filters.cardholder);
+            const dashFlags = document.getElementById('dash-flags');
+            if (dashFlags) {
+                if (filters.is_flagged) dashFlags.value = 'flagged';
+                else if (filters.is_personal) dashFlags.value = 'personal';
+                else if (filters.is_business) dashFlags.value = 'business';
+                else if (filters.is_transfer) dashFlags.value = 'transfer';
+                else dashFlags.value = '';
+            }
+        }
+
+        function readFilterUI() {
+            const getVal = (id) => { const el = document.getElementById(id); return el && el.value ? el.value : null; };
+            const updates = {
+                search: getVal('filter-search'),
+                category: getVal('filter-category'),
+                cardholder: getVal('filter-cardholder'),
+                trans_type: getVal('filter-type'),
+                date_from: getVal('filter-date-from'),
+                date_to: getVal('filter-date-to'),
+                min_amount: getVal('filter-min-amt'),
+                date_preset: 'custom',
+                is_flagged: null,
+                is_personal: null,
+                is_business: null,
+                is_transfer: null
+            };
+
+            const fl = getVal('filter-flags');
+            if (fl === 'flagged') updates.is_flagged = '1';
+            if (fl === 'personal') updates.is_personal = '1';
+            if (fl === 'business') updates.is_business = '1';
+            if (fl === 'transfer') updates.is_transfer = '1';
+
+            FilterStore.update(updates);
+        }
+
+        // ===== NAVIGATION =====
+        document.querySelectorAll('.nav-link[data-page]').forEach(link => {
+            link.addEventListener('click', e => {
+                e.preventDefault();
+                if (window.GlobalBreadcrumbs) window.GlobalBreadcrumbs.clear();
+                navigateTo(link.dataset.page, true);
+            });
+        });
+
+        function navigateTo(page, triggerLoad = true, recordHistory = true) {
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            const link = document.querySelector(`.nav-link[data-page="${page}"]`);
+            if (link) link.classList.add('active');
+
+            document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
+            const section = document.getElementById('page-' + page);
+            if (section) section.classList.add('active');
+
+            if (triggerLoad) {
+                const state = window.FilterStore.getState();
+                loadPageData(page, state);
+
+                if (recordHistory) {
+                    pushHistoryState(page, state);
+                }
+
+                // Also update the URL with the new page state (conceptually, tabs are just hash or state, we use replaceState)
+                window.history.replaceState({ filters: state, page }, '', window.location.search || '/');
+            }
+        }
+
+        function loadPageData(page, filters) {
+            if (!filters) filters = window.FilterStore.getState();
+            if (page === 'dashboard') loadDashboard(filters);
+            else if (page === 'transactions') loadTransactions(filters);
+            else if (page === 'analysis') loadAnalysis(filters);
+            else if (page === 'recipients') loadRecipients(filters);
+            else if (page === 'deposit-aging') loadDepositAging(filters);
+            else if (page === 'cardholders') loadCardholders(filters);
+            else if (page === 'money-flow') loadMoneyFlow(filters);
+            else if (page === 'timeline') loadTimeline(filters);
+            else if (page === 'recurring') loadRecurring(filters);
+            else if (page === 'cardholder-timeline') loadCardholderTimeline(filters);
+            else if (page === 'alerts') loadAlerts(filters);
+            else if (page === 'case-notes') loadCaseNotes();
+            else if (page === 'accounts') loadAccounts();
+            else if (page === 'documents') loadDocuments();
+            else if (page === 'advisor') loadAdvisorStatus();
+            else if (page === 'categories') loadCategoriesPage();
+            else if (page === 'audit-trail') loadAuditTrail();
+            else if (page === 'integrations') loadIntegrations();
+            else if (page === 'settings') loadCompanyMembers();
+
+            // Close sidebar on mobile after navigation
+            if (window.innerWidth <= 768) toggleSidebar(false);
+        }
+
+        async function loadCompanyMembers() {
+            const table = document.getElementById('company-members-table');
+            if (!table) return;
+
+            try {
+                const res = await fetch('/api/business/members');
+                if (!res.ok) throw new Error('Failed to load members');
+
+                const data = await res.json();
+                const members = data.members || [];
+
+                let html = '';
+                members.forEach(m => {
+                    const isSelf = m.email === "{{ current_user.email }}";
+                    html += `<tr>
+                        <td>${esc(m.email)} ${isSelf ? '<span class="badge bg-secondary ms-1">You</span>' : ''}</td>
+                        <td><span class="badge ${m.role === 'owner' ? 'bg-danger' : m.role === 'admin' ? 'bg-primary' : 'bg-info'}">${m.role.toUpperCase()}</span></td>
+                        <td>${new Date(m.created_at).toLocaleDateString()}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-light py-0 px-1" title="Change Role" onclick="changeMemberRole(${m.membership_id})" ${isSelf && m.role === 'owner' ? 'disabled' : ''}><i class="fas fa-user-edit"></i></button>
+                            <button class="btn btn-sm btn-outline-danger py-0 px-1 ms-1" title="Revoke Access" onclick="revokeMember(${m.membership_id})" ${isSelf && m.role === 'owner' ? 'disabled' : ''}><i class="fas fa-user-times"></i></button>
+                        </td>
+                    </tr>`;
+                });
+                table.innerHTML = html;
+            } catch (e) {
+                console.error(e);
+                table.innerHTML = '<tr><td colspan="4" class="text-danger text-center"><i class="fas fa-exclamation-triangle"></i> Error loading workspace access</td></tr>';
+            }
+        }
+
+        function inviteMember() { alert('Access control: Inviting users requires Phase 3 implementation block (Email / Invite Token Generation).'); }
+        function changeMemberRole(id) { alert('Access control: Role updates require Phase 3 implementation block.'); }
+        function revokeMember(id) { alert('Access control: Access revocation requires Phase 3 implementation block.'); }
+
+        // ===== DRILL-DOWN: Navigate to transactions with pre-set filters =====
+        function drillToTransactions(filterObj) {
+            const sourceTab = document.querySelector('.nav-link.active')?.dataset.page || 'unknown';
+            const label = sourceTab.charAt(0).toUpperCase() + sourceTab.slice(1).replace('-', ' ');
+
+            const handler = window.createDrilldownHandler({
+                sourceTab: sourceTab,
+                widgetId: 'table-row-drilldown',
+                defaultTarget: DrilldownTarget.TRANSACTIONS,
+                breadcrumbLabel: label,
+                breadcrumbStore: window.GlobalBreadcrumbs,
+                getState: () => FilterStore.getState(),
+                onLogEvent: logDrilldownEvent,
+                onNavigate: (target, nextFilters) => {
+                    // Update DOM navigation first to avoid double-fetching during replace
+                    navigateTo(target.toLowerCase(), false);
+                    FilterStore.replace(nextFilters);
+                }
+            });
+
+            handler({ filters: filterObj });
+        }
+
+        // ===== DASHBOARD =====
+        // ===== DATE RANGE QUICK PICKS =====
+
+        function setDateRange(range) {
+            const updates = {
+                date_preset: range,
+                date_from: null,
+                date_to: null
+            };
+
+            const now = new Date();
+            if (range === '30') {
+                const d = new Date(now); d.setDate(d.getDate() - 30);
+                updates.date_from = d.toISOString().slice(0, 10);
+            } else if (range === '90') {
+                const d = new Date(now); d.setDate(d.getDate() - 90);
+                updates.date_from = d.toISOString().slice(0, 10);
+            } else if (range === 'ytd') {
+                updates.date_from = now.getFullYear() + '-01-01';
+            } else if (range === '2024') {
+                updates.date_from = '2024-01-01'; updates.date_to = '2024-12-31';
+            } else if (range === '2023') {
+                updates.date_from = '2023-01-01'; updates.date_to = '2023-12-31';
+            }
+
+            document.querySelectorAll('.date-picks .btn').forEach(b => b.classList.remove('btn-info'));
+            if (event && event.target) {
+                event.target.classList.add('btn-info');
+                event.target.classList.remove('btn-outline-light');
+            }
+
+            FilterStore.update(updates);
+            // Re-load will be triggered automatically by subscription
+        }
+
+        async function initDashFilters() {
+            await ensureCategories();
+            const dfc = document.getElementById('dash-category');
+            if (dfc && dfc.options.length <= 1) {
+                allCategories.forEach(c => dfc.add(new Option(c.name, c.name)));
+            }
+            try {
+                const accounts = await api('/api/accounts');
+                const dfa = document.getElementById('dash-account');
+                if (dfa && dfa.options.length <= 1) {
+                    accounts.forEach(a => dfa.add(new Option(a.account_name, a.id)));
+                }
+            } catch (e) { }
+        }
+
+        function readDashFilters() {
+            const getVal = (id) => { const el = document.getElementById(id); return el && el.value ? el.value : null; };
+            const updates = {
+                date_from: getVal('dash-date-from'),
+                date_to: getVal('dash-date-to'),
+                account_id: getVal('dash-account'),
+                category: getVal('dash-category'),
+                cardholder: getVal('dash-cardholder'),
+                is_flagged: null, is_personal: null, is_business: null, is_transfer: null,
+                date_preset: 'custom'
+            };
+            const fl = getVal('dash-flags');
+            if (fl === 'flagged') updates.is_flagged = '1';
+            if (fl === 'personal') updates.is_personal = '1';
+            if (fl === 'business') updates.is_business = '1';
+            if (fl === 'transfer') updates.is_transfer = '1';
+            FilterStore.update(updates);
+        }
+
+        function clearDashFilters() {
+            // clear both dash specific and shared inputs gracefully globally
+            FilterStore.clear();
+        }
+
+        async function loadDashboard(filters) {
+            await initDashFilters();
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            dashStats = await api('/api/stats?' + qs);
+            const s = dashStats;
+            const net = s.total_deposits - s.total_withdrawals;
+
+            // Load executive summary
+            loadExecutiveSummary();
+
+            document.getElementById('stats-cards').innerHTML = `
+            <div class="col"><div class="stat-card success" onclick="drillToTransactions({trans_type:'deposit'})"><div class="stat-value">$${fmt(s.total_deposits)}</div><div class="stat-label"><i class="fas fa-arrow-down"></i> Deposits (${s.deposit_count})</div></div></div>
+            <div class="col"><div class="stat-card danger" onclick="drillToTransactions({})"><div class="stat-value">$${fmt(s.total_withdrawals)}</div><div class="stat-label"><i class="fas fa-arrow-up"></i> Withdrawals (${s.withdrawal_count})</div></div></div>
+            <div class="col"><div class="stat-card danger" onclick="drillToTransactions({is_transfer:'1'})"><div class="stat-value">$${fmt(s.transfers_out)}</div><div class="stat-label"><i class="fas fa-exchange-alt"></i> Transfers Out (${s.transfer_out_count})</div></div></div>
+            <div class="col"><div class="stat-card warning" onclick="drillToTransactions({is_personal:'1'})"><div class="stat-value">$${fmt(s.personal_total)}</div><div class="stat-label"><i class="fas fa-user"></i> Personal (${s.personal_count})</div></div></div>
+            <div class="col"><div class="stat-card info" onclick="drillToTransactions({is_business:'1'})"><div class="stat-value">$${fmt(s.business_total)}</div><div class="stat-label"><i class="fas fa-briefcase"></i> Business (${s.business_count})</div></div></div>
+            <div class="col"><div class="stat-card ${s.flagged_count > 0 ? 'danger' : ''}" onclick="drillToTransactions({is_flagged:'1'})"><div class="stat-value">${s.flagged_count}</div><div class="stat-label"><i class="fas fa-flag"></i> Flagged</div></div></div>
+            <div class="col"><div class="stat-card ${net < 0 ? 'danger' : 'success'}"><div class="stat-value">$${fmt(Math.abs(net))}</div><div class="stat-label"><i class="fas fa-${net < 0 ? 'arrow-trend-down' : 'arrow-trend-up'}"></i> Net ${net < 0 ? 'Outflow' : 'Inflow'}</div></div></div>
+        `;
+
+            // Cardholder table (clickable)
+            let chHtml = '<table class="table table-dark-custom"><thead><tr><th>Cardholder</th><th>Spent</th><th>Count</th><th>Bar</th></tr></thead><tbody>';
+            const maxSpent = Math.max(...(s.by_cardholder || []).map(c => c.total_spent), 1);
+            if (!s.by_cardholder || s.by_cardholder.length === 0) {
+                chHtml += '<tr><td colspan="4" class="text-center text-muted py-3">No cardholder spending matching current filters.</td></tr>';
+            } else {
+                (s.by_cardholder || []).forEach(ch => {
+                    const pct = (ch.total_spent / maxSpent * 100).toFixed(0);
+                    chHtml += `<tr class="clickable-row" onclick="drillToTransactions({cardholder:'${esc(ch.cardholder_name)}'})" title="Click to see all transactions">
+                    <td>${esc(ch.cardholder_name || 'Unknown')}</td>
+                    <td class="amount-negative">$${fmt(ch.total_spent)}</td>
+                    <td>${ch.cnt}</td>
+                    <td><div class="mini-bar" style="background:#f85149;width:${pct}%;">&nbsp;</div></td>
+                </tr>`;
+                });
+            }
+            chHtml += '</tbody></table>';
+            document.getElementById('dash-cardholder-table').innerHTML = chHtml;
+
+            // Category table (clickable)
+            let catHtml = '<table class="table table-dark-custom"><thead><tr><th>Category</th><th>Spent</th><th>Count</th></tr></thead><tbody>';
+            if (!s.by_category || s.by_category.length === 0) {
+                catHtml += '<tr><td colspan="3" class="text-center text-muted py-3">No category spending matching current filters.</td></tr>';
+            } else {
+                (s.by_category || []).forEach(c => {
+                    catHtml += `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.category)}'})" title="Click to filter by category">
+                    <td>${c.category}</td>
+                    <td class="amount-negative">$${fmt(c.spent)}</td>
+                    <td>${c.cnt}</td>
+                </tr>`;
+                });
+            }
+            catHtml += '</tbody></table>';
+            document.getElementById('dash-category-table').innerHTML = catHtml;
+
+            // Flagged preview
+            const flaggedQs = new URLSearchParams(qs);
+            flaggedQs.set('is_flagged', '1');
+            const flaggedRs = await api('/api/transactions?' + flaggedQs.toString());
+            const flagged = flaggedRs.transactions || flaggedRs;
+            let flHtml = '<table class="table table-dark-custom"><tbody>';
+            flagged.slice(0, 10).forEach(t => {
+                flHtml += `<tr class="clickable-row" onclick="editTransaction(${t.id})" title="${esc(t.flag_reason || '')}">
+                <td>${t.trans_date || ''}</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+            </tr>`;
+            });
+            if (flagged.length === 0) flHtml += '<tr><td class="text-muted text-center py-2">No flagged items</td></tr>';
+            else if (flagged.length > 10) flHtml += `<tr><td colspan="3" class="text-center"><a href="#" onclick="drillToTransactions({is_flagged:'1'});return false;">View all ${flagged.length} flagged...</a></td></tr>`;
+            flHtml += '</tbody></table>';
+            document.getElementById('dash-flagged-table').innerHTML = flHtml;
+
+            // Monthly chart (clickable)
+            const maxM = Math.max(...(s.monthly_trend || []).map(m => Math.max(m.deposits, m.withdrawals)), 1);
+            let mHtml = '<table class="table table-dark-custom"><thead><tr><th>Month</th><th>Deposits</th><th>Withdrawals</th><th>Transfers Out</th><th>Net</th><th style="width:30%">Visual</th></tr></thead><tbody>';
+            if (!s.monthly_trend || s.monthly_trend.length === 0) {
+                mHtml += '<tr><td colspan="6" class="text-center text-muted py-4">No monthly cash flow data matching filters.</td></tr>';
+            } else {
+                (s.monthly_trend || []).forEach(m => {
+                    const dW = Math.round((m.deposits / maxM) * 200);
+                    const wW = Math.round((m.withdrawals / maxM) * 200);
+                    const net = m.deposits - m.withdrawals;
+                    mHtml += `<tr class="clickable-row" onclick="drillToMonth('${m.month}')" title="Click to see ${m.month} transactions">
+                    <td><strong>${m.month}</strong></td>
+                    <td class="amount-positive">$${fmt(m.deposits)}</td>
+                    <td class="amount-negative">$${fmt(m.withdrawals)}</td>
+                    <td class="amount-negative">$${fmt(m.transfers_out)}</td>
+                    <td class="${net < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(net))}</td>
+                    <td><div style="display:flex;gap:1px;align-items:center;"><div style="background:#3fb950;height:14px;width:${dW}px;border-radius:2px;"></div><div style="background:#f85149;height:14px;width:${wW}px;border-radius:2px;"></div></div></td>
+                </tr>`;
+                });
+            }
+            mHtml += '</tbody></table>';
+            document.getElementById('dash-monthly').innerHTML = mHtml;
+
+            // Render Chart.js charts
+            renderDashboardCharts(s);
+        }
+
+        function drillToMonth(month) {
+            drillToTransactions({ date_from: month + '-01', date_to: month + '-31' });
+        }
+
+        // ===== TRANSACTIONS =====
+        async function loadTransactions(filters) {
+            await ensureCategories();
+            if (!filters) filters = FilterStore.getState();
+
+            const qs = serializeFilters(filters);
+            const params = new URLSearchParams(qs);
+
+            // Pagination support
+            if (perPage > 0) {
+                params.set('page', currentPage);
+                params.set('per_page', perPage);
+                const result = await api('/api/transactions?' + params.toString());
+                allTransactions = result.transactions || result;
+                totalPages = result.total_pages || 1;
+                currentPage = result.page || 1;
+                updatePagination(result.total || allTransactions.length);
+            } else {
+                allTransactions = await api('/api/transactions?' + params.toString());
+                document.getElementById('pagination-controls').style.display = 'none';
+            }
+            selectedIds.clear();
+            populateCardholderFilter();
+            renderTransactions();
+        }
+
+
+        let transactionsTable;
+
+        function renderTransactions() {
+            if (!transactionsTable) {
+                transactionsTable = new DataTable({
+                    containerId: 'transactions-table-container',
+                    columns: [
+                        { key: 'select', label: '<input type="checkbox" id="select-all">', sortable: false, className: 'checkbox-cell' },
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'cardholder_name', label: 'Cardholder', sortable: true, type: 'text' },
+                        { key: 'card_last_four', label: 'Card', sortable: true, type: 'text' },
+                        { key: 'payment_method', label: 'Method', sortable: true, type: 'text' },
+                        { key: 'tags', label: 'Tags', sortable: false },
+                        { key: 'user_notes', label: 'Notes', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: (t, idx) => {
+                        let tags = '';
+                        if (t.is_personal) tags += '<span class="badge badge-personal me-1">Personal</span>';
+                        if (t.is_business) tags += '<span class="badge badge-business me-1">Business</span>';
+                        if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">Transfer</span>';
+                        if (t.is_flagged) tags += `<span class="badge badge-flagged me-1" title="${esc(t.flag_reason || '')}">FLAG</span>`;
+                        if (t.payment_method === 'venmo') tags += '<span class="badge badge-venmo me-1">Venmo</span>';
+
+                        let catUI = `<select class="category-select" style="max-width:200px;" onchange="quickCategory(${t.id}, this.value)">${categoryOptions(t.category)}</select>`;
+
+                        if (t.categorization_status === 'review_required' || t.categorization_status === 'suggested') {
+                            const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                            catUI += `<div class="mt-1 d-flex align-items-center gap-1">`;
+                            catUI += `<span class="badge bg-warning text-dark" style="font-size:0.6rem;" ${tip}><i class="fas fa-exclamation-triangle me-1"></i>Review</span>`;
+                            catUI += `<button class="btn btn-sm btn-success py-0 px-1 ms-1" style="font-size:0.65rem;" onclick="approveCategory(${t.id})" title="Approve"><i class="fas fa-check"></i></button>`;
+                            catUI += `</div>`;
+                        } else if (t.categorization_source === 'internet_lookup') {
+                            catUI += `<div class="mt-1"><span class="badge bg-info text-dark" style="font-size:0.6rem;" title="Assisted by Web Search"><i class="fas fa-globe me-1"></i>Web Search</span></div>`;
+                        } else if (t.categorization_source === 'ai_high_conf') {
+                            const tip = t.categorization_explanation ? `title="AI Reason: ${esc(t.categorization_explanation)}"` : '';
+                            catUI += `<div class="mt-1"><span class="badge bg-success" style="font-size:0.6rem;" ${tip}><i class="fas fa-robot me-1"></i>AI Applied</span></div>`;
+                        }
+
+                        let tagAddDropdown = `
+                        <div class="dropdown d-inline-block">
+                            <button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill border-0" style="font-size:0.65rem;" data-bs-toggle="dropdown" title="Add Tag"><i class="fas fa-plus"></i></button>
+                            <ul class="dropdown-menu dropdown-menu-dark text-small shadow" style="font-size:0.75rem;">
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_personal'); return false;">Personal</a></li>
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_business'); return false;">Business</a></li>
+                                <li><a class="dropdown-item text-white" href="#" onclick="quickAddTag(${t.id}, 'is_transfer'); return false;">Transfer</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" onclick="quickAddTag(${t.id}, 'is_flagged'); return false;">Flagged</a></li>
+                            </ul>
+                        </div>`;
+
+                        return `<tr>
+                            <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
+                            <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
+                            <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: ' + esc(t.user_notes) : ''}">${esc(t.description)}</td>
+                            <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                            <td>${catUI}</td>
+                            <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
+                            <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
+                            <td style="font-size:0.75rem;">${t.payment_method || ''}</td>
+                            <td style="white-space:nowrap;">${tags} ${tagAddDropdown}</td>
+                            <td>
+                                <span class="quick-comment" id="note-display-${t.id}">
+                                    ${t.user_notes ? esc(t.user_notes) + ` <button class="btn btn-sm text-secondary p-0 border-0 ms-1" onclick="quickAddNote(${t.id})" title="Edit Note"><i class="fas fa-pencil-alt" style="font-size:0.65rem;"></i></button>`
+                                : `<button class="btn btn-sm btn-outline-secondary py-0 px-1 rounded-pill" style="font-size:0.65rem;" onclick="quickAddNote(${t.id})"><i class="fas fa-plus me-1"></i>Note</button>`}
+                                </span>
+                            </td>
+                            <td style="white-space:nowrap;">
+                                <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
+                                <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteTransaction(${t.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+                                <button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="toggleFlag(${t.id})" title="Flag"><i class="fas fa-flag fa-xs"></i></button>
+                            </td>
+                        </tr>`;
+                    }
+                });
+
+                // Overload the generic column rendered event to trigger logic for our selects
+                transactionsTable.onRenderComplete = () => {
+                    document.querySelectorAll('.row-check').forEach(cb => {
+                        cb.addEventListener('change', () => {
+                            if (cb.checked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value);
+                            updateBulkButtons();
+                        });
+                    });
+
+                    const selectAllCb = document.getElementById('select-all');
+                    if (selectAllCb) {
+                        selectAllCb.addEventListener('change', function () {
+                            const isChecked = this.checked;
+                            document.querySelectorAll('.row-check').forEach(cb => { cb.checked = isChecked; if (isChecked) selectedIds.add(+cb.value); else selectedIds.delete(+cb.value); });
+                            updateBulkButtons();
+                        });
+                    }
+                };
+                transactionsTable.onSortChange = (visibleData) => {
+                    let totalDebits = 0, totalCredits = 0;
+                    visibleData.forEach(t => {
+                        if (t.amount < 0) totalDebits += Math.abs(t.amount); else totalCredits += t.amount;
+                    });
+                    document.getElementById('trans-count').textContent = `${visibleData.length} transactions`;
+                    document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
+                }
+            }
+
+            transactionsTable.updateData(allTransactions);
+
+            // Re-run the counter immediately to show base initial state
+            if (transactionsTable._sortedData) transactionsTable.onSortChange(transactionsTable._sortedData);
+        }
+
+        function updateBulkButtons() { const show = selectedIds.size > 0; document.getElementById('bulk-delete-btn').style.display = show ? '' : 'none'; document.getElementById('bulk-edit-btn').style.display = show ? '' : 'none'; }
+
+        async function quickCategory(id, cat) {
+            const res = await api(`/api/transactions/${id}`, 'PUT', { category: cat });
+            if (res.error) toast(res.error, "danger");
+            else {
+                toast('Updated');
+                if (res.rule_suggestion) showRuleSuggestion(res.rule_suggestion);
+            }
+        }
+
+        async function quickAddTag(id, tagKey) {
+            const t = allTransactions.find(x => x.id === id);
+            if (!t) return;
+            // Prevent duplicate call if already set
+            if (t[tagKey] === 1) return;
+
+            t[tagKey] = 1; // Optimistic UI update
+            const payload = {};
+            payload[tagKey] = 1;
+
+            const res = await api(`/api/transactions/${id}`, 'PUT', payload);
+            if (res.error) {
+                t[tagKey] = 0; // Rollback
+                toast(res.error, "danger");
+            } else {
+                renderTransactions();
+            }
+        }
+
+        function quickAddNote(id) {
+            const t = allTransactions.find(x => x.id === id);
+            if (!t) return;
+
+            const container = document.getElementById(`note-display-${id}`);
+            if (!container) return;
+
+            const current = t.user_notes || '';
+            const input = document.createElement('input');
+            input.className = 'quick-comment-input form-control form-control-sm';
+            input.style.cssText = 'min-width:150px; font-size:0.75rem; display:inline-block; width:auto;';
+            input.value = current;
+            input.placeholder = 'Type note & press Enter';
+
+            // Avoid duplicate inputs
+            if (container.querySelector('input')) return;
+
+            container.innerHTML = '';
+            container.appendChild(input);
+            input.focus();
+
+            let isSaving = false;
+
+            const save = async () => {
+                if (isSaving) return;
+                isSaving = true;
+
+                const newVal = input.value.trim();
+                // If unchanged, just restore UI
+                if (newVal === current) {
+                    renderTransactions();
+                    return;
+                }
+
+                const res = await api(`/api/transactions/${id}`, 'PUT', { user_notes: newVal });
+                if (res.error) {
+                    toast(res.error, "danger");
+                } else {
+                    t.user_notes = newVal;
+                }
+                renderTransactions();
+            };
+
+            input.addEventListener('blur', save);
+            input.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+                if (e.key === 'Escape') { input.value = current; input.blur(); }
+            });
+        }
+        async function toggleFlag(id) { const t = allTransactions.find(x => x.id === id); if (!t) return; await api(`/api/transactions/${id}`, 'PUT', { is_flagged: t.is_flagged ? 0 : 1 }); loadTransactions(); toast(t.is_flagged ? 'Unflagged' : 'Flagged'); }
+
+        async function approveCategory(id) {
+            const res = await api(`/api/transactions/${id}`, 'PUT', { categorization_status: 'auto_applied', manually_edited: 1 });
+            if (res.error) toast(res.error, "danger");
+            else {
+                toast('Category Approved');
+                // The item is now manually_edited=1, meaning explicit Rank 1 override is technically formed here on next AI pass
+                loadTransactions();
+            }
+        }
+
+        async function editTransaction(id) {
+            // Find in current list or fetch
+            let t = allTransactions.find(x => x.id === id);
+            if (!t) { toast('Transaction not found in current view'); return; }
+            editingId = id;
+
+            // Load proof documents for this transaction
+            const proofs = await api(`/api/transactions/${id}/proofs`);
+            const allDocs = await api('/api/documents');
+            const proofDocs = allDocs.filter(d => d.doc_category === 'proof');
+
+            let proofsHtml = '<div class="proof-section"><label class="form-label small fw-bold"><i class="fas fa-paperclip me-1"></i>Proof Documents</label>';
+            if (proofs.length > 0) {
+                proofsHtml += '<div class="mb-2">';
+                proofs.forEach(p => {
+                    proofsHtml += `<div class="proof-item"><a href="/uploads/${encodeURIComponent(p.filename)}" target="_blank"><i class="fas fa-file me-1"></i>${esc(p.filename)}</a><button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="unlinkProof(${id},${p.id})"><i class="fas fa-unlink fa-xs"></i></button></div>`;
+                });
+                proofsHtml += '</div>';
+            } else {
+                proofsHtml += '<div class="text-muted small mb-2">No proof documents linked</div>';
+            }
+            if (proofDocs.length > 0) {
+                proofsHtml += `<div class="d-flex gap-2"><select class="form-select form-select-sm" id="edit-proof-select" style="max-width:250px;"><option value="">-- Link a proof doc --</option>`;
+                proofDocs.forEach(d => {
+                    const alreadyLinked = proofs.some(p => p.id === d.id);
+                    if (!alreadyLinked) proofsHtml += `<option value="${d.id}">${esc(d.filename)}</option>`;
+                });
+                proofsHtml += `</select><button class="btn btn-sm btn-info" onclick="linkProofFromEdit(${id})"><i class="fas fa-link"></i></button></div>`;
+            }
+            proofsHtml += '</div>';
+
+            let aiReasoningHtml = '';
+            if (t.categorization_status || t.categorization_source || t.categorization_explanation) {
+                let sBadge = t.categorization_status === 'auto_applied' ? '<span class="badge bg-success ms-2">Applied</span>' :
+                    t.categorization_status === 'suggested' ? '<span class="badge bg-warning text-dark ms-2">Suggested</span>' :
+                        t.categorization_status === 'review_required' ? '<span class="badge bg-danger ms-2">Needs Review</span>' : '';
+
+                let srcInfo = t.categorization_source === 'internet_lookup' ? 'Web Assisted AI' :
+                    t.categorization_source === 'ai_high_conf' ? 'AI Inference' :
+                        t.categorization_source === 'user_rule' ? 'Explicit Rule' :
+                            t.categorization_source === 'learned_rule' ? 'Soft-Learned Rule' :
+                                t.categorization_source === 'merchant_mapping' ? 'Known Merchant' : t.categorization_source || 'Unknown';
+
+                aiReasoningHtml = `
+                    <div class="card bg-dark border-secondary mb-3 mt-2">
+                        <div class="card-header py-1 small fw-bold text-info"><i class="fas fa-brain me-2"></i>Categorization Context</div>
+                        <div class="card-body py-2 small">
+                            <div class="row">
+                                <div class="col-6 mb-1"><strong>Source:</strong> ${srcInfo}</div>
+                                <div class="col-6 mb-1"><strong>Status:</strong> ${t.categorization_status || 'N/A'} ${sBadge}</div>
+                                <div class="col-6 mb-1"><strong>Confidence:</strong> ${t.categorization_confidence ? (t.categorization_confidence * 100).toFixed(0) + '%' : 'N/A'}</div>
+                                <div class="col-6 mb-1"><strong>Manual Override:</strong> ${t.manually_edited ? 'Yes' : 'No'}</div>
+                                ${t.categorization_explanation ? `<div class="col-12 mt-1"><strong>Reasoning:</strong><br><span class="text-muted" style="white-space:pre-wrap;">${esc(t.categorization_explanation)}</span></div>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            document.getElementById('edit-form-body').innerHTML = `
+            ${aiReasoningHtml}
+            <div class="row g-2">
+                <div class="col-6 mb-2"><label class="form-label small">Date</label><input type="text" class="form-control form-control-sm" id="edit-date" value="${t.trans_date || ''}"></div>
+                <div class="col-6 mb-2"><label class="form-label small">Amount</label><input type="number" step="0.01" class="form-control form-control-sm" id="edit-amount" value="${t.amount}"></div>
+            </div>
+            <div class="mb-2"><label class="form-label small">Description</label><input type="text" class="form-control form-control-sm" id="edit-desc" value="${esc(t.description)}"></div>
+            <div class="mb-2"><label class="form-label small">Category</label><select class="form-select form-select-sm" id="edit-category">${categoryOptions(t.category)}</select></div>
+            <div class="row g-2">
+                <div class="col-6 mb-2"><label class="form-label small">Cardholder</label><input type="text" class="form-control form-control-sm" id="edit-cardholder" value="${esc(t.cardholder_name || '')}"></div>
+                <div class="col-3 mb-2"><label class="form-label small">Card #</label><input type="text" class="form-control form-control-sm" id="edit-card4" value="${t.card_last_four || ''}" maxlength="4"></div>
+                <div class="col-3 mb-2"><label class="form-label small">Method</label><select class="form-select form-select-sm" id="edit-method"><option value="">--</option>${['debit', 'credit', 'check', 'venmo', 'transfer', 'wire', 'cash'].map(m => `<option ${t.payment_method === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+            </div>
+            <div class="mb-2"><label class="form-label small">Notes</label><input type="text" class="form-control form-control-sm" id="edit-notes" value="${esc(t.user_notes || '')}"></div>
+            <label class="form-label small mb-1">Tags</label>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+                <input type="checkbox" class="btn-check" id="edit-personal" autocomplete="off" ${t.is_personal ? 'checked' : ''}>
+                <label class="btn btn-outline-info btn-sm rounded-pill px-3" for="edit-personal"><i class="fas fa-user me-1"></i>Personal</label>
+
+                <input type="checkbox" class="btn-check" id="edit-business" autocomplete="off" ${t.is_business ? 'checked' : ''}>
+                <label class="btn btn-outline-warning btn-sm rounded-pill px-3" for="edit-business"><i class="fas fa-briefcase me-1"></i>Business</label>
+
+                <input type="checkbox" class="btn-check" id="edit-transfer" autocomplete="off" ${t.is_transfer ? 'checked' : ''}>
+                <label class="btn btn-outline-secondary btn-sm rounded-pill px-3" for="edit-transfer"><i class="fas fa-exchange-alt me-1"></i>Transfer</label>
+
+                <input type="checkbox" class="btn-check" id="edit-flagged" autocomplete="off" ${t.is_flagged ? 'checked' : ''}>
+                <label class="btn btn-outline-danger btn-sm rounded-pill px-3" for="edit-flagged"><i class="fas fa-flag me-1"></i>Flagged</label>
+            </div>
+            <div class="mb-0"><label class="form-label small">Flag Reason</label><input type="text" class="form-control form-control-sm" id="edit-flag-reason" value="${esc(t.flag_reason || '')}"></div>
+            ${proofsHtml}
+        `;
+            new bootstrap.Modal(document.getElementById('editModal')).show();
+        }
+
+        async function linkProofFromEdit(transId) {
+            const sel = document.getElementById('edit-proof-select');
+            if (!sel || !sel.value) return;
+            await api(`/api/transactions/${transId}/proofs`, 'POST', { document_id: parseInt(sel.value) });
+            toast('Proof linked');
+            // Refresh the edit modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('editModal'));
+            if (modal) modal.hide();
+            editTransaction(transId);
+        }
+
+        async function unlinkProof(transId, docId) {
+            await api(`/api/transactions/${transId}/proofs/${docId}`, 'DELETE');
+            toast('Proof unlinked');
+            const modal = bootstrap.Modal.getInstance(document.getElementById('editModal'));
+            if (modal) modal.hide();
+            editTransaction(transId);
+        }
+
+        async function saveTransaction() {
+            const result = await api(`/api/transactions/${editingId}`, 'PUT', {
+                trans_date: document.getElementById('edit-date').value,
+                description: document.getElementById('edit-desc').value,
+                amount: parseFloat(document.getElementById('edit-amount').value),
+                category: document.getElementById('edit-category').value,
+                cardholder_name: document.getElementById('edit-cardholder').value,
+                card_last_four: document.getElementById('edit-card4').value,
+                payment_method: document.getElementById('edit-method').value,
+                user_notes: document.getElementById('edit-notes').value,
+                is_personal: document.getElementById('edit-personal').checked ? 1 : 0,
+                is_business: document.getElementById('edit-business').checked ? 1 : 0,
+                is_transfer: document.getElementById('edit-transfer').checked ? 1 : 0,
+                is_flagged: document.getElementById('edit-flagged').checked ? 1 : 0,
+                flag_reason: document.getElementById('edit-flag-reason').value,
+            });
+            bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+            loadTransactions(); toast('Saved');
+
+            // Show rule suggestion if available
+            if (result && result.rule_suggestion) {
+                showRuleSuggestion(result.rule_suggestion);
+            }
+        }
+
+        function showRuleSuggestion(suggestion) {
+            const c = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            el.className = 'rule-suggestion';
+            el.innerHTML = `
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <strong class="text-info"><i class="fas fa-lock me-1"></i> Remember this Choice (Override)?</strong>
+                <button class="btn btn-sm btn-outline-light py-0 px-1 rule-dismiss"><i class="fas fa-times fa-xs"></i></button>
+            </div>
+            <div class="mb-2">Pattern: <code>${esc(suggestion.pattern)}</code> &rarr; <strong>${esc(suggestion.category)}</strong></div>
+            <div class="small text-muted mb-2">Protects this vendor from future AI re-classifications.</div>
+            <button class="btn btn-sm btn-info rule-accept"><i class="fas fa-check me-1"></i>Save Override</button>
+            <button class="btn btn-sm btn-outline-light rule-dismiss">Dismiss</button>
+        `;
+            el.querySelectorAll('.rule-dismiss').forEach(b => b.addEventListener('click', () => el.remove()));
+            el.querySelector('.rule-accept').addEventListener('click', async function () {
+                await api('/api/categories/rules', 'POST', {
+                    pattern: suggestion.pattern,
+                    category: suggestion.category,
+                    priority: 100,
+                    is_personal: suggestion.is_personal,
+                    is_business: suggestion.is_business,
+                    is_transfer: suggestion.is_transfer
+                });
+                el.remove();
+                toast('Override Rule created! Run Re-categorize to apply.');
+            });
+            c.appendChild(el);
+            setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);
+        }
+
+        async function deleteTransaction(id) { if (!confirm('Delete this transaction?')) return; await api(`/api/transactions/${id}`, 'DELETE'); loadTransactions(); toast('Deleted'); }
+        async function bulkDelete() { if (!confirm(`Delete ${selectedIds.size} transactions?`)) return; for (const id of selectedIds) await api(`/api/transactions/${id}`, 'DELETE'); selectedIds.clear(); loadTransactions(); toast('Deleted'); }
+        function showBulkEditModal() { document.getElementById('bulk-count').textContent = `(${selectedIds.size})`; loadCategoryOptions('bulk-category', true); new bootstrap.Modal(document.getElementById('bulkEditModal')).show(); }
+        async function saveBulkEdit() {
+            const fields = {};
+            const cat = document.getElementById('bulk-category').value; if (cat) fields.category = cat;
+            if (document.getElementById('bulk-personal').checked) fields.is_personal = 1;
+            if (document.getElementById('bulk-business').checked) fields.is_business = 1;
+            if (document.getElementById('bulk-transfer').checked) fields.is_transfer = 1;
+            if (document.getElementById('bulk-flagged').checked) fields.is_flagged = 1;
+            const n = document.getElementById('bulk-notes').value; if (n) fields.user_notes = n;
+            await api('/api/transactions/bulk', 'POST', { ids: [...selectedIds], fields });
+            bootstrap.Modal.getInstance(document.getElementById('bulkEditModal')).hide();
+            selectedIds.clear(); loadTransactions(); toast('Updated');
+        }
+        function showAddTransactionModal() { loadCategoryOptions('add-category'); new bootstrap.Modal(document.getElementById('addTransModal')).show(); }
+        async function addManualTransaction() {
+            await api('/api/add-transaction', 'POST', {
+                trans_date: document.getElementById('add-date').value, description: document.getElementById('add-desc').value,
+                amount: parseFloat(document.getElementById('add-amount').value), category: document.getElementById('add-category').value,
+                cardholder_name: document.getElementById('add-cardholder').value, card_last_four: document.getElementById('add-card').value,
+                payment_method: document.getElementById('add-method').value,
+                is_personal: document.getElementById('add-personal').checked ? 1 : 0, is_business: document.getElementById('add-business').checked ? 1 : 0, is_transfer: document.getElementById('add-transfer').checked ? 1 : 0,
+            });
+            bootstrap.Modal.getInstance(document.getElementById('addTransModal')).hide(); loadTransactions(); toast('Added');
+        }
+
+        // ===== FORENSIC ANALYSIS =====
+        let dtTable, flTable, vTable;
+
+        async function loadAnalysis(filters) {
+            if (!filters) filters = FilterStore.getState();
+
+            // Strip out restrictive drilldown filters for the deposit analysis so it isn't starved of deposits
+            const safeFilters = { ...filters };
+            delete safeFilters.category;
+            delete safeFilters.trans_type;
+            delete safeFilters.search;
+            const safeQs = serializeFilters(safeFilters);
+
+            // Deposit-transfer patterns
+            const patterns = await api('/api/analysis/deposit-transfers?' + safeQs);
+            if (!dtTable) {
+                dtTable = new DataTable({
+                    containerId: 'deposit-transfer-analysis',
+                    emptyMessage: 'No patterns detected. Upload bank statements to analyze.',
+                    columns: [
+                        { key: 'deposit.trans_date', label: 'Deposit Date', sortable: true, type: 'date' },
+                        { key: 'deposit_amount', label: 'Deposit Amt', sortable: true, type: 'number' },
+                        { key: 'transfers_html', label: 'Transfers Within 7 Days', sortable: false },
+                        { key: 'transfer_total', label: 'Total Moved', sortable: true, type: 'number' },
+                        { key: 'pct_transferred', label: '% Moved', sortable: true, type: 'number' }
+                    ],
+                    renderRow: p => {
+                        const cls = p.pct_transferred > 50 ? 'text-danger fw-bold' : p.pct_transferred > 25 ? 'text-warning' : '';
+                        return `<tr><td>${p.deposit.trans_date}</td><td class="amount-positive">$${fmt(p.deposit_amount)}</td>
+                        <td>${p.transfers_html}</td>
+                        <td class="amount-negative">$${fmt(p.transfer_total)}</td><td class="${cls}">${p.pct_transferred}%</td></tr>`;
+                    }
+                });
+            }
+            patterns.forEach(p => {
+                p.transfers_html = p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('');
+            });
+            dtTable.updateData(patterns);
+
+            // Flagged
+            const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
+            window._flaggedTrans = flagged;
+            if (!flTable) {
+                flTable = new DataTable({
+                    containerId: 'flagged-transactions',
+                    emptyMessage: 'No flagged transactions',
+                    columns: [
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'cardholder_name', label: 'Cardholder', sortable: true, type: 'text' },
+                        { key: 'flag_reason', label: 'Reason', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: t => `<tr><td>${t.trans_date}</td><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                        <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                        <td>${esc(t.cardholder_name || '')}</td><td class="text-warning small">${esc(t.flag_reason || '')}</td>
+                        <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`
+                });
+            }
+            flTable.updateData(flagged);
+
+            // Venmo analysis - Find transactions mathematically mapped to Venmo category OR containing Venmo
+            const venmo = await api('/api/transactions?category=Venmo+-+Payment' + getViewModeParam().replace('?', '&'));
+            let venmoTotal = 0;
+            const venmoByPerson = {};
+            venmo.forEach(t => {
+                venmoTotal += Math.abs(t.amount);
+                const name = t.cardholder_name || 'Unknown';
+                venmoByPerson[name] = (venmoByPerson[name] || 0) + Math.abs(t.amount);
+            });
+
+            if (!vTable) {
+                // Ensure the container exists for Venmo Summary separate from Table
+                if (!document.getElementById('venmo-summary-div')) {
+                    const vCont = document.getElementById('venmo-analysis');
+                    vCont.innerHTML = '<div id="venmo-summary-div"></div><div id="venmo-table-div"></div>';
+                }
+
+                vTable = new DataTable({
+                    containerId: 'venmo-table-div',
+                    emptyMessage: 'No Venmo transactions found.',
+                    columns: [
+                        { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
+                        { key: 'cardholder_name', label: 'Recipient', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
+                        { key: 'description', label: 'Note/Description', sortable: true, type: 'text' },
+                        { key: 'is_flagged', label: 'Flagged', sortable: true, type: 'boolean' }
+                    ],
+                    renderRow: t => `<tr><td>${t.trans_date}</td><td>${esc(t.cardholder_name || '')}</td>
+                        <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+                        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                        <td>${t.is_flagged ? '<span class="badge badge-flagged">FLAG</span>' : ''}</td></tr>`
+                });
+            }
+
+            // Venmo summary by person
+            let vSummary = `<div class="p-3 mb-2"><strong>Total Venmo: <span class="amount-negative">$${fmt(venmoTotal)}</span></strong> across ${venmo.length} payments</div>`;
+            vSummary += '<div class="px-3 pb-2"><strong>By Recipient:</strong></div><div class="px-3 pb-2">';
+            Object.entries(venmoByPerson).sort((a, b) => b[1] - a[1]).forEach(([name, total]) => {
+                vSummary += `<span class="badge bg-secondary me-1 mb-1" style="cursor:pointer;" onclick="drillToTransactions({search:'VENMO',cardholder:'${esc(name)}'})">${name}: $${fmt(total)}</span>`;
+            });
+            vSummary += '</div>';
+
+            document.getElementById('venmo-summary-div').innerHTML = vSummary;
+            vTable.updateData(venmo);
+        }
+
+        // Old cardholders function removed - replaced by enhanced version below
+
+        // ===== ACCOUNTS =====
+        async function loadAccounts() {
+            const accounts = await api('/api/accounts');
+            let html = '<div class="row g-3">';
+            for (const acct of accounts) {
+                const typeClass = acct.account_type === 'bank' ? 'bank' : acct.account_type === 'venmo' ? 'venmo' : 'credit';
+                const icon = acct.account_type === 'bank' ? 'university' : acct.account_type === 'venmo' ? 'mobile-alt' : 'credit-card';
+                html += `<div class="col-md-4"><div class="card-dark p-3">
+                <div class="account-card ${typeClass}">
+                    <h6><i class="fas fa-${icon} me-1"></i> ${esc(acct.account_name)}</h6>
+                    <div class="small text-muted">${esc(acct.institution || '')} | #${esc(acct.account_number || '')}</div>
+                    <div class="small text-muted">Type: ${acct.account_type} ${acct.cardholder_name ? '| ' + esc(acct.cardholder_name) : ''}</div>
+                    <button class="btn btn-sm btn-outline-light mt-2 me-1" onclick="drillToTransactions({account_id:'${acct.id}'})"><i class="fas fa-list"></i> Transactions</button>
+                    <button class="btn btn-sm btn-outline-info mt-2" onclick="showRunningBalance(${acct.id}, '${esc(acct.account_name)}')"><i class="fas fa-chart-area"></i> Balance</button>
+                </div>
+            </div></div>`;
+            }
+            html += '</div>';
+            document.getElementById('accounts-content').innerHTML = html || '<p class="text-muted">No accounts.</p>';
+        }
+
+        // ===== UPLOAD =====
+        const uploadZone = document.getElementById('upload-zone');
+        const fileInput = document.getElementById('file-input');
+        uploadZone.addEventListener('click', () => fileInput.click());
+        uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+        uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+        uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+        fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+        async function handleFiles(files) {
+            const statusEl = document.getElementById('upload-status');
+            const previewEl = document.getElementById('upload-preview');
+            const resultsEl = document.getElementById('upload-results');
+            const uploadZone = document.getElementById('upload-zone');
+
+            uploadZone.style.pointerEvents = 'none';
+            uploadZone.style.opacity = '0.6';
+
+            for (const file of files) {
+                statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Processing ${esc(file.name)}... please wait.</div>`;
+                previewEl.style.display = 'none';
+
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('doc_type', document.getElementById('upload-doc-type').value);
+                fd.append('doc_category', document.getElementById('upload-doc-category').value);
+
+                try {
+                    const resp = await fetch('/api/upload/preview', { method: 'POST', body: fd });
+                    const data = await resp.json();
+
+                    if (data.error) {
+                        statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(file.name)}: ${data.error}</div>`;
+                        continue;
+                    }
+
+                    if (data.mode === 'proof') {
+                        statusEl.innerHTML = '';
+                        resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(file.name)}: Proof document uploaded</div>`;
+                        continue;
+                    }
+
+                    if (data.mode === 'async_zip') {
+                        statusEl.innerHTML = '';
+                        resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-cogs"></i> ${esc(file.name)}: ${esc(data.message)}</div>`;
+                        if (typeof loadDocuments === 'function') loadDocuments();
+                        continue;
+                    }
+
+                    if (data.mode === 'duplicate') {
+                        statusEl.innerHTML = '';
+                        resultsEl.innerHTML += `<div class="alert alert-warning small py-2"><i class="fas fa-exclamation-triangle"></i> ${esc(file.name)}: ${esc(data.message)} Please delete the existing document in the Documents tab if you wish to re-upload and re-parse it.</div>`;
+                        continue;
+                    }
+
+                    // Show preview
+                    currentPreviewId = data.preview_id;
+                    let dupWarning = data.duplicate_count > 0 ? ` <span class="text-warning fw-bold">WARNING: ${data.duplicate_count} potential duplicate(s) detected (shown struck-through).</span>` : '';
+                    statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-eye"></i> ${esc(file.name)}: ${data.transaction_count} transactions found.${dupWarning} Review below and commit.</div>`;
+
+                    await ensureCategories();
+                    let previewHtml = `<div class="preview-panel">
+                    <div class="preview-header">
+                        <h6 class="mb-0"><i class="fas fa-table me-1"></i> Preview: ${esc(data.filename)} (${data.transaction_count} transactions)</h6>
+                        <div>
+                            <button class="btn btn-sm btn-success me-1" id="btn-commit-upload" onclick="commitUpload()"><i class="fas fa-check"></i> Commit</button>
+                            <button class="btn btn-sm btn-outline-danger" id="btn-cancel-upload" onclick="cancelUpload()"><i class="fas fa-times"></i> Cancel</button>
+                        </div>
+                    </div>
+                    <div class="scrollable-table"><table class="table table-dark-custom">
+                    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Type</th><th>Cardholder</th><th>Tags</th></tr></thead><tbody>`;
+
+                    (data.transactions || []).forEach((t, i) => {
+                        let tags = '';
+                        if (t.is_personal) tags += '<span class="badge badge-personal me-1">P</span>';
+                        if (t.is_business) tags += '<span class="badge badge-business me-1">B</span>';
+                        if (t.is_transfer) tags += '<span class="badge badge-transfer me-1">T</span>';
+                        if (t.is_flagged) tags += '<span class="badge badge-flagged me-1">FLAG</span>';
+                        if (t._is_duplicate) tags += '<span class="badge bg-warning text-dark me-1" title="Duplicate of existing transaction">DUP</span>';
+                        if (t._source_file) tags += `<span class="badge bg-secondary me-1" title="Extracted from ${esc(t._source_file)}"><i class="fas fa-file-archive me-1"></i>${esc(t._source_file)}</span>`;
+
+                        previewHtml += `<tr class="${t._is_duplicate ? 'duplicate-row' : ''}">
+                        <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
+                        <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(t.description)}">${esc(t.description)}</td>
+                        <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                        <td><select class="category-select preview-cat" data-idx="${i}">${categoryOptions(t.category)}</select></td>
+                        <td style="font-size:0.75rem;">${t.trans_type || ''}</td>
+                        <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
+                        <td style="white-space:nowrap;">${tags}</td>
+                    </tr>`;
+                    });
+
+                    previewHtml += '</tbody></table></div></div>';
+                    if (data.skipped_duplicate_files > 0) {
+                        previewHtml += `<div class="alert alert-warning small py-2 mt-2 mb-0"><i class="fas fa-exclamation-triangle"></i> <strong>${data.skipped_duplicate_files} documents</strong> in this ZIP were skipped because identical documents are already in your account.</div>`;
+                    }
+                    previewEl.innerHTML = previewHtml;
+                    previewEl.style.display = 'block';
+                    previewEl._transactions = data.transactions;
+
+                } catch (err) {
+                    statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(file.name)}: ${err.message}</div>`;
+                }
+            }
+            fileInput.value = '';
+            uploadZone.style.pointerEvents = 'auto';
+            uploadZone.style.opacity = '1';
+        }
+
+        async function commitUpload() {
+            if (!currentPreviewId) {
+                toast('Error: No active preview to commit. Please upload the file again.');
+                return;
+            }
+            const previewEl = document.getElementById('upload-preview');
+            const statusEl = document.getElementById('upload-status');
+            const resultsEl = document.getElementById('upload-results');
+
+            const btnCommit = document.getElementById('btn-commit-upload');
+            const btnCancel = document.getElementById('btn-cancel-upload');
+            if (btnCommit) { btnCommit.disabled = true; btnCommit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Committing...'; }
+            if (btnCancel) btnCancel.disabled = true;
+
+            // Gather updated categories from preview selects
+            const transactions = previewEl._transactions || [];
+            document.querySelectorAll('.preview-cat').forEach(sel => {
+                const idx = parseInt(sel.dataset.idx);
+                if (transactions[idx]) transactions[idx].category = sel.value;
+            });
+
+            statusEl.innerHTML = `<div class="alert alert-info small py-2"><i class="fas fa-spinner fa-spin"></i> Committing transactions safely to the database...</div>`;
+
+            try {
+                const data = await api('/api/upload/commit', 'POST', { preview_id: currentPreviewId, transactions });
+                if (data.error) {
+                    statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> ${esc(data.error)}</div>`;
+                    if (btnCommit) { btnCommit.disabled = false; btnCommit.innerHTML = '<i class="fas fa-check"></i> Commit'; }
+                    if (btnCancel) btnCancel.disabled = false;
+                } else {
+                    statusEl.innerHTML = '';
+                    previewEl.style.display = 'none';
+                    let successMsg = `${data.transactions_added} imported`;
+                    if (data.transactions_skipped > 0) {
+                        successMsg += `, ${data.transactions_skipped} skipped as duplicates`;
+                    }
+                    resultsEl.innerHTML += `<div class="alert alert-success small py-2"><i class="fas fa-check-circle"></i> ${esc(data.filename)}: ${successMsg}</div>`;
+                    toast(`Imported ${data.transactions_added} transactions`);
+                    currentPreviewId = null;
+                }
+            } catch (err) {
+                statusEl.innerHTML = `<div class="alert alert-danger small py-2"><i class="fas fa-times-circle"></i> Error committing: ${esc(err.message)}</div>`;
+                if (btnCommit) { btnCommit.disabled = false; btnCommit.innerHTML = '<i class="fas fa-check"></i> Commit'; }
+                if (btnCancel) btnCancel.disabled = false;
+            }
+        }
+
+        async function cancelUpload() {
+            if (!currentPreviewId) {
+                document.getElementById('upload-preview').style.display = 'none';
+                return;
+            }
+            const btnCancel = document.getElementById('btn-cancel-upload');
+            const btnCommit = document.getElementById('btn-commit-upload');
+            if (btnCancel) { btnCancel.disabled = true; btnCancel.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+            if (btnCommit) btnCommit.disabled = true;
+
+            try {
+                await api('/api/upload/cancel', 'POST', { preview_id: currentPreviewId });
+            } catch (err) {
+                console.error("Cancel API error", err);
+            }
+
+            document.getElementById('upload-preview').style.display = 'none';
+            document.getElementById('upload-status').innerHTML = '<div class="alert alert-warning small py-2"><i class="fas fa-ban"></i> Upload cancelled</div>';
+            currentPreviewId = null;
+        }
+
+        // ===== DOCUMENTS =====
+        let docsTable;
+        async function loadDocuments() {
+            const docs = await api('/api/documents');
+            let html = '';
+
+            const roots = [];
+            const childrenMap = {};
+            docs.forEach(d => {
+                if (d.parent_document_id) {
+                    if (!childrenMap[d.parent_document_id]) childrenMap[d.parent_document_id] = [];
+                    childrenMap[d.parent_document_id].push(d);
+                } else {
+                    roots.push(d);
+                }
+            });
+
+            function renderDoc(d, isChild = false) {
+                const icon = d.file_type === 'pdf' ? 'fa-file-pdf text-danger' : d.file_type === 'xlsx' ? 'fa-file-excel text-success' : d.file_type === 'docx' ? 'fa-file-word text-primary' : d.file_type === 'zip' ? 'fa-file-archive text-warning' : 'fa-file text-info';
+
+                let sClass = 'secondary';
+                let spinner = '';
+                if (['uploading', 'extracting', 'generating_previews', 'processing', 'queued'].includes(d.status)) {
+                    sClass = 'warning text-dark';
+                    spinner = `<i class="fas fa-spinner fa-spin me-1"></i>`;
+                } else if (d.status === 'parsing') {
+                    sClass = 'info text-dark';
+                    spinner = `<i class="fas fa-cog fa-spin me-1"></i>`;
+                } else if (['approved', 'imported', 'completed', 'extracted'].includes(d.status)) {
+                    sClass = 'success';
+                } else if (d.status === 'failed') {
+                    sClass = 'danger';
+                }
+
+                let displayStatus = (d.status || 'queued').replace('_', ' ');
+                let failTooltip = '';
+                if (d.status === 'failed' && d.failure_reason) {
+                    failTooltip = ` title="${esc(d.failure_reason)}" style="cursor:help;" data-bs-toggle="tooltip"`;
+                    if (d.file_type === 'qbw' && d.failure_reason.includes('Needs Conversion')) {
+                        displayStatus = 'needs conversion';
+                        sClass = 'warning text-dark';
+                    }
+                }
+
+                let badgeHtml = `<span class="badge bg-${sClass}"${failTooltip}>${spinner}${displayStatus}</span>`;
+
+                let actionHtml = '';
+                if (d.status === 'pending_approval') {
+                    actionHtml += `<button class="btn btn-sm btn-success py-0 px-2 me-1 action-btn" onclick="event.stopPropagation(); approveDocument('${d.id}', this)" title="Approve Document"><i class="fas fa-check"></i> Approve</button>`;
+                }
+                actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2 action-btn" onclick="event.stopPropagation(); deleteDocument('${d.id}', this)" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
+
+                const indent = isChild ? '<span style="margin-left: 1.5rem; border-left: 2px solid #4a5568; padding-left: 10px;"></span>' : '';
+
+                let tr = `<tr class="clickable-row ${isChild ? 'child-doc' : 'parent-doc'}" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
+                <td>${indent}<a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
+                <td>${d.file_type}</td><td>${d.doc_category || ''}</td><td>${d.account_name || ''}</td>
+                <td>${badgeHtml}</td>
+                <td>${d.parsed_transaction_count || 0}</td>
+                <td class="text-success fw-bold">${d.import_transaction_count || 0}</td>
+                <td class="text-warning">${d.deduped_skipped_count || 0}</td>
+                <td>${(d.upload_date || '').substring(0, 16)}</td>
+                <td>${actionHtml}</td>
+                </tr>`;
+
+                const children = Object.values(childrenMap[d.id] || []).sort((a, b) => (a.filename > b.filename) ? 1 : -1);
+                children.forEach(c => { tr += renderDoc(c, true); });
+                return tr;
+            }
+
+            if (!docsTable) {
+                docsTable = new DataTable({
+                    containerId: 'documents-table-container',
+                    emptyMessage: 'No documents uploaded.',
+                    columns: [
+                        { key: 'filename', label: 'Filename', sortable: true, type: 'text' },
+                        { key: 'file_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'doc_category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'account_name', label: 'Account', sortable: true, type: 'text' },
+                        { key: 'status', label: 'Status', sortable: true, type: 'text' },
+                        { key: 'parsed_transaction_count', label: 'Parsed', sortable: true, type: 'number' },
+                        { key: 'import_transaction_count', label: 'Imported', sortable: true, type: 'number' },
+                        { key: 'deduped_skipped_count', label: 'Skipped', sortable: true, type: 'number' },
+                        { key: 'upload_date', label: 'Uploaded', sortable: true, type: 'date' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    filterConfig: [
+                        { key: 'quick', type: 'text', accessor: d => [d.filename, d.file_type, d.doc_category, d.account_name, d.status].join(' ') }
+                    ],
+                    renderRow: d => renderDoc(d, false)
+                });
+            }
+            // Preserve child documents when filtering parent
+            if (docsTable.filterState.quick) {
+                // Not supported cleanly due to hierarchy recursion, so we flatten for quicksearch
+            }
+            docsTable.updateData(roots);
+        }
+
+        window.filterDocs = function (val) {
+            if (docsTable) {
+                docsTable.filterState.quick = val;
+                docsTable.applyFilters();
+            }
+        };
+
+        async function approveDocument(docId, btn) {
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+            try {
+                toast("Approving document...", "info");
+                const res = await api(`/api/documents/${docId}/approve`, 'POST');
+                if (res.error) {
+                    toast(res.error, "danger");
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Approve'; }
+                } else {
+                    toast(`Approved successfully. ${res.transactions_approved} transactions activated.`, "success");
+                    loadDocuments();
+                    loadDashboard();
+                }
+            } catch (e) {
+                toast("Error approving document.", "danger");
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Approve'; }
+            }
+        }
+
+        async function deleteDocument(docId, btn) {
+            if (!confirm("Deleting this document will remove the document and any transactions/data imported from it.")) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+            try {
+                toast("Deleting document...", "info");
+                const res = await api(`/api/documents/${docId}`, 'DELETE');
+                if (res.error) {
+                    toast(res.error, "danger");
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i>'; }
+                } else {
+                    toast(`Document deleted successfully.`, "success");
+                    loadDocuments();
+                    loadDashboard();
+                }
+            } catch (e) {
+                toast("Error deleting document.", "danger");
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i>'; }
+            }
+        }
+
+        async function deleteCategory(id) {
+            if (!confirm('Are you sure you want to delete this category?')) return;
+            try {
+                const res = await api('/api/categories/' + id, 'DELETE');
+                if (res.error) toast(res.error, "danger");
+                else {
+                    toast('Category deleted', 'success');
+                    allCategories = []; // Force reload
+                    loadCategoriesPage();
+                }
+            } catch (e) {
+                toast('Error deleting category', 'danger');
+            }
+        }
+
+        async function deleteRule(id) {
+            if (!confirm('Are you sure you want to delete this rule?')) return;
+            try {
+                const res = await api('/api/categories/rules/' + id, 'DELETE');
+                if (res.error) toast(res.error, "danger");
+                else {
+                    toast('Rule deleted', 'success');
+                    loadCategoriesPage();
+                }
+            } catch (e) {
+                toast('Error deleting rule', 'danger');
+            }
+        }
+
+        async function restoreCategoriesDefaults() {
+            if (!confirm('WARNING: This will permanently delete all your existing categories and rules, and replace them with the 25 standard defaults. Are you sure you want to proceed?')) return;
+            try {
+                toast("Restoring default categories...", "info");
+                const res = await api('/api/categories/restore-defaults', 'POST');
+                if (res.error) toast(res.error, "danger");
+                else {
+                    toast('Default categories and rules restored successfully.', 'success');
+                    allCategories = []; // Force reload
+                    loadCategoriesPage();
+                }
+            } catch (e) {
+                toast('Error restoring categories', 'danger');
+            }
+        }
+
+        // ===== CATEGORIES =====
+        let catsTable, rulesTable, taxTable;
+        async function loadCategoriesPage() {
+            await ensureCategories();
+            if (!catsTable) {
+                catsTable = new DataTable({
+                    containerId: 'categories-list',
+                    emptyMessage: 'No categories found.',
+                    columns: [
+                        { key: 'name', label: 'Name', sortable: true, type: 'text' },
+                        { key: 'category_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: c => `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(c.name)}'})">
+                        <td><span style="color:${c.color}"><i class="fas fa-${c.icon || 'tag'}"></i></span> ${c.name}</td>
+                        <td>${c.category_type || ''}</td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteCategory(${c.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`
+                });
+            }
+            catsTable.updateData(allCategories);
+
+            const rules = await api('/api/categories/rules');
+            if (!rulesTable) {
+                rulesTable = new DataTable({
+                    containerId: 'rules-list',
+                    emptyMessage: 'No rules found.',
+                    columns: [
+                        { key: 'pattern', label: 'Pattern', sortable: true, type: 'text' },
+                        { key: 'category', label: 'Category', sortable: true, type: 'text' },
+                        { key: 'is_personal', label: 'P', sortable: true, type: 'boolean' },
+                        { key: 'is_business', label: 'B', sortable: true, type: 'boolean' },
+                        { key: 'is_transfer', label: 'T', sortable: true, type: 'boolean' },
+                        { key: 'priority', label: 'Priority', sortable: true, type: 'number' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: r => `<tr class="clickable-row" onclick="drillToTransactions({category:'${esc(r.category)}'})">
+                        <td><code style="color:#79c0ff;">${esc(r.pattern)}</code></td>
+                        <td>${r.category}</td>
+                        <td>${r.is_personal ? '<i class="fas fa-check text-warning"></i>' : ''}</td>
+                        <td>${r.is_business ? '<i class="fas fa-check text-info"></i>' : ''}</td>
+                        <td>${r.is_transfer ? '<i class="fas fa-check text-danger"></i>' : ''}</td>
+                        <td>${r.priority}</td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="event.stopPropagation(); deleteRule(${r.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`
+                });
+            }
+            rulesTable.updateData(rules);
+
+            const taxonomy = await api('/api/taxonomy');
+            if (!taxTable) {
+                taxTable = new DataTable({
+                    containerId: 'taxonomy-list',
+                    emptyMessage: 'No taxonomy rules defined. System will use defaults.',
+                    columns: [
+                        { key: 'name', label: 'Name', sortable: true, type: 'text' },
+                        { key: 'description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'category_type', label: 'Type', sortable: true, type: 'text' },
+                        { key: 'severity_num', label: 'Severity', sortable: true, type: 'number' },
+                        { key: 'actions', label: 'Actions', sortable: false }
+                    ],
+                    renderRow: t => `<tr>
+                        <td class="fw-bold">${esc(t.name)}</td>
+                        <td>${esc(t.description || '')}</td>
+                        <td><span class="badge bg-secondary">${esc(t.category_type || '')}</span></td>
+                        <td><span class="badge ${t.severity === 'high' || t.severity === 'critical' ? 'bg-danger' : t.severity === 'medium' ? 'bg-warning text-dark' : 'bg-info'}">${t.severity}</span></td>
+                        <td><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="deleteTaxonomy(${t.id})"><i class="fas fa-trash"></i></button></td>
+                    </tr>`
+                });
+            }
+            taxonomy.forEach(t => t.severity_num = t.severity === 'critical' ? 4 : t.severity === 'high' ? 3 : t.severity === 'medium' ? 2 : 1);
+            taxTable.updateData(taxonomy);
+        }
+
+        function showAddRuleModal() { loadCategoryOptions('rule-category'); new bootstrap.Modal(document.getElementById('addRuleModal')).show(); }
+        function showAddCategoryModal() {
+            document.getElementById('new-cat-name').value = '';
+            document.getElementById('new-cat-parent').value = '';
+            document.getElementById('new-cat-type').value = 'other';
+            document.getElementById('new-cat-color').value = '#6c757d';
+            document.getElementById('new-cat-icon').value = 'tag';
+            new bootstrap.Modal(document.getElementById('addCategoryModal')).show();
+        }
+
+        async function saveCategory() {
+            const name = document.getElementById('new-cat-name').value.trim();
+            if (!name) return showToast('Category name is required', 'danger');
+
+            try {
+                const res = await api('/api/categories', 'POST', {
+                    name,
+                    parent_category: document.getElementById('new-cat-parent').value.trim() || null,
+                    category_type: document.getElementById('new-cat-type').value,
+                    color: document.getElementById('new-cat-color').value,
+                    icon: document.getElementById('new-cat-icon').value.trim() || 'tag'
+                });
+
+                if (res.error) throw new Error(res.error);
+
+                bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
+                showToast('Category added successfully', 'success');
+                allCategories = await api('/api/categories');
+
+                // Update dropdowns
+                const fc = document.getElementById('filter-category');
+                if (fc) {
+                    const currentVal = fc.value;
+                    fc.innerHTML = '<option value="">All Categories</option>';
+                    allCategories.forEach(c => fc.add(new Option(c.name, c.name)));
+                    fc.value = currentVal;
+                }
+
+                // If on Categories page, reload it
+                if (document.getElementById('page-categories').classList.contains('active')) {
+                    loadCategoriesPage();
+                }
+            } catch (err) {
+                showToast(err.message || 'Error saving category', 'danger');
+            }
+        }
+
+        async function addRule() {
+            await api('/api/categories/rules', 'POST', { pattern: document.getElementById('rule-pattern').value, category: document.getElementById('rule-category').value, priority: parseInt(document.getElementById('rule-priority').value) || 50, is_personal: document.getElementById('rule-personal').checked ? 1 : 0, is_business: document.getElementById('rule-business').checked ? 1 : 0, is_transfer: document.getElementById('rule-transfer-flag').checked ? 1 : 0 });
+            bootstrap.Modal.getInstance(document.getElementById('addRuleModal')).hide(); loadCategoriesPage(); toast('Rule added');
+        }
+
+        function showAddTaxonomyModal() {
+            document.getElementById('tax-name').value = '';
+            document.getElementById('tax-desc').value = '';
+            document.getElementById('tax-category-type').value = 'risk';
+            document.getElementById('tax-severity').value = 'medium';
+            new bootstrap.Modal(document.getElementById('addTaxonomyModal')).show();
+        }
+
+        async function addTaxonomy() {
+            const data = {
+                name: document.getElementById('tax-name').value,
+                description: document.getElementById('tax-desc').value,
+                category_type: document.getElementById('tax-category-type').value,
+                severity: document.getElementById('tax-severity').value
+            };
+            if (!data.name) return toast('Name is required');
+            await api('/api/taxonomy', 'POST', data);
+            bootstrap.Modal.getInstance(document.getElementById('addTaxonomyModal')).hide();
+            loadCategoriesPage();
+            toast('Taxonomy added');
+        }
+
+        async function deleteTaxonomy(id) {
+            if (!confirm('Are you sure you want to delete this taxonomy definition?')) return;
+            await api('/api/taxonomy/' + id, 'DELETE');
+            loadCategoriesPage();
+            toast('Taxonomy deleted');
+        }
+
+        // ===== RECIPIENT ANALYSIS =====
+        let recipientData = [];
+
+        async function loadRecipients(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const safeFilters = { ...filters };
+            delete safeFilters.trans_type; // Recipients always uses outflows
+            const qs = serializeFilters(safeFilters);
+            recipientData = await api('/api/analysis/recipients?' + qs);
+            renderRecipients();
+        }
+
+        let recipientsTable;
+        function renderRecipients() {
+            // Note: sort logic is now handled internally by DataTable, so we don't custom-sort 'recipientData' here.
+            let sorted = [...recipientData];
+
+            // Summary cards
+            const totalOut = sorted.reduce((s, r) => s + r.total, 0);
+            const highSuspicion = sorted.filter(r => r.suspicion_score >= 40).length;
+            const topRecipient = sorted.sort((a, b) => b.total - a.total)[0];
+            document.getElementById('recipients-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${sorted.length}</div><div class="stat-label">Unique Recipients</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalOut)}</div><div class="stat-label">Total Outflows</div></div></div>
+            <div class="col"><div class="stat-card ${highSuspicion > 0 ? 'danger' : 'success'}"><div class="stat-value">${highSuspicion}</div><div class="stat-label">High Suspicion</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">${topRecipient ? esc(topRecipient.name).substring(0, 20) : 'N/A'}</div><div class="stat-label">Top Recipient ${topRecipient ? '$' + fmt(topRecipient.total) : ''}</div></div></div>
+        `;
+            // Add a simple search box programmatically if not present
+            if (!document.getElementById('recipient-quick-search')) {
+                const container = document.getElementById('recipients-table').parentNode;
+                const searchHtml = `<div class="d-flex justify-content-end mb-2"><input type="text" id="recipient-quick-search" class="form-control form-control-sm bg-dark text-white border-secondary" style="width:250px;" placeholder="Filter recipients..." oninput="if(recipientsTable){ recipientsTable.filterState.quick = this.value; recipientsTable.applyFilters(); }"></div>`;
+                container.insertAdjacentHTML('afterbegin', searchHtml);
+            }
+
+            if (!recipientsTable) {
+                recipientsTable = new DataTable({
+                    containerId: 'recipients-table',
+                    emptyMessage: 'No outflow data found. Upload statements to analyze.',
+                    columns: [
+                        { key: 'name', label: 'Recipient', sortable: true, type: 'text' },
+                        { key: 'total', label: 'Total Paid', sortable: true, type: 'number' },
+                        { key: 'count', label: 'Count', sortable: true, type: 'number' },
+                        { key: 'avg_amount', label: 'Avg', sortable: true, type: 'number' },
+                        { key: 'concentration_pct', label: 'Concentration', sortable: true, type: 'number' },
+                        { key: 'suspicion_score', label: 'Suspicion', sortable: true, type: 'number' },
+                        { key: 'flags_text', label: 'Flags', sortable: true, type: 'text' },
+                        { key: 'cardholders_text', label: 'Cardholders', sortable: true, type: 'text' },
+                        { key: 'methods_text', label: 'Methods', sortable: true, type: 'text' }
+                    ],
+                    filterConfig: [
+                        { key: 'quick', type: 'text', accessor: r => [r.name, r.flags_text, r.cardholders_text, r.methods_text].join(' ') }
+                    ],
+                    renderRow: r => {
+                        const scoreClass = r.suspicion_score >= 40 ? 'suspicion-high' : r.suspicion_score >= 20 ? 'suspicion-med' : 'suspicion-low';
+                        const riskClass = r.suspicion_score >= 40 ? 'risk-high' : r.suspicion_score >= 20 ? 'risk-medium' : 'risk-low';
+                        return `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.name.split(' - ').pop().substring(0, 15))}'})">
+                            <td><strong>${esc(r.name)}</strong><br><span class="text-muted" style="font-size:0.7rem;">${r.first_date} to ${r.last_date}</span></td>
+                            <td class="amount-negative fw-bold">$${fmt(r.total)}</td>
+                            <td>${r.count}</td>
+                            <td class="amount-negative">$${fmt(r.avg_amount)}</td>
+                            <td>${r.concentration_pct}%</td>
+                            <td><div class="d-flex align-items-center gap-2"><div class="suspicion-bar ${scoreClass}"><div class="suspicion-fill" style="width:${r.suspicion_score}%"></div></div><span class="risk-badge ${riskClass}">${r.suspicion_score}</span></div></td>
+                            <td style="max-width:200px;font-size:0.72rem;">${r.flags_html}</td>
+                            <td style="font-size:0.72rem;">${r.cardholders_text}</td>
+                            <td style="font-size:0.72rem;">${r.methods_text}</td>
+                        </tr>`;
+                    }
+                });
+            }
+
+            recipientData.forEach(r => {
+                r.flags_text = r.flags.join(' ');
+                r.flags_html = r.flags.map(f => `<div class="text-warning">${esc(f)}</div>`).join('');
+                r.cardholders_text = r.cardholders.join(', ');
+                r.methods_text = r.methods.join(', ');
+            });
+            recipientsTable.updateData(recipientData);
+        }
+
+        // ===== DEPOSIT AGING =====
+        let agingData = [];
+
+        async function loadDepositAging(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const safeFilters = { ...filters };
+            delete safeFilters.trans_type; // Aging always searches for deposits
+            delete safeFilters.category; // Categories usually mask deposits
+            const qs = serializeFilters(safeFilters);
+            agingData = await api('/api/analysis/deposit-aging?' + qs);
+            renderDepositAging();
+        }
+
+        let agingTable;
+        function renderDepositAging() {
+            const filter = document.getElementById('aging-filter')?.value || 'all';
+            let filtered = agingData;
+            if (filter === 'high') filtered = agingData.filter(d => d.risk === 'high');
+            else if (filter === 'medium') filtered = agingData.filter(d => d.risk === 'high' || d.risk === 'medium');
+
+            // Summary
+            const highCount = agingData.filter(d => d.risk === 'high').length;
+            const medCount = agingData.filter(d => d.risk === 'medium').length;
+            const totalDeposits = agingData.reduce((s, d) => s + d.amount, 0);
+            const avg3day = agingData.length ? agingData.reduce((s, d) => s + d.pct_3day, 0) / agingData.length : 0;
+
+            document.getElementById('aging-summary').innerHTML = `
+            <div class="col"><div class="stat-card success"><div class="stat-value">${agingData.length}</div><div class="stat-label">Total Deposits</div></div></div>
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(totalDeposits)}</div><div class="stat-label">Total Deposited</div></div></div>
+            <div class="col"><div class="stat-card ${highCount > 0 ? 'danger' : 'success'}"><div class="stat-value">${highCount}</div><div class="stat-label">High-Risk Drains</div></div></div>
+            <div class="col"><div class="stat-card ${medCount > 0 ? 'warning' : 'success'}"><div class="stat-value">${medCount}</div><div class="stat-label">Medium-Risk Drains</div></div></div>
+            <div class="col"><div class="stat-card ${avg3day > 50 ? 'danger' : 'info'}"><div class="stat-value">${avg3day.toFixed(0)}%</div><div class="stat-label">Avg 3-Day Drain</div></div></div>
+        `;
+
+            if (!agingTable) {
+                agingTable = new DataTable({
+                    containerId: 'aging-table',
+                    emptyMessage: 'No deposit data found.',
+                    columns: [
+                        { key: 'deposit.trans_date', label: 'Deposit Date', sortable: true, type: 'date' },
+                        { key: 'deposit.description', label: 'Description', sortable: true, type: 'text' },
+                        { key: 'amount', label: 'Deposit Amt', sortable: true, type: 'number' },
+                        { key: 'out_3day', label: 'Out in 3 Days', sortable: true, type: 'number' },
+                        { key: 'pct_3day', label: '% 3-Day', sortable: true, type: 'number' },
+                        { key: 'out_7day', label: 'Out in 7 Days', sortable: true, type: 'number' },
+                        { key: 'pct_7day', label: '% 7-Day', sortable: true, type: 'number' },
+                        { key: 'risk_sort', label: 'Risk', sortable: true, type: 'number' }
+                    ],
+                    renderRow: d => {
+                        const riskClass = d.risk === 'high' ? 'risk-high' : d.risk === 'medium' ? 'risk-medium' : 'risk-low';
+                        const pct3Class = d.pct_3day > 80 ? 'text-danger fw-bold' : d.pct_3day > 50 ? 'text-warning' : '';
+                        const pct7Class = d.pct_7day > 80 ? 'text-danger fw-bold' : d.pct_7day > 50 ? 'text-warning' : '';
+                        return `<tr class="clickable-row" onclick="drillToTransactions({date_from:'${d.deposit.trans_date}',date_to:'${d.deposit.trans_date}',search:'${esc(d.deposit.description.substring(0, 15))}'})">
+                            <td style="white-space:nowrap;">${d.deposit.trans_date}</td>
+                            <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(d.deposit.description)}">${esc(d.deposit.description)}</td>
+                            <td class="amount-positive fw-bold">$${fmt(d.amount)}</td>
+                            <td class="amount-negative">$${fmt(d.out_3day)}</td>
+                            <td class="${pct3Class}">${d.pct_3day}%</td>
+                            <td class="amount-negative">$${fmt(d.out_7day)}</td>
+                            <td class="${pct7Class}">${d.pct_7day}%</td>
+                            <td><span class="risk-badge ${riskClass}">${d.risk}</span></td>
+                        </tr>`;
+                    }
+                });
+            }
+
+            filtered.forEach(d => {
+                d.risk_sort = d.risk === 'high' ? 3 : d.risk === 'medium' ? 2 : 1;
+            });
+            agingTable.updateData(filtered);
+        }
+
+        // ===== CARDHOLDER COMPARISON (enhanced) =====
+        async function loadCardholders(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const comparison = await api('/api/analysis/cardholder-comparison?' + qs);
+            let html = '<div class="row g-3 mb-3">';
+
+            // Summary cards for each cardholder
+            comparison.forEach(ch => {
+                const suspicionPct = ch.flagged_count > 0 ? Math.min(100, Math.round(ch.flagged_count / ch.total_transactions * 100)) : 0;
+
+                let displayName = ch.cardholder_name;
+                if (ch.card_last_four) {
+                    displayName += ` (*${ch.card_last_four})`;
+                }
+
+                let drillParams = `cardholder:'${esc(ch.cardholder_name)}'`;
+                if (ch.card_last_four) {
+                    drillParams += `,card_last_four:'${esc(ch.card_last_four)}'`;
+                }
+
+                html += `<div class="col-md-6"><div class="card-dark">
+                <div class="card-header" style="cursor:pointer;" onclick="drillToTransactions({${drillParams}})">
+                    <span><i class="fas fa-user me-1"></i> ${esc(displayName)}</span>
+                    <button class="btn btn-sm btn-outline-light py-0" onclick="event.stopPropagation();drillToTransactions({${drillParams}})"><i class="fas fa-external-link-alt fa-xs"></i></button>
+                </div>
+                <div class="p-3">
+                    <div class="row g-2 mb-3">
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_spent)}</div><div style="color:#8b949e;font-size:0.7rem;">TOTAL SPENT</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-positive fw-bold" style="font-size:1.1rem;">$${fmt(ch.total_received)}</div><div style="color:#8b949e;font-size:0.7rem;">RECEIVED</div></div></div>
+                        <div class="col-4"><div class="text-center"><div class="amount-negative fw-bold" style="font-size:1.1rem;">$${fmt(ch.transfers_out)}</div><div style="color:#8b949e;font-size:0.7rem;">TRANSFERS OUT</div></div></div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-3"><div class="text-center"><div class="fw-bold" style="color:#c9d1d9;">${ch.total_transactions}</div><div style="color:#8b949e;font-size:0.7rem;">TRANSACTIONS</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="fw-bold" style="color:#c9d1d9;">$${fmt(ch.avg_purchase)}</div><div style="color:#8b949e;font-size:0.7rem;">AVG PURCHASE</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="${ch.flagged_count > 0 ? 'text-danger' : ''} fw-bold" style="color:#c9d1d9;">${ch.flagged_count}</div><div style="color:#8b949e;font-size:0.7rem;">FLAGGED</div></div></div>
+                        <div class="col-3"><div class="text-center"><div class="small" style="color:#8b949e;">${ch.first_transaction || 'N/A'}<br>to ${ch.last_transaction || 'N/A'}</div></div></div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-personal">Personal</span> <span class="amount-negative">$${fmt(ch.personal_total)}</span></div></div>
+                        <div class="col-6"><div class="d-flex align-items-center gap-2"><span class="badge badge-business">Business</span> <span class="amount-negative">$${fmt(ch.business_total)}</span></div></div>
+                    </div>
+                    <div class="mt-2"><strong class="small" style="color:#8b949e;">Top Categories:</strong></div>
+                    <table class="table table-dark-custom mt-1"><tbody>`;
+                (ch.top_categories || []).forEach(c => {
+                    const barW = ch.total_spent > 0 ? Math.round(c.total / ch.total_spent * 100) : 0;
+                    html += `<tr class="clickable-row" onclick="drillToTransactions({${drillParams},category:'${esc(c.category)}'})">
+                    <td style="width:35%">${esc(c.category)}</td>
+                    <td class="amount-negative">$${fmt(c.total)}</td>
+                    <td>${c.cnt}</td>
+                    <td><div class="mini-bar" style="background:#f85149;width:${barW}%;">&nbsp;</div></td>
+                </tr>`;
+                });
+                html += `</tbody></table></div></div></div>`;
+            });
+
+            html += '</div>';
+            if (!comparison.length) html = '<p class="text-muted">No cardholder data. Upload statements to see comparisons.</p>';
+            document.getElementById('cardholders-content').innerHTML = html;
+        }
+
+        // ===== INTEGRATIONS (OAUTH) =====
+        async function loadIntegrations() {
+            const renderTiles = (connectedList, userRole = 'USER') => {
+                const envFlags = {
+                    google: "{{ 'true' if enable_google else 'false' }}" === "true",
+                    qb: "{{ 'true' if enable_qb else 'false' }}" === "true"
+                };
+
+                const providers = [];
+                if (envFlags.google) {
+                    providers.push({ id: 'google_drive', name: 'Google Drive', icon: 'fab fa-google-drive', color: '#1fa463', desc: 'Import statements directly from a Google account.' });
+                    providers.push({ id: 'google_calendar', name: 'Google Calendar', icon: 'far fa-calendar-alt', color: '#4285F4', desc: 'Correlate transaction dates with scheduled events.' });
+                    providers.push({ id: 'gmail', name: 'Gmail', icon: 'far fa-envelope', color: '#EA4335', desc: 'Scan inbox for digitized receipts and invoices.' });
+                }
+                if (envFlags.qb) {
+                    providers.push({ id: 'quickbooks', name: 'QuickBooks', icon: 'fas fa-file-invoice-dollar', color: '#2ca01c', desc: 'Sync chart of accounts and automatically categorize expenses.' });
+                }
+
+                // FC Integration is conditionally surfaced if environment variables allow integration
+                providers.push({ id: 'financial_cents', name: 'Financial Cents', icon: 'fas fa-building', color: '#5433FF', desc: 'Sync practice management clients securely to the Merchants ledger.' });
+
+                let html = '';
+                providers.forEach(p => {
+                    const connObj = connectedList.find(c => c.provider === p.id);
+                    const isConnected = connObj && connObj.status === 'Connected';
+                    const isWorkspace = (p.id === 'quickbooks');
+                    const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes(userRole);
+
+                    let metaHtml = '';
+                    if (isConnected && connObj.metadata) {
+                        try {
+                            const meta = typeof connObj.metadata === 'string' ? JSON.parse(connObj.metadata) : connObj.metadata;
+                            if (meta.last_sync) {
+                                const localTime = new Date(meta.last_sync).toLocaleString();
+                                metaHtml = `<div class="small text-muted mt-2 border-top border-secondary pt-2">
+                                    <i class="fas fa-history me-1"></i>Last Sync: ${localTime}<br>
+                                    <span style="font-size:0.75rem;">Synced: ${meta.synced_count || 0} | Skipped: ${meta.skipped_count || 0}</span>
+                                </div>`;
+                            }
+                        } catch (e) { }
+                    }
+                    html += `
+                    <div class="col-md-6 mb-3">
+                        <div class="stat-card d-flex align-items-start gap-3">
+                            <div class="alert-icon" style="background: rgba(255,255,255,0.1); color: ${p.color}; font-size: 1.5rem; width: 48px; height: 48px;">
+                                <i class="${p.icon}"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-1">${p.name}</h6>
+                                <p class="text-muted small mb-2">${p.desc}</p>
+                                ${isConnected ?
+                            `<div class="d-flex justify-content-between align-items-center">
+                                <span class="badge bg-success"><i class="fas fa-check"></i> Connected</span>
+                                ${canManage ? `
+                                <div>
+                                    ${p.id === 'google_drive' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testGoogleIntegration()">Test Connection</button>` : ''}
+                                    ${p.id === 'quickbooks' ? `<button class="btn btn-sm btn-outline-info py-0 px-2 me-2" onclick="testQuickBooksIntegration()">Test Connection</button>` : ''}
+                                    ${p.id === 'financial_cents' ? `<button class="btn btn-sm btn-outline-success py-0 px-2 me-2" onclick="syncFCIntegration()"><i class="fas fa-sync-alt me-1"></i>Sync Clients</button>` : ''}
+                                    <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="disconnectIntegration('${p.id}')">Disconnect</button>
+                                </div>
+                                ` : ''}
+                             </div>` :
+                            `<div class="d-flex justify-content-between align-items-center">
+                                <span class="badge bg-secondary">Not connected</span>
+                                ${canManage ?
+                                `<button class="btn btn-sm btn-outline-light py-0 px-2" onclick="connectIntegration('${p.id}')"><i class="fas fa-link me-1"></i>Connect</button>` :
+                                `<span class="badge bg-warning text-dark px-2 py-1"><i class="fas fa-lock me-1"></i>Admin setup required</span>`
+                            }
+                             </div>`
+                        }
+                        ${metaHtml}
+                            </div>
+                        </div>
+                    </div>`;
+                });
+
+                document.getElementById('integrations-list').innerHTML = html;
+            };
+
+            try {
+                const res = await api('/api/integrations/status');
+                const connected = res.integrations || [];
+                renderTiles(connected, res.role || 'USER');
+            } catch (err) {
+                console.warn("Integrations endpoint missing or disabled, gracefully falling back to Not connected", err);
+                renderTiles([]);
+            }
+        }
+
+        async function connectIntegration(provider) {
+            try {
+                toast(`Starting ${provider} connection...`, 'info');
+                // Use the dedicated google endpoint if applicable, otherwise fallback
+                let endpoint = `/api/integrations/${provider}/connect`;
+                if (['google_drive', 'google_calendar', 'gmail'].includes(provider)) {
+                    endpoint = '/api/integrations/google/connect';
+                }
+                const res = await api(endpoint, 'POST');
+                if (res && res.authorization_url) {
+                    window.location.href = res.authorization_url;
+                }
+            } catch (err) {
+                toast(`Integration ${provider} is not configured on this environment.`, 'danger');
+            }
+        }
+
+        async function testGoogleIntegration() {
+            try {
+                toast(`Testing Google connection...`, 'info');
+                const res = await api('/api/integrations/google/test', 'POST');
+                if (res && res.test_results) {
+                    let msg = "";
+                    for (const [service, result] of Object.entries(res.test_results)) {
+                        msg += `${service}: ${result.message}\n`;
+                    }
+                    toast(`Test Results:\n${msg}`, 'success');
+                }
+            } catch (err) {
+                toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function testQuickBooksIntegration() {
+            try {
+                toast(`Testing QuickBooks connection...`, 'info');
+                const res = await api('/api/integrations/quickbooks/test', 'POST');
+                if (res && res.test_results) {
+                    let msg = "";
+                    for (const [service, result] of Object.entries(res.test_results)) {
+                        msg += `${service}: ${result.message}\n`;
+                    }
+                    toast(`Test Results:\n${msg}`, 'success');
+                }
+            } catch (err) {
+                toast(`Test failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function syncFCIntegration() {
+            try {
+                toast(`Triggering Financial Cents sync...`, 'info');
+                const res = await api('/api/integrations/financial_cents/sync_clients', 'POST');
+                toast(res.message || 'Sync complete.', 'success');
+                loadIntegrations();
+            } catch (err) {
+                toast(`FC Sync failed: ${err.message}`, 'danger');
+            }
+        }
+
+        async function disconnectIntegration(provider) {
+            if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
+            try {
+                await api(`/api/integrations/${provider}/disconnect`, 'POST');
+                toast(`Disconnected ${provider} successfully`, 'success');
+                loadIntegrations();
+            } catch (err) {
+                toast(`Failed to disconnect ${provider}`, 'danger');
+            }
+        }
+
+        // ===== AUDIT TRAIL =====
+        async function loadAuditTrail() {
+            const trail = await api('/api/audit-trail');
+            let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Timestamp</th><th>Action</th><th>Field</th><th>Old Value</th><th>New Value</th><th>Transaction</th>
+        </tr></thead><tbody>`;
+
+            trail.forEach(entry => {
+                const actionClass = entry.action === 'DELETE' ? 'text-danger' : entry.action === 'UPDATE' ? 'text-warning' : 'text-info';
+                html += `<tr>
+                <td style="white-space:nowrap;font-size:0.75rem;">${(entry.timestamp || '').substring(0, 19)}</td>
+                <td><span class="${actionClass} fw-bold">${entry.action || ''}</span></td>
+                <td style="font-size:0.8rem;">${esc(entry.field_changed || '')}</td>
+                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.old_value || '')}">${esc(entry.old_value || '-')}</td>
+                <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:0.75rem;" title="${esc(entry.new_value || '')}">${esc(entry.new_value || '-')}</td>
+                <td style="font-size:0.75rem;">${entry.trans_description ? esc(entry.trans_description).substring(0, 30) + (entry.trans_amount ? ' ($' + fmt(Math.abs(entry.trans_amount)) + ')' : '') : '#' + (entry.transaction_id || '?')}</td>
+            </tr>`;
+            });
+
+            if (!trail.length) html += '<tr><td colspan="6" class="text-muted text-center py-4">No audit trail entries yet. Edit or delete transactions to see changes logged here.</td></tr>';
+            html += '</tbody></table>';
+            document.getElementById('audit-trail-table').innerHTML = html;
+        }
+
+        // ===== EXECUTIVE SUMMARY =====
+        async function loadExecutiveSummary(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const summary = await api('/api/analysis/summary?' + qs);
+            const el = document.getElementById('executive-summary');
+            if (!summary || summary.total_analyzed === 0) { el.style.display = 'none'; return; }
+            el.style.display = 'block';
+
+            // Risk gauge
+            const riskColor = summary.risk_score >= 60 ? '#f85149' : summary.risk_score >= 30 ? '#d29922' : '#3fb950';
+            const riskLabel = summary.risk_score >= 60 ? 'HIGH RISK' : summary.risk_score >= 30 ? 'MEDIUM RISK' : 'LOW RISK';
+            document.getElementById('risk-gauge-wrap').innerHTML = `
+            <span class="small text-muted">${summary.total_analyzed} transactions | ${summary.date_range}</span>
+            <div style="width:100px;"><div class="risk-gauge"><div class="risk-gauge-fill" style="width:${summary.risk_score}%;background:${riskColor};"></div></div></div>
+            <span class="risk-badge" style="background:${riskColor}20;color:${riskColor};">${riskLabel} ${summary.risk_score}</span>
+        `;
+
+            // Findings
+            let html = '<div class="row g-2">';
+            summary.findings.forEach(f => {
+                html += `<div class="col-md-6"><div class="finding-card ${f.severity}">
+                <div class="finding-title"><i class="fas fa-${f.severity === 'danger' ? 'exclamation-triangle text-danger' : f.severity === 'warning' ? 'exclamation-circle text-warning' : 'info-circle text-info'} me-1"></i>${esc(f.title)}</div>
+                <div class="finding-detail">${esc(f.detail)}</div>
+            </div></div>`;
+            });
+            html += '</div>';
+            document.getElementById('exec-findings').innerHTML = html;
+        }
+
+        // ===== MONEY FLOW =====
+        let moneyFlowData = null;
+
+        async function loadMoneyFlow(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            moneyFlowData = await api('/api/analysis/money-flow?' + qs);
+            const d = moneyFlowData;
+
+            // Summary
+            const totalIn = d.accounts.reduce((s, a) => s + a.inflow, 0);
+            const totalOut = d.accounts.reduce((s, a) => s + a.outflow, 0);
+            const totalXfer = d.flows.reduce((s, f) => s + f.total, 0);
+            document.getElementById('money-flow-summary').innerHTML = `
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(totalIn)}</div><div class="stat-label">Total Inflows</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalOut)}</div><div class="stat-label">Total Outflows</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">$${fmt(totalXfer)}</div><div class="stat-label">Cross-Account Transfers</div></div></div>
+            <div class="col"><div class="stat-card info"><div class="stat-value">${d.accounts.length}</div><div class="stat-label">Accounts</div></div></div>
+            <div class="col"><div class="stat-card purple"><div class="stat-value">${d.methods.length}</div><div class="stat-label">Payment Methods</div></div></div>
+        `;
+
+            // Account flows table
+            let acctHtml = '<table class="table table-dark-custom"><thead><tr><th>Account</th><th>Type</th><th>In</th><th>Out</th><th>Net</th><th>Flow</th></tr></thead><tbody>';
+            const maxFlow = Math.max(...d.accounts.map(a => Math.max(a.inflow, a.outflow)), 1);
+            d.accounts.forEach(a => {
+                const net = a.inflow - a.outflow;
+                const inW = Math.round(a.inflow / maxFlow * 120);
+                const outW = Math.round(a.outflow / maxFlow * 120);
+                acctHtml += `<tr class="clickable-row" onclick="drillToTransactions({account_id:'${a.account_id}'})">
+                <td><strong>${esc(a.account_name || 'Unknown')}</strong><br><span class="text-muted" style="font-size:0.7rem;">${esc(a.institution || '')}</span></td>
+                <td><span class="badge badge-${a.account_type === 'bank' ? 'deposit' : a.account_type === 'credit_card' ? 'transfer' : 'venmo'}">${a.account_type || 'unknown'}</span></td>
+                <td class="amount-positive">$${fmt(a.inflow)}</td>
+                <td class="amount-negative">$${fmt(a.outflow)}</td>
+                <td class="${net < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(net))}</td>
+                <td><div style="display:flex;gap:1px;"><div style="background:#3fb950;height:10px;width:${inW}px;border-radius:2px;"></div><div style="background:#f85149;height:10px;width:${outW}px;border-radius:2px;"></div></div></td>
+            </tr>`;
+            });
+            if (!d.accounts.length) acctHtml += '<tr><td colspan="6" class="text-muted text-center py-3">No account data.</td></tr>';
+            acctHtml += '</tbody></table>';
+            document.getElementById('flow-accounts').innerHTML = acctHtml;
+
+            // Transfer destinations
+            let xferHtml = '<table class="table table-dark-custom"><thead><tr><th>Destination</th><th>Total</th><th>Count</th><th>Period</th></tr></thead><tbody>';
+            d.flows.forEach(f => {
+                xferHtml += `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(f.destination)}', is_transfer: 1})">
+                <td><i class="fas fa-arrow-right text-warning me-1"></i>${esc(f.destination)}</td>
+                <td class="amount-negative fw-bold">$${fmt(f.total)}</td>
+                <td>${f.count}</td>
+                <td style="font-size:0.72rem;">${f.first_date || ''} to ${f.last_date || ''}</td>
+            </tr>`;
+            });
+            if (!d.flows.length) xferHtml += '<tr><td colspan="4" class="text-muted text-center py-3">No cross-account transfers detected.</td></tr>';
+            xferHtml += '</tbody></table>';
+            document.getElementById('flow-transfers').innerHTML = xferHtml;
+
+            // Payment methods
+            let methHtml = '<table class="table table-dark-custom"><thead><tr><th>Method</th><th>Total</th><th>Count</th><th>Share</th></tr></thead><tbody>';
+            d.methods.forEach(m => {
+                const pct = totalOut > 0 ? (m.total / totalOut * 100).toFixed(1) : 0;
+                const barW = totalOut > 0 ? Math.round(m.total / totalOut * 200) : 0;
+                methHtml += `<tr class="clickable-row" onclick="drillToTransactions({payment_method:'${esc(m.payment_method)}'})">
+                <td><strong>${esc(m.payment_method)}</strong></td>
+                <td class="amount-negative">$${fmt(m.total)}</td>
+                <td>${m.cnt}</td>
+                <td><div style="display:flex;align-items:center;gap:6px;"><div style="background:#58a6ff;height:10px;width:${barW}px;border-radius:2px;"></div><span class="text-muted small">${pct}%</span></div></td>
+            </tr>`;
+            });
+            if (!d.methods.length) methHtml += '<tr><td colspan="4" class="text-muted text-center py-3">No payment method data.</td></tr>';
+            methHtml += '</tbody></table>';
+            document.getElementById('flow-methods').innerHTML = methHtml;
+        }
+
+        // ===== TIMELINE =====
+        let timelineData = [];
+
+        async function loadTimeline(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            timelineData = await api('/api/analysis/timeline?' + qs);
+            renderTimeline();
+        }
+
+        function renderTimeline() {
+            if (!timelineData.length) {
+                document.getElementById('timeline-chart').innerHTML = '<p class="text-muted text-center py-4">No timeline data. Upload statements to see the timeline.</p>';
+                document.getElementById('timeline-summary').innerHTML = '';
+                return;
+            }
+
+            const maxAmt = Math.max(...timelineData.map(d => Math.max(d.day_in, d.day_out)));
+            const maxBar = 300;
+            const totalDays = timelineData.length;
+            const totalIn = timelineData.reduce((s, d) => s + d.day_in, 0);
+            const totalOut = timelineData.reduce((s, d) => s + d.day_out, 0);
+            const peakDay = timelineData.reduce((p, d) => d.day_out > (p.day_out || 0) ? d : p, {});
+            const minBal = Math.min(...timelineData.map(d => d.running_balance));
+            const maxBal = Math.max(...timelineData.map(d => d.running_balance));
+
+            document.getElementById('timeline-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${totalDays}</div><div class="stat-label">Days with Activity</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">${peakDay.trans_date || 'N/A'}</div><div class="stat-label">Peak Spending Day ($${fmt(peakDay.day_out || 0)})</div></div></div>
+            <div class="col"><div class="stat-card ${minBal < 0 ? 'danger' : 'success'}"><div class="stat-value">$${fmt(Math.abs(minBal))}</div><div class="stat-label">${minBal < 0 ? 'Max Deficit' : 'Min Balance'}</div></div></div>
+            <div class="col"><div class="stat-card success"><div class="stat-value">$${fmt(maxBal)}</div><div class="stat-label">Peak Balance</div></div></div>
+        `;
+
+            let html = '';
+            timelineData.forEach(d => {
+                const inW = maxAmt > 0 ? Math.round(d.day_in / maxAmt * maxBar) : 0;
+                const outW = maxAmt > 0 ? Math.round(d.day_out / maxAmt * maxBar) : 0;
+                const xferW = maxAmt > 0 ? Math.round(d.day_transfers / maxAmt * maxBar) : 0;
+                const flagIcon = d.day_flagged > 0 ? `<span class="timeline-flag"><i class="fas fa-flag"></i>${d.day_flagged}</span>` : '';
+                const notable = d.notable ? `<span class="text-muted" style="font-size:0.65rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;" title="${esc(d.notable)}">${esc(d.notable).substring(0, 50)}</span>` : '';
+
+                html += `<div class="timeline-row" onclick="drillToTransactions({date_from:'${d.trans_date}',date_to:'${d.trans_date}'})" style="cursor:pointer;">
+                <span style="width:80px;flex-shrink:0;font-weight:600;">${d.trans_date.substring(5)}</span>
+                <span style="width:25px;flex-shrink:0;text-align:center;color:#8b949e;">${d.day_count}</span>
+                <div class="timeline-bar" style="width:${Math.max(inW + outW, 4)}px;">
+                    ${inW > 0 ? `<div class="bar-in" style="width:${inW}px;" title="In: $${fmt(d.day_in)}"></div>` : ''}
+                    ${outW > 0 ? `<div class="bar-out" style="width:${outW - xferW}px;" title="Out: $${fmt(d.day_out)}"></div>` : ''}
+                    ${xferW > 0 ? `<div class="bar-xfer" style="width:${xferW}px;" title="Transfers: $${fmt(d.day_transfers)}"></div>` : ''}
+                </div>
+                <span style="width:80px;flex-shrink:0;text-align:right;" class="${d.running_balance < 0 ? 'amount-negative' : 'text-muted'}" style="font-size:0.7rem;">$${fmt(Math.abs(d.running_balance))}</span>
+                ${flagIcon} ${notable}
+            </div>`;
+            });
+            document.getElementById('timeline-chart').innerHTML = html;
+        }
+
+        // ===== PRINT REPORT =====
+        function printReport() {
+            // Show dashboard and summary, then trigger print
+            navigateTo('dashboard');
+            setTimeout(() => { window.print(); }, 500);
+        }
+
+        // ===== LIVE SEARCH (debounce) =====
+        let searchTimer = null;
+        const searchInput = document.getElementById('filter-search');
+        if (searchInput) {
+            searchInput.addEventListener('input', () => {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(() => {
+                    const activePage = document.querySelector('.nav-link.active');
+                    if (activePage && activePage.dataset.page === 'transactions') loadTransactions();
+                }, 400);
+            });
+        }
+
+        // ===== UTILITIES =====
+        async function ensureCategories() {
+            if (!allCategories.length) allCategories = await api('/api/categories');
+            // Populate filter dropdowns
+            const fc = document.getElementById('filter-category');
+            if (fc && fc.options.length <= 1) { allCategories.forEach(c => fc.add(new Option(c.name, c.name))); }
+        }
+
+        function populateCardholderFilter() {
+            const fc = document.getElementById('filter-cardholder');
+            if (!fc) return;
+            const current = fc.value;
+
+            const groups = {
+                'Bank Accounts': new Set(),
+                'Credit Card Holders': new Set(),
+                'Debit Card Holders': new Set(),
+                'Venmo Accounts': new Set(),
+                'Other Payment Methods': new Set()
+            };
+
+            allTransactions.forEach(t => {
+                const h = t.cardholder_name;
+                if (!h) return;
+                const m = (t.payment_method || '').toLowerCase();
+
+                if (m === 'credit') groups['Credit Card Holders'].add(h);
+                else if (m === 'debit') groups['Debit Card Holders'].add(h);
+                else if (m === 'venmo') groups['Venmo Accounts'].add(h);
+                else if (['check', 'transfer', 'wire', 'cash', 'bank'].includes(m)) groups['Bank Accounts'].add(h);
+                else groups['Other Payment Methods'].add(h);
+            });
+
+            // Remove overlaps (prioritize more specific types over Bank/Other)
+            const seen = new Set();
+            for (const g of ['Venmo Accounts', 'Credit Card Holders', 'Debit Card Holders', 'Bank Accounts', 'Other Payment Methods']) {
+                const uniqueForGroup = new Set();
+                groups[g].forEach(h => {
+                    if (!seen.has(h)) {
+                        uniqueForGroup.add(h);
+                        seen.add(h);
+                    }
+                });
+                groups[g] = [...uniqueForGroup].sort();
+            }
+
+            fc.innerHTML = '<option value="">All Cardholders</option>';
+            for (const [gLabel, sortedHolders] of Object.entries(groups)) {
+                if (sortedHolders.length > 0) {
+                    const og = document.createElement('optgroup');
+                    og.label = gLabel;
+                    sortedHolders.forEach(h => og.appendChild(new Option(h, h)));
+                    fc.appendChild(og);
+                }
+            }
+            fc.value = current;
+        }
+
+        async function loadCategoryOptions(selectId, includeEmpty) {
+            await ensureCategories();
+            if (selectId) {
+                const sel = document.getElementById(selectId);
+                if (sel) { sel.innerHTML = (includeEmpty ? '<option value="">-- No Change --</option>' : '') + allCategories.map(c => `<option value="${c.name}">${c.name}</option>`).join(''); }
+            }
+        }
+
+        function categoryOptions(selected) {
+            let optionsHtml = allCategories.map(c => `<option value="${c.name}" ${c.name === selected ? 'selected' : ''}>${c.name}</option>`).join('');
+            if (selected && !allCategories.some(c => c.name === selected)) {
+                optionsHtml = `<option value="${selected}" selected>${selected}</option>` + optionsHtml;
+            }
+            return optionsHtml;
+        }
+        async function recategorizeAll() { if (!confirm('Re-run auto-categorization?')) return; const r = await api('/api/recategorize', 'POST'); toast(`Updated ${r.updated} transactions`); loadDashboard(); }
+        function exportCSV() { window.open('/api/export/csv', '_blank'); }
+        async function clearAllData() {
+            if (!confirm('WARNING: This will permanently delete ALL transactions, documents, accounts, and uploaded files. Categories and rules will be kept.\n\nAre you sure?')) return;
+            if (!confirm('FINAL CONFIRMATION: Delete all financial data?')) return;
+            await api('/api/clear-data', 'POST');
+            toast('All data cleared');
+            loadDashboard();
+        }
+
+        async function api(url, method = 'GET', body = null) {
+            const opts = { method, headers: {} };
+            if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+            try {
+                const r = await fetch(url, opts);
+                if (r.status === 401 || r.status === 403) {
+                    const nextUrl = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
+                    window.location.href = '/login?next=' + nextUrl;
+                    return new Promise(() => { }); // Halt execution to prevent UI flashing before navigation completes
+                }
+                return await r.json();
+            } catch (e) { toast('Error: ' + e.message); return []; }
+        }
+
+        function fmt(n) { return (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+        function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+        function toast(msg) { const c = document.getElementById('toast-container'); const el = document.createElement('div'); el.className = 'alert alert-info small py-2 px-3 mb-2'; el.style.cssText = 'min-width:200px;'; el.innerHTML = `<i class="fas fa-check-circle me-1"></i> ${esc(msg)}`; c.appendChild(el); setTimeout(() => el.remove(), 3000); }
+
+        // ===== MOBILE SIDEBAR TOGGLE =====
+        function toggleSidebar(forceState) {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            const isOpen = sidebar.classList.contains('open');
+            const shouldOpen = forceState !== undefined ? forceState : !isOpen;
+            sidebar.classList.toggle('open', shouldOpen);
+            overlay.classList.toggle('open', shouldOpen);
+        }
+
+        // ===== GLOBAL SEARCH =====
+        let globalSearchTimer = null;
+        async function globalSearch(query) {
+            const resultsEl = document.getElementById('global-results');
+            clearTimeout(globalSearchTimer);
+            if (!query || query.length < 2) { resultsEl.classList.remove('show'); return; }
+            globalSearchTimer = setTimeout(async () => {
+                const data = await api('/api/search/global?q=' + encodeURIComponent(query));
+                let html = '';
+                if (data.transactions && data.transactions.length) {
+                    html += '<div class="global-result-section">Transactions</div>';
+                    data.transactions.forEach(t => {
+                        html += `<div class="global-result-item" onclick="navigateTo('transactions',{search:'${esc(query)}'});document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(t.description)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${t.trans_date} | $${fmt(Math.abs(t.amount))} | ${t.category}</div>
+                    </div>`;
+                    });
+                }
+                if (data.notes && data.notes.length) {
+                    html += '<div class="global-result-section">Case Notes</div>';
+                    data.notes.forEach(n => {
+                        html += `<div class="global-result-item" onclick="navigateTo('case-notes');document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(n.title)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${n.note_type} | ${n.severity}</div>
+                    </div>`;
+                    });
+                }
+                if (data.documents && data.documents.length) {
+                    html += '<div class="global-result-section">Documents</div>';
+                    data.documents.forEach(d => {
+                        html += `<div class="global-result-item" onclick="navigateTo('documents');document.getElementById('global-results').classList.remove('show');document.getElementById('global-search').value='';">
+                        <div>${esc(d.filename)}</div>
+                        <div class="text-muted" style="font-size:0.7rem;">${d.doc_category || ''}</div>
+                    </div>`;
+                    });
+                }
+                if (!html) html = '<div class="global-result-item text-muted">No results found</div>';
+                resultsEl.innerHTML = html;
+                resultsEl.classList.add('show');
+            }, 300);
+        }
+        // Close global search on outside click
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.global-search-wrap')) {
+                document.getElementById('global-results').classList.remove('show');
+            }
+        });
+
+        // ===== ALERTS =====
+        async function loadAlerts() {
+            const alerts = await api('/api/alerts');
+            updateAlertBadge(alerts);
+
+            const totalItems = alerts.reduce((s, a) => s + a.count, 0);
+            const dangerCount = alerts.filter(a => a.severity === 'danger').length;
+            document.getElementById('alerts-summary').innerHTML = `
+            <div class="col"><div class="stat-card ${dangerCount > 0 ? 'danger' : 'info'}"><div class="stat-value">${alerts.length}</div><div class="stat-label">Active Alerts</div></div></div>
+            <div class="col"><div class="stat-card warning"><div class="stat-value">${totalItems}</div><div class="stat-label">Items Needing Attention</div></div></div>
+            <div class="col"><div class="stat-card ${dangerCount > 0 ? 'danger' : 'success'}"><div class="stat-value">${dangerCount}</div><div class="stat-label">Critical Alerts</div></div></div>
+        `;
+
+            if (!alerts.length) {
+                document.getElementById('alerts-list').innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-check-circle fa-2x mb-2 text-success"></i><br>All clear! No items need attention.</div>';
+                return;
+            }
+
+            let html = '';
+            alerts.forEach(a => {
+                const icon = a.type === 'uncategorized' ? 'question-circle' : a.type === 'flagged_unreviewed' ? 'flag' : a.type === 'no_cardholder' ? 'user-slash' : a.type === 'unclassified' ? 'tags' : 'dollar-sign';
+                html += `<div class="alert-item" onclick="navigateTo('${a.action}', ${JSON.stringify(a.filters).replace(/"/g, '&quot;')})">
+                <div class="alert-icon ${a.severity}"><i class="fas fa-${icon}"></i></div>
+                <div class="flex-grow-1">
+                    <div class="fw-bold" style="font-size:0.85rem;">${esc(a.title)}</div>
+                    <div class="text-muted" style="font-size:0.75rem;">${esc(a.detail)}</div>
+                </div>
+                <div class="alert-count ${a.severity === 'danger' ? 'text-danger' : a.severity === 'warning' ? 'text-warning' : 'text-info'}">${a.count}</div>
+                <i class="fas fa-chevron-right text-muted"></i>
+            </div>`;
+            });
+            document.getElementById('alerts-list').innerHTML = html;
+        }
+
+        function updateAlertBadge(alerts) {
+            const badge = document.getElementById('alert-badge');
+            if (!alerts) { api('/api/alerts').then(a => updateAlertBadge(a)); return; }
+            const total = alerts.reduce((s, a) => s + a.count, 0);
+            if (total > 0) { badge.textContent = total; badge.style.display = ''; }
+            else { badge.style.display = 'none'; }
+        }
+
+        // ===== CASE NOTES =====
+        let caseNotesData = [];
+        let editingNoteId = null;
+
+        async function loadCaseNotes() {
+            caseNotesData = await api('/api/case-notes');
+            renderCaseNotes();
+        }
+
+        function renderCaseNotes() {
+            const filter = document.getElementById('note-filter')?.value || 'all';
+            let filtered = caseNotesData;
+            if (filter !== 'all') filtered = caseNotesData.filter(n => n.note_type === filter);
+
+            if (!filtered.length) {
+                document.getElementById('case-notes-list').innerHTML = '<div class="text-center text-muted py-4"><i class="fas fa-sticky-note fa-2x mb-2"></i><br>No case notes yet. Click "Add Note" to start documenting your investigation.</div>';
+                return;
+            }
+
+            let html = '';
+            filtered.forEach(n => {
+                const sevIcon = n.severity === 'danger' ? 'exclamation-triangle text-danger' : n.severity === 'warning' ? 'exclamation-circle text-warning' : 'info-circle text-info';
+                const typeLabel = n.note_type.charAt(0).toUpperCase() + n.note_type.slice(1);
+                html += `<div class="note-card ${n.note_type}">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div class="note-title"><i class="fas fa-${sevIcon} me-1"></i> ${esc(n.title)}</div>
+                    <div>
+                        <span class="badge bg-secondary me-1">${typeLabel}</span>
+                        <button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editNote(${n.id})" title="Edit"><i class="fas fa-edit fa-xs"></i></button>
+                        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteNote(${n.id})" title="Delete"><i class="fas fa-trash fa-xs"></i></button>
+                    </div>
+                </div>
+                <div class="note-body">${esc(n.content)}</div>
+                <div class="note-meta"><i class="fas fa-clock me-1"></i> Created: ${(n.created_at || '').substring(0, 16)} | Updated: ${(n.updated_at || '').substring(0, 16)}</div>
+            </div>`;
+            });
+            document.getElementById('case-notes-list').innerHTML = html;
+        }
+
+        function showAddNoteModal() {
+            editingNoteId = null;
+            document.getElementById('noteModalTitle').innerHTML = '<i class="fas fa-sticky-note"></i> Add Note';
+            document.getElementById('note-title').value = '';
+            document.getElementById('note-content').value = '';
+            document.getElementById('note-type').value = 'general';
+            document.getElementById('note-severity').value = 'info';
+            new bootstrap.Modal(document.getElementById('noteModal')).show();
+        }
+
+        function editNote(id) {
+            const note = caseNotesData.find(n => n.id === id);
+            if (!note) return;
+            editingNoteId = id;
+            document.getElementById('noteModalTitle').innerHTML = '<i class="fas fa-edit"></i> Edit Note';
+            document.getElementById('note-title').value = note.title;
+            document.getElementById('note-content').value = note.content;
+            document.getElementById('note-type').value = note.note_type || 'general';
+            document.getElementById('note-severity').value = note.severity || 'info';
+            new bootstrap.Modal(document.getElementById('noteModal')).show();
+        }
+
+        async function saveNote() {
+            const data = {
+                title: document.getElementById('note-title').value,
+                content: document.getElementById('note-content').value,
+                note_type: document.getElementById('note-type').value,
+                severity: document.getElementById('note-severity').value,
+            };
+            if (!data.title || !data.content) { toast('Title and content required'); return; }
+            if (editingNoteId) {
+                await api(`/api/case-notes/${editingNoteId}`, 'PUT', data);
+                toast('Note updated');
+            } else {
+                await api('/api/case-notes', 'POST', data);
+                toast('Note added');
+            }
+            bootstrap.Modal.getInstance(document.getElementById('noteModal')).hide();
+            loadCaseNotes();
+        }
+
+        async function deleteNote(id) {
+            if (!confirm('Delete this note?')) return;
+            await api(`/api/case-notes/${id}`, 'DELETE');
+            toast('Note deleted');
+            loadCaseNotes();
+        }
+
+        // ===== SAVED FILTERS =====
+        async function saveCurrentFilter() {
+            const name = prompt('Name this filter:');
+            if (!name) return;
+            const filters = FilterStore.getState();
+            // Remove view_mode from saved filter as it is a toggle
+            delete filters.view_mode;
+            await api('/api/saved-filters', 'POST', { name, filters });
+            toast('Filter saved');
+            loadSavedFilters();
+        }
+
+        async function loadSavedFilters() {
+            const filters = await api('/api/saved-filters');
+            const bar = document.getElementById('saved-filters-bar');
+            if (!filters.length) { bar.style.display = 'none'; return; }
+            bar.style.display = 'block';
+            let html = '<span class="text-muted small me-2"><i class="fas fa-bookmark me-1"></i>Saved:</span>';
+            filters.forEach(f => {
+                html += `<span class="saved-filter-chip" onclick="applySavedFilter(${f.id})">
+                ${esc(f.name)}
+                <span class="del" onclick="event.stopPropagation();deleteSavedFilter(${f.id})">&times;</span>
+            </span>`;
+            });
+            bar.innerHTML = html;
+        }
+
+        async function applySavedFilter(id) {
+            const filters = await api('/api/saved-filters');
+            const f = filters.find(x => x.id === id);
+            if (!f) return;
+            const parsed = typeof f.filters === 'string' ? JSON.parse(f.filters) : f.filters;
+            drillToTransactions(parsed);
+        }
+
+        async function deleteSavedFilter(id) {
+            await api(`/api/saved-filters/${id}`, 'DELETE');
+            toast('Filter deleted');
+            loadSavedFilters();
+        }
+
+        // ===== PAGINATION =====
+        function updatePagination(total) {
+            const controls = document.getElementById('pagination-controls');
+            if (total <= perPage) {
+                controls.style.display = 'none';
+                return;
+            }
+            controls.style.display = '';
+            document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages} (${total} total)`;
+            document.getElementById('page-first').disabled = currentPage <= 1;
+            document.getElementById('page-prev').disabled = currentPage <= 1;
+            document.getElementById('page-next').disabled = currentPage >= totalPages;
+            document.getElementById('page-last').disabled = currentPage >= totalPages;
+        }
+
+        function goToPage(page) {
+            if (page < 1) page = 1;
+            if (page > totalPages) page = totalPages;
+            currentPage = page;
+            loadTransactions();
+        }
+
+        function changePerPage(val) {
+            perPage = parseInt(val);
+            currentPage = 1;
+            loadTransactions();
+        }
+
+        // ===== EXPORT PDF REPORT =====
+        function exportPDFReport() {
+            toast('Generating PDF report...');
+            window.open('/api/export/report', '_blank');
+        }
+
+        // ===== RECURRING TRANSACTIONS =====
+        async function loadRecurring(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            recurringData = await api('/api/analysis/recurring?' + qs);
+            renderRecurring();
+        }
+
+        function renderRecurring() {
+            const filter = document.getElementById('recurring-filter')?.value || 'all';
+            let filtered = recurringData;
+            if (filter !== 'all') filtered = recurringData.filter(r => r.frequency === filter);
+
+            // Summary
+            const totalRecurring = recurringData.reduce((s, r) => s + r.total_amount, 0);
+            const withFlags = recurringData.filter(r => r.flags.length > 0).length;
+            document.getElementById('recurring-summary').innerHTML = `
+            <div class="col"><div class="stat-card info"><div class="stat-value">${recurringData.length}</div><div class="stat-label">Recurring Patterns</div></div></div>
+            <div class="col"><div class="stat-card danger"><div class="stat-value">$${fmt(totalRecurring)}</div><div class="stat-label">Total Recurring Spend</div></div></div>
+            <div class="col"><div class="stat-card ${withFlags > 0 ? 'warning' : 'success'}"><div class="stat-value">${withFlags}</div><div class="stat-label">Patterns with Flags</div></div></div>
+        `;
+
+            if (!filtered.length) {
+                document.getElementById('recurring-table').innerHTML = '<div class="text-center text-muted py-4">No recurring patterns detected.</div>';
+                return;
+            }
+
+            let html = `<table class="table table-dark-custom"><thead><tr>
+            <th>Description</th><th>Frequency</th><th>Count</th><th>Avg Amount</th><th>Total</th>
+            <th>Amount Consistent</th><th>Period</th><th>Flags</th>
+        </tr></thead><tbody>`;
+
+            filtered.forEach(r => {
+                const flagHtml = r.flags.map(f => `<div class="text-warning" style="font-size:0.7rem;">${esc(f)}</div>`).join('');
+                html += `<tr class="clickable-row" onclick="drillToTransactions({search:'${esc(r.description.substring(0, 20))}'})">
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.description)}">${esc(r.description)}</td>
+                <td><span class="badge bg-secondary">${r.frequency}</span></td>
+                <td>${r.count}</td>
+                <td class="amount-negative">$${fmt(r.avg_amount)}</td>
+                <td class="amount-negative fw-bold">$${fmt(r.total_amount)}</td>
+                <td>${r.amount_consistent ? '<i class="fas fa-check text-success"></i> Yes' : '<i class="fas fa-times text-muted"></i> Varies'}</td>
+                <td style="font-size:0.72rem;">${r.first_date} to ${r.last_date}</td>
+                <td>${flagHtml || '<span class="text-muted">-</span>'}</td>
+            </tr>`;
+            });
+
+            html += '</tbody></table>';
+            document.getElementById('recurring-table').innerHTML = html;
+        }
+
+        // ===== CARDHOLDER TIMELINE COMPARISON =====
+        async function loadCardholderTimeline(filters) {
+            if (!filters) filters = FilterStore.getState();
+            const qs = serializeFilters(filters);
+            const data = await api('/api/analysis/cardholder-timeline?' + qs);
+            renderCardholderTimeline(data);
+        }
+
+        function renderCardholderTimeline(data) {
+            const cardholders = Object.keys(data);
+            if (!cardholders.length) {
+                document.getElementById('cardholder-timeline-table').innerHTML = '<div class="text-center text-muted py-4">No cardholder data available.</div>';
+                return;
+            }
+
+            // Collect all unique months
+            const allMonths = new Set();
+            cardholders.forEach(ch => data[ch].forEach(d => allMonths.add(d.month)));
+            const months = [...allMonths].sort();
+
+            // Chart colors
+            const chartColors = ['#f85149', '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#fd7e14'];
+
+            // Spending overlay chart
+            const ctx1 = document.getElementById('cardholder-timeline-chart');
+            if (cardholderTimelineChart) cardholderTimelineChart.destroy();
+            cardholderTimelineChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: months,
+                    datasets: cardholders.map((ch, i) => {
+                        const monthMap = {};
+                        data[ch].forEach(d => { monthMap[d.month] = d.spent; });
+                        return {
+                            label: ch,
+                            data: months.map(m => monthMap[m] || 0),
+                            borderColor: chartColors[i % chartColors.length],
+                            backgroundColor: chartColors[i % chartColors.length] + '20',
+                            fill: true,
+                            tension: 0.3,
+                            pointRadius: 3,
+                        };
+                    })
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#8b949e' } } },
+                    scales: {
+                        x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+                        y: { ticks: { color: '#8b949e', callback: v => '$' + (v / 1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                    },
+                    interaction: { mode: 'index', intersect: false },
+                    onClick: (e, activeEls) => {
+                        if (activeEls.length > 0) {
+                            const idx = activeEls[0].index;
+                            const month = months[idx];
+                            // Get which dataset (cardholder) was clicked specifically
+                            const datasetIdx = activeEls[0].datasetIndex;
+                            const cardholder = cardholders[datasetIdx];
+
+                            const handler = window.createDrilldownHandler({
+                                sourceTab: 'analysis',
+                                widgetId: 'cardholder-timeline-chart',
+                                defaultTarget: DrilldownTarget.TRANSACTIONS,
+                                breadcrumbLabel: 'Analysis',
+                                breadcrumbStore: window.GlobalBreadcrumbs,
+                                getState: () => FilterStore.getState(),
+                                onLogEvent: window.logDrilldownEvent,
+                                onNavigate: (target, nextFilters) => {
+                                    FilterStore.replace(nextFilters);
+                                    window.navigateTo(target.toLowerCase());
+                                }
+                            });
+
+                            handler({ filters: { cardholder: cardholder, date_from: month + '-01', date_to: month + '-31' } });
+                        }
+                    }
+                }
+            });
+
+            // Personal vs Business stacked bar
+            const ctx2 = document.getElementById('personal-business-chart');
+            if (personalBusinessChart) personalBusinessChart.destroy();
+            personalBusinessChart = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: cardholders,
+                    datasets: [
+                        {
+                            label: 'Personal',
+                            data: cardholders.map(ch => data[ch].reduce((s, d) => s + d.personal, 0)),
+                            backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3
+                        },
+                        {
+                            label: 'Business',
+                            data: cardholders.map(ch => data[ch].reduce((s, d) => s + (d.spent - d.personal), 0)),
+                            backgroundColor: 'rgba(88,166,255,0.7)', borderRadius: 3
+                        },
+                        {
+                            label: 'Transfers',
+                            data: cardholders.map(ch => data[ch].reduce((s, d) => s + d.transfers, 0)),
+                            backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#8b949e', font: { size: 10 } } } },
+                    scales: {
+                        x: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+                        y: { stacked: true, ticks: { color: '#8b949e', callback: v => '$' + (v / 1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                    },
+                    onClick: (e, activeEls) => {
+                        if (activeEls.length > 0) {
+                            const idx = activeEls[0].index;
+                            const cardholder = cardholders[idx];
+                            const datasetIdx = activeEls[0].datasetIndex;
+                            const segment = ['is_personal', 'is_business', 'is_transfer'][datasetIdx];
+
+                            const filters = { cardholder: cardholder };
+                            if (segment === 'is_personal') filters.is_personal = '1';
+                            if (segment === 'is_business') filters.is_business = '1';
+                            if (segment === 'is_transfer') filters.is_transfer = '1';
+
+                            const handler = window.createDrilldownHandler({
+                                sourceTab: 'analysis',
+                                widgetId: 'personal-business-chart',
+                                defaultTarget: DrilldownTarget.TRANSACTIONS,
+                                breadcrumbLabel: 'Analysis',
+                                breadcrumbStore: window.GlobalBreadcrumbs,
+                                getState: () => FilterStore.getState(),
+                                onLogEvent: window.logDrilldownEvent,
+                                onNavigate: (target, nextFilters) => {
+                                    FilterStore.replace(nextFilters);
+                                    window.navigateTo(target.toLowerCase());
+                                }
+                            });
+
+                            handler({ filters: filters });
+                        }
+                    }
+                }
+            });
+
+            // Detail table
+            let tHtml = '<table class="table table-dark-custom"><thead><tr><th>Month</th>';
+            cardholders.forEach(ch => { tHtml += `<th>${esc(ch)}</th>`; });
+            tHtml += '</tr></thead><tbody>';
+            months.forEach(m => {
+                tHtml += `<tr><td class="fw-bold">${m}</td>`;
+                cardholders.forEach(ch => {
+                    const d = data[ch].find(x => x.month === m);
+                    tHtml += `<td class="amount-negative" style="cursor:pointer;" onclick="drillToTransactions({cardholder:'${esc(ch)}', date_from:'${m}-01', date_to:'${m}-31'})" title="View transactions">$${fmt(d ? d.spent : 0)}</td>`;
+                });
+                tHtml += '</tr>';
+            });
+            // Totals row
+            tHtml += '<tr class="fw-bold" style="border-top:2px solid #58a6ff;"><td>TOTAL</td>';
+            cardholders.forEach(ch => {
+                const total = data[ch].reduce((s, d) => s + d.spent, 0);
+                tHtml += `<td class="amount-negative">$${fmt(total)}</td>`;
+            });
+            tHtml += '</tr></tbody></table>';
+            document.getElementById('cardholder-timeline-table').innerHTML = tHtml;
+        }
+
+        // ===== CHART.JS RENDERING =====
+        let monthlyChart = null;
+        let categoryChart = null;
+
+        function renderDashboardCharts(stats) {
+            const monthly = stats.monthly_trend || [];
+            const categories = stats.by_category || [];
+
+            // Monthly Cash Flow Bar Chart
+            const mCtxContainer = document.getElementById('monthly-chart')?.parentNode;
+            if (mCtxContainer) {
+                if (monthlyChart) { monthlyChart.destroy(); monthlyChart = null; }
+                if (monthly.length === 0) {
+                    mCtxContainer.innerHTML = '<div class="text-center text-muted d-flex align-items-center justify-content-center" style="height:100%;min-height:200px;"><i class="fas fa-chart-bar me-2"></i> No monthly data available.</div><canvas id="monthly-chart" style="display:none;"></canvas>';
+                } else {
+                    mCtxContainer.innerHTML = '<canvas id="monthly-chart"></canvas>';
+                    const mCtx = document.getElementById('monthly-chart');
+                    monthlyChart = new Chart(mCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: monthly.map(m => m.month),
+                            datasets: [
+                                { label: 'Deposits', data: monthly.map(m => m.deposits), backgroundColor: 'rgba(63,185,80,0.7)', borderRadius: 3 },
+                                { label: 'Withdrawals', data: monthly.map(m => m.withdrawals), backgroundColor: 'rgba(248,81,73,0.7)', borderRadius: 3 },
+                                { label: 'Transfers Out', data: monthly.map(m => m.transfers_out), backgroundColor: 'rgba(210,153,34,0.7)', borderRadius: 3 },
+                            ]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
+                            scales: {
+                                x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+                                y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => '$' + (v / 1000).toFixed(0) + 'k' }, grid: { color: '#21262d' } }
+                            },
+                            onClick: (e, activeEls) => {
+                                if (activeEls.length > 0) {
+                                    const idx = activeEls[0].index;
+                                    const month = monthly[idx].month;
+                                    drillToMonth(month);
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Category Doughnut Chart
+            const cCtxContainer = document.getElementById('category-chart')?.parentNode;
+            if (cCtxContainer) {
+                if (categoryChart) { categoryChart.destroy(); categoryChart = null; }
+                const topCats = categories.filter(c => c.spent > 0).slice(0, 8);
+                if (topCats.length === 0) {
+                    cCtxContainer.innerHTML = '<div class="text-center text-muted d-flex align-items-center justify-content-center" style="height:100%;min-height:200px;"><i class="fas fa-chart-pie me-2"></i> No category spending available.</div><canvas id="category-chart" style="display:none;"></canvas>';
+                } else {
+                    cCtxContainer.innerHTML = '<canvas id="category-chart"></canvas>';
+                    const cCtx = document.getElementById('category-chart');
+                    const colors = ['#f85149', '#d29922', '#58a6ff', '#3fb950', '#bc8cff', '#fd7e14', '#3d95ce', '#8b949e'];
+                    categoryChart = new Chart(cCtx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: topCats.map(c => c.category),
+                            datasets: [{ data: topCats.map(c => c.spent), backgroundColor: colors.slice(0, topCats.length), borderWidth: 0 }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 12, padding: 6 } },
+                                tooltip: { callbacks: { label: (ctx) => `${ctx.label}: $${fmt(ctx.raw)}` } }
+                            },
+                            onClick: (e, activeEls) => {
+                                if (activeEls.length > 0) {
+                                    const idx = activeEls[0].index;
+                                    const cat = topCats[idx].category;
+
+                                    const handler = window.createDrilldownHandler({
+                                        sourceTab: 'dashboard',
+                                        widgetId: 'category-chart',
+                                        defaultTarget: DrilldownTarget.TRANSACTIONS,
+                                        breadcrumbLabel: 'Dashboard',
+                                        breadcrumbStore: window.GlobalBreadcrumbs,
+                                        getState: () => FilterStore.getState(),
+                                        onLogEvent: logDrilldownEvent,
+                                        onNavigate: (target, nextFilters) => {
+                                            FilterStore.replace(nextFilters);
+                                            navigateTo(target.toLowerCase());
+                                        }
+                                    });
+
+                                    handler({ filters: { category: cat } });
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        // ===== RUNNING BALANCE PER ACCOUNT =====
+        async function showRunningBalance(accountId, accountName) {
+            const data = await api(`/api/accounts/${accountId}/balance`);
+            let html = `<div class="card-dark mt-3 mb-3">
+            <div class="card-header"><i class="fas fa-chart-area me-1"></i> Running Balance: ${esc(accountName)}
+                <button class="btn btn-sm btn-outline-light py-0 px-1 float-end" onclick="this.closest('.card-dark').remove()"><i class="fas fa-times fa-xs"></i></button>
+            </div>
+            <div class="scrollable-table"><table class="table table-dark-custom"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Balance</th></tr></thead><tbody>`;
+            data.forEach(t => {
+                html += `<tr>
+                <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date}</td>
+                <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
+                <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                <td>${t.category}</td>
+                <td class="${t.running_balance < 0 ? 'amount-negative' : 'amount-positive'} fw-bold">$${fmt(Math.abs(t.running_balance))}</td>
+            </tr>`;
+            });
+            if (!data.length) html += '<tr><td colspan="5" class="text-muted text-center py-3">No transactions for this account.</td></tr>';
+            html += '</tbody></table></div></div>';
+            document.getElementById('accounts-content').insertAdjacentHTML('beforeend', html);
+        }
+
+        // ===== ON POP STATE (Browser Back/Forward) =====
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.page) {
+                isNavigatingBack = true;
+                window.FilterStore.replace(e.state.filters || {});
+                navigateTo(e.state.page, true, false);
+            }
+        });
+
+        // ===== AUTH =====
+        async function fetchUserProfile() {
+            try {
+                const res = await fetch('/api/auth/me');
+                if (res.ok) {
+                    const user = await res.json();
+
+                    // Sidebar
+                    const sidebarInfo = document.getElementById('sidebar-user-info');
+                    if (sidebarInfo) {
+                        let companyOptions = user.companies ? user.companies.map(c => `<option value="${c.id}" ${c.id === user.active_company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '';
+
+                        sidebarInfo.innerHTML = `
+                            <div class="mt-2 mb-2">
+                                <select class="form-select form-select-sm" style="background-color: rgba(255,255,255,0.05); color: #c9d1d9; border-color: rgba(255,255,255,0.1);" onchange="switchCompany(this.value)">
+                                    ${companyOptions}
+                                    <option disabled>──────────</option>
+                                    <option value="NEW_COMPANY">+ Create New Workspace</option>
+                                </select>
+                            </div>
+                            <div style="color: #58a6ff; font-weight: 600; font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
+                                <span class="text-truncate" style="max-width: 180px;"><i class="fas fa-user-circle me-1"></i> ${esc(user.email)}</span>
+                                <i class="fas fa-sign-out-alt ms-1 text-muted hover-white"></i>
+                            </div>
+                        `;
+                    }
+
+                    // Top Bar
+                    const topProfile = document.getElementById('top-user-profile');
+                    if (topProfile) {
+                        let companyOptions = user.companies ? user.companies.map(c => `<option value="${c.id}" ${c.id === user.active_company_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') : '';
+
+                        topProfile.style.display = 'flex';
+                        topProfile.innerHTML = `
+                            <div class="me-3">
+                                <select class="form-select form-select-sm" style="background-color: transparent; color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); outline: none;" onchange="switchCompany(this.value)">
+                                    ${companyOptions}
+                                    <option disabled>──────────</option>
+                                    <option value="NEW_COMPANY">+ Create New Workspace</option>
+                                </select>
+                            </div>
+                            <div style="color: #58a6ff; font-weight: 600; font-size: 0.9rem; cursor: pointer; transition: color 0.2s; display: flex; align-items: center;" onmouseover="this.style.color='#79c0ff'" onmouseout="this.style.color='#58a6ff'" onclick="logout()" title="Click to sign out">
+                                <i class="fas fa-user-circle me-2 fs-5"></i>
+                                <span class="d-none d-sm-inline">${esc(user.email)}</span>
+                                <i class="fas fa-sign-out-alt ms-2 text-muted"></i>
+                            </div>
+                        `;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to fetch user', e);
+            }
+        }
+
+        async function switchCompany(companyId) {
+            if (companyId === 'NEW_COMPANY') {
+                const name = prompt("Enter a name for the new workspace:");
+                if (!name) return fetchUserProfile();
+
+                try {
+                    const res = await fetch('/api/business/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: name })
+                    });
+                    if (res.ok) window.location.reload();
+                    else alert('Failed to create workspace.');
+                } catch (e) {
+                    alert('Error creating workspace.');
+                }
+                return;
+            }
+            try {
+                const res = await fetch('/api/business/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_id: companyId })
+                });
+                if (res.ok) {
+                    window.location.reload(); // Hard flush everything
+                } else {
+                    alert('Failed to switch workspace context.');
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function logout() {
+            try {
+                // 1. Clear local auth state entirely
+                localStorage.removeItem('auth_token');
+                sessionStorage.clear();
+
+                // 2. Destroy Flask-Login session
+                await fetch('/api/auth/logout', { method: 'POST' });
+
+                // 3. Navigate back to login
+                window.location.href = '/login';
+            } catch (e) {
+                console.error('Logout failed', e);
+                window.location.href = '/login';
+            }
+        }
+
+        // ===== INIT =====
+        (async () => {
+            fetchUserProfile();
+            allCategories = await api('/api/categories');
+            loadDashboard();
+            updateAlertBadge();
+            loadSavedFilters();
+        })();
+        // ===== AI ADVISOR LOGIC =====
+        function loadAdvisorStatus() {
+            fetch('/api/advisor/status', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const s = data.advisor_state;
+                        if (s.execution_status === 'running' || s.has_cache === 1 || s.execution_status === 'queued' || s.needs_refresh === 1) {
+                            runAdvisorAnalysis(false);
+                        } else if (s.execution_status === 'failed') {
+                            $('#advisor-loading-state, #advisor-results-state').hide();
+                            $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-exclamation-triangle fs-1 text-danger mb-3 d-block"></i><h4>Analysis Failed</h4><p class="text-secondary">The background worker encountered an error during orchestration.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Analysis</button></div>`).show();
+                        } else {
+                            $('#advisor-loading-state, #advisor-results-state').hide();
+                            $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-brain text-purple mb-3 d-block" style="font-size: 2.5rem; opacity: 0.6;"></i><h4>No AI Analysis Exists</h4><p class="text-muted small">The AI Advisor has not evaluated this company's workspace yet.<br>Ensure you have categorized transactions and uploaded documents, then run the analysis.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-magic"></i> Run AI Analysis</button></div>`).show();
+                        }
+                    }
+                })
+                .catch(err => console.error("Error fetching advisor status:", err));
+        }
+
+        function runAdvisorAnalysis(isManual = false) {
+            if (isManual) {
+                $('#advisor-empty-state').hide();
+                $('#advisor-loading-state').show();
+            }
+
+            fetch('/api/advisor/aggregate', { credentials: 'include' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success' && data.data) {
+                        $('#advisor-loading-state').hide();
+                        $('#advisor-results-state').show();
+                        renderAdvisorResults(data.data);
+                    } else if (data.status === 'running') {
+                        $('#advisor-empty-state').hide();
+                        $('#advisor-loading-state').show();
+
+                        // Safely preserve old state if UX permits
+                        if (data.data) {
+                            $('#advisor-results-state').show();
+                            renderAdvisorResults(data.data);
+                        }
+
+                        let pTag = $('#advisor-loading-state p.text-muted');
+                        if (pTag.length) {
+                            pTag.text(data.message || "Applying deterministic multi-factor models. Please wait...");
+                        }
+                        setTimeout(() => runAdvisorAnalysis(false), 3000);
+                    } else {
+                        $('#advisor-loading-state').hide();
+                        $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-server fs-1 text-muted mb-3 d-block"></i><h4>Advisor Unavailable</h4><p class="text-secondary">${data.message || 'Insufficient data or permissions to complete analysis.'}</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Analysis</button></div>`).show();
+                    }
+                })
+                .catch(err => {
+                    $('#advisor-loading-state').hide();
+                    $('#advisor-empty-state').html(`<div class="text-center p-5"><i class="fas fa-wifi fs-1 text-muted mb-3 d-block"></i><h4>Connection Error</h4><p class="text-secondary">Failed to reach the AI Advisor orchestration engine.</p><button class="btn btn-purple mt-3" onclick="runAdvisorAnalysis(true)"><i class="fas fa-redo"></i> Retry Connection</button></div>`).show();
+                    console.error('Advisor error:', err);
+                });
+        }
+
+        function renderAdvisorResults(payload) {
+            // Exec Summary
+            const exec = payload.executive_summary;
+            const execContainer = $('#page-advisor .card-header:contains("Executive Summary")').next();
+            execContainer.removeClass('placeholder-glow');
+            if (exec.status === 'success') {
+                execContainer.html(`
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p class="mb-1 text-muted small">Date Range</p>
+                            <h6 class="text-white">${exec.data.date_range}</h6>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <p class="mb-1 text-muted small">Global Risk Score</p>
+                            <h6 class="text-danger fw-bold">${payload.risk_scoring ? payload.risk_scoring.fraud_probability : exec.data.risk_score} <span class="text-muted" style="font-size:10px;">/ 100</span></h6>
+                        </div>
+                    </div>
+                `);
+            } else {
+                execContainer.html(`<div class="alert alert-secondary border-0 mb-0 py-2">${exec.message || 'No summary available.'}</div>`);
+            }
+
+            // Universal render function
+            const renderArray = (headerText, findingsArr) => {
+                const container = $('#page-advisor .card-header:contains("' + headerText + '")').next();
+                if (!findingsArr || findingsArr.length === 0 || findingsArr[0].status === 'insufficient_evidence') {
+                    container.html(`<div class="text-muted small p-2"><i class="fas fa-info-circle"></i> ${findingsArr && findingsArr.length ? findingsArr[0].message : 'No findings.'}</div>`);
+                    return;
+                }
+
+                let html = '<div class="px-2 pb-2">';
+                if (headerText === "Scenario Simulator") {
+                    html += `<div class="alert alert-warning py-1 mx-2 mb-3 mt-2" style="font-size:0.75rem;"><i class="fas fa-balance-scale"></i> <strong>LEGAL DISCLAIMER:</strong> All scenarios are entirely hypothetical simulations based on aggregated SQL limits. They do not alter source documents or ledger histories.</div>`;
+                }
+
+                findingsArr.forEach(f => {
+                    // map impact logic for scenarios
+                    let diffBadge = '';
+                    if (f.net_difference) {
+                        diffBadge = `<span class="badge bg-success float-end">+ $${f.net_difference.toLocaleString()}</span>`;
+                    }
+
+                    html += `
+                        <div class="mb-2 p-2 border rounded border-secondary" style="background: rgba(255,255,255,0.02)">
+                            <strong class="text-${f.severity || 'info'} d-block mb-1" style="font-size:0.85rem;">
+                                <i class="fas fa-circle" style="font-size:6px; vertical-align:middle;"></i> ${f.title}
+                                ${diffBadge}
+                            </strong>
+                            <div class="small fw-light text-light">${f.explanation || f.description}</div>
+                            ${f.evidence_links && f.evidence_links.length > 0 ? `<div class="mt-1" style="font-size: 0.70rem; color: #8b949e;"><i class="fas fa-link"></i> Traceable Nodes: ${f.evidence_links.length} indices</div>` : ''}
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                container.html(html);
+            };
+
+            // Inject arrays
+            renderArray("Fraud & Red Flags", payload.fraud_red_flags);
+            renderArray("Key Findings", payload.key_findings);
+            renderArray("Document Intelligence", payload.document_intelligence);
+            renderArray("Internal Controls", payload.internal_controls);
+            renderArray("Scenario Simulator", payload.scenario_simulator);
+
+            // Audit Appendix
+            const appx = payload.audit_ready_appendix;
+            if (appx && appx.status === 'ready') {
+                $('#page-advisor .card-header:contains("Appendix")').next().html(`
+                    <div style="font-family: monospace;">
+                        <span class="text-success d-block mb-1">SYSTEM STATUS: TRACEABILITY LOCK MAINTAINED</span>
+                        <div class="mt-2 text-muted">traced_documents: [${appx.traced_documents.join(', ')}]</div>
+                        <div class="mt-1 text-muted">flagged_anchors: [${appx.flagged_anchors.join(', ')}]</div>
+                        <div class="mt-1 text-muted">active_ledgers: [${appx.active_accounts.join(', ')}]</div>
+                    </div>
+                `);
+            }
+        }
+
+    

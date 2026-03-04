@@ -1,0 +1,11 @@
+2026-03-02 11:24:18 [INFO] [req_id:23d15460-11da-40ed-b61c-242f11d5d8cf] POST /api/upload/preview - Status: 200 - Latency: 41.82ms
+2026-03-02 11:24:20 [INFO] [req_id:6003faf5-fd54-4224-a3aa-d0ddae4b84c8] POST /api/upload/preview - Status: 200 - Latency: 6.89ms
+2026-03-02 11:24:20 [INFO] [req_id:6f89c7a4-54e1-45da-a5c4-b9fe90969d4b] POST /api/upload/preview - Status: 400 - Latency: 4.33ms
+2026-03-02 11:24:20 [INFO] [req_id:56672d26-96bc-4d34-9d02-a1343e4e20be] POST /api/upload/preview - Status: 200 - Latency: 18.22ms
+=== TESTING .QBW PIPELINE ===
+[PASS] Valid >1KB .qbw upload is safely staged.
+[PASS] QBW successfully routed to an explicit actionable failed state.
+[PASS] Duplicate prevention correctly caught duplicate .qbw file.
+[PASS] Invalid <1KB .qbw upload is safely rejected.
+[PASS] Traditional file uploads (.csv) remain completely unaffected.
+=== ALL TESTS PASSED ===
