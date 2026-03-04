@@ -13,6 +13,14 @@ text = re.sub(
 # Replace cursor.lastrowid
 text = text.replace('cursor.lastrowid', "cursor.fetchone()['id']")
 
+# Remove the recursive duplicate close_db that gets generated from SQLite's helpers
+bad_close_db = '''
+def close_db(conn):
+    if conn:
+        close_db(conn)
+'''
+text = text.replace(bad_close_db, '')
+
 # Also handle "RETURNING id" being duplicated inside scripts if run twice
 text = text.replace('RETURNING id RETURNING id', 'RETURNING id')
 

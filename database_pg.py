@@ -76,10 +76,6 @@ def close_db(conn):
         _pg_pool.putconn(conn)
 
 
-def close_db(conn):
-    if conn:
-        close_db(conn)
-
 
 def init_db():
     """Initialize all database tables."""
