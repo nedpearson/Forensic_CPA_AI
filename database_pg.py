@@ -983,7 +983,7 @@ def add_case_note(user_id, title, content, note_type='general', severity='info',
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("INSERT INTO fcpa_case_notes (user_id, title, content, note_type, severity, linked_transaction_ids) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id", (user_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or [])))
-    note_id = cursor.fetchone()[\'id\']
+    note_id = cursor.fetchone()['id']
     conn.commit()
     close_db(conn)
     return note_id
@@ -1029,7 +1029,7 @@ def add_saved_filter(user_id, name, filters):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s) RETURNING id", (user_id, name, json.dumps(filters)))
-    fid = cursor.fetchone()[\'id\']
+    fid = cursor.fetchone()['id']
     conn.commit()
     close_db(conn)
     return fid
@@ -1233,7 +1233,7 @@ def add_taxonomy_config(user_id, name, description, category_type, severity):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("INSERT INTO fcpa_taxonomy_config (user_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s) RETURNING id", (user_id, name, description, category_type, severity))
-    _id = cursor.fetchone()[\'id\']
+    _id = cursor.fetchone()['id']
         conn.commit()
         return _id
     except psycopg2.IntegrityError:
