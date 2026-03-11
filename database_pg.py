@@ -1810,13 +1810,17 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
         return where, params
 
     if filters.get('date_from'):
+        val = filters['date_from']
+        if len(val) == 10: val += " 00:00:00"
         where += f" AND {prefix}trans_date >= %s"
-        params.append(filters['date_from'])
+        params.append(val)
     if filters.get('date_to'):
+        val = filters['date_to']
+        if len(val) == 10: val += " 23:59:59"
         where += f" AND {prefix}trans_date <= %s"
-        params.append(filters['date_to'])
+        params.append(val)
     if filters.get('cardholder'):
-        where += f" AND {prefix}cardholder_name LIKE %s"
+        where += f" AND {prefix}cardholder_name ILIKE %s"
         params.append(f"%{filters['cardholder']}%")
     if filters.get('card_last_four'):
         where += f" AND {prefix}card_last_four = %s"
@@ -1841,8 +1845,19 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
     if str(filters.get('is_transfer')) == '1':
         where += f" AND {prefix}is_transfer = 1"
     if filters.get('search'):
-        where += f" AND {prefix}description LIKE %s"
-        params.append(f"%{filters['search']}%")
+        st = f"%{filters['search']}%"
+        where += f""" AND (
+            {prefix}description ILIKE %s OR 
+            {prefix}category ILIKE %s OR 
+            {prefix}subcategory ILIKE %s OR 
+            {prefix}cardholder_name ILIKE %s OR 
+            {prefix}payment_method ILIKE %s OR 
+            {prefix}check_number ILIKE %s OR 
+            {prefix}flag_reason ILIKE %s OR 
+            {prefix}user_notes ILIKE %s OR
+            {prefix}account_id IN (SELECT id FROM fcpa_accounts WHERE account_name ILIKE %s AND user_id = %s AND company_id = %s)
+        )"""
+        params.extend([st] * 9 + [user_id, company_id])
     if filters.get('min_amount'):
         where += f" AND ABS({prefix}amount) >= %s"
         params.append(float(filters['min_amount']))

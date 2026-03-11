@@ -383,12 +383,23 @@ def detect_deposit_transfer_patterns(user_id, filters=None):
     """, params)
     deposits = [dict(r) for r in cursor.fetchall()]
 
+    # To find transfers out that correspond to these deposits, 
+    # we should not restrict the transfers by the user's specific search string, amounts, or categories.
+    # We only restrict them by user, company, account, and a padded date range.
+    transfer_filters = {}
+    if filters:
+        if 'date_from' in filters: transfer_filters['date_from'] = filters['date_from']
+        if 'date_to' in filters: transfer_filters['date_to'] = _add_days(filters['date_to'][:10], 7)
+        if 'account_id' in filters: transfer_filters['account_id'] = filters['account_id']
+        
+    t_where, t_params = build_filter_clause(user_id, transfer_filters)
+
     # Get all transfers out ordered by date
     cursor.execute(f"""
         SELECT * FROM transactions
-        {where} AND is_transfer = 1 AND amount < 0
+        {t_where} AND is_transfer = 1 AND amount < 0
         ORDER BY trans_date
-    """, params)
+    """, t_params)
     transfers = [dict(r) for r in cursor.fetchall()]
 
     patterns = []

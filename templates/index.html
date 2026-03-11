@@ -1511,7 +1511,8 @@
                     <div class="col">
                         <label class="form-label small text-muted mb-0">Keyword Search</label>
                         <input type="text" class="form-control form-control-sm" id="analysis-search"
-                            placeholder="Coming Phase 2" disabled>
+                            placeholder="Search (e.g. Venmo, James)"
+                            onkeydown="if(event.key==='Enter') readAnalysisFilters()">
                     </div>
                     <div class="col">
                         <label class="form-label small text-muted mb-0">Start Date</label>
@@ -1541,21 +1542,52 @@
             </div>
 
             <div class="card-dark mb-3">
-                <div class="card-header" style="background:rgba(248,81,73,0.1);">
-                    <span><i class="fas fa-exchange-alt text-danger me-1"></i> Deposit-to-Transfer Tracking</span>
-                    <small class="text-muted">Deposits followed by outbound transfers within 7 days</small>
+                <div class="card-header d-flex justify-content-between align-items-center"
+                    style="background:rgba(248,81,73,0.1);">
+                    <div>
+                        <span><i class="fas fa-exchange-alt text-danger me-1"></i> Deposit-to-Transfer Tracking</span>
+                        <span class="badge bg-secondary ms-2" id="dt-count"></span>
+                        <div class="small text-muted mt-1">Deposits followed by outbound transfers within 7 days</div>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-info shadow-sm" id="btn-export-dt"
+                            onclick="exportDepositTransfersCSV()">
+                            <i class="fas fa-download"></i> Export CSV
+                        </button>
+                    </div>
                 </div>
                 <div class="scrollable-table" id="deposit-transfer-analysis"></div>
             </div>
 
             <div class="card-dark mb-3">
-                <div class="card-header"><i class="fas fa-flag text-danger me-1"></i> All Flagged Transactions</div>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="fas fa-flag text-danger me-1"></i> All Flagged Transactions
+                        <span class="badge bg-secondary ms-2" id="flagged-count"></span>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-info shadow-sm" id="btn-export-flagged"
+                            onclick="exportFlaggedTransactionsCSV()">
+                            <i class="fas fa-download"></i> Export CSV
+                        </button>
+                    </div>
+                </div>
                 <div class="scrollable-table" id="flagged-transactions"></div>
             </div>
 
             <div class="card-dark mb-3">
-                <div class="card-header"><i class="fas fa-hand-holding-usd text-warning me-1"></i> Venmo Payment
-                    Analysis</div>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="fas fa-hand-holding-usd text-warning me-1"></i> Venmo Payment Analysis
+                        <span class="badge bg-secondary ms-2" id="venmo-count"></span>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-info shadow-sm" id="btn-export-venmo"
+                            onclick="exportVenmoAnalysisCSV()">
+                            <i class="fas fa-download"></i> Export CSV
+                        </button>
+                    </div>
+                </div>
                 <div class="scrollable-table" id="venmo-analysis"></div>
             </div>
         </div>
@@ -3857,18 +3889,18 @@
         // ===== FORENSIC ANALYSIS =====
         function readAnalysisFilters() {
             const filters = FilterStore.getState();
-            // We do NOT pull from category or search in Phase 1 per requirements
-            // Keyword search is disabled in UI but ready for Phase 2 state
-            
+
             const fromDate = document.getElementById('analysis-date-from').value;
             const toDate = document.getElementById('analysis-date-to').value;
             const typeValue = document.getElementById('analysis-type').value;
+            const searchValue = document.getElementById('analysis-search').value;
 
             const newFilters = {
                 ...filters,
                 date_from: fromDate || null,
                 date_to: toDate || null,
-                trans_type: typeValue || null
+                trans_type: typeValue || null,
+                search: searchValue || null
             };
 
             FilterStore.setState(newFilters);
@@ -3878,9 +3910,8 @@
             document.getElementById('analysis-date-from').value = '';
             document.getElementById('analysis-date-to').value = '';
             document.getElementById('analysis-type').value = '';
-            // Disabled search box clears explicitly in preparation for Phase 2
             document.getElementById('analysis-search').value = '';
-            
+
             readAnalysisFilters();
         }
 
@@ -3890,31 +3921,33 @@
             if (document.activeElement.id !== 'analysis-date-from' && document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = state.date_from || '';
             if (document.activeElement.id !== 'analysis-date-to' && document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = state.date_to || '';
             if (document.activeElement.id !== 'analysis-type' && document.getElementById('analysis-type')) document.getElementById('analysis-type').value = state.trans_type || '';
+            if (document.activeElement.id !== 'analysis-search' && document.getElementById('analysis-search')) document.getElementById('analysis-search').value = state.search || '';
         });
-        
+
 
         let dtTable, flTable, vTable;
 
         async function loadAnalysis(filters) {
             if (!filters) filters = FilterStore.getState();
 
-            // Strip out restrictive drilldown filters for the deposit analysis so it isn't starved of deposits
-            const safeFilters = { ...filters };
             // Populate the UI based on state
-            if (document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = safeFilters.date_from || '';
-            if (document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = safeFilters.date_to || '';
-            if (document.getElementById('analysis-type')) document.getElementById('analysis-type').value = safeFilters.trans_type || '';
-            delete safeFilters.category;
-            delete safeFilters.trans_type;
-            delete safeFilters.search;
-            const safeQs = serializeFilters(safeFilters);
+            if (document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = filters.date_from || '';
+            if (document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = filters.date_to || '';
+            if (document.getElementById('analysis-type')) document.getElementById('analysis-type').value = filters.trans_type || '';
+            if (document.getElementById('analysis-search')) document.getElementById('analysis-search').value = filters.search || '';
 
-            // Deposit-transfer patterns
-            const patterns = await api('/api/analysis/deposit-transfers?' + safeQs);
+            // We strip 'category' because we apply Venmo category explicitly below.
+            const queryFilters = { ...filters };
+            delete queryFilters.category;
+
+            const safeQs = serializeFilters(queryFilters);
+            const viewModeQs = getViewModeParam().replace('?', '&') || '';
+
+            // 1. Deposit-Transfer Patterns
             if (!dtTable) {
                 dtTable = new DataTable({
                     containerId: 'deposit-transfer-analysis',
-                    emptyMessage: 'No patterns detected. Upload bank statements to analyze.',
+                    emptyMessage: 'No patterns detected for current filters.',
                     columns: [
                         { key: 'deposit.trans_date', label: 'Deposit Date', sortable: true, type: 'date' },
                         { key: 'deposit_amount', label: 'Deposit Amt', sortable: true, type: 'number' },
@@ -3930,18 +3963,27 @@
                     }
                 });
             }
-            patterns.forEach(p => {
-                p.transfers_html = p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('');
-            });
-            dtTable.updateData(patterns);
 
-            // Flagged
-            const flagged = await api('/api/transactions?is_flagged=1' + getViewModeParam());
-            window._flaggedTrans = flagged;
+            // Skip patterns if trans_type='transfer' since patterns require deposits
+            if (filters.trans_type === 'transfer') {
+                document.getElementById('dt-count').innerText = 0;
+                window._depositTransfers = [];
+                dtTable.updateData([]);
+            } else {
+                const patterns = await api('/api/analysis/deposit-transfers?' + safeQs + viewModeQs);
+                patterns.forEach(p => {
+                    p.transfers_html = p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('');
+                });
+                document.getElementById('dt-count').innerText = patterns.length;
+                window._depositTransfers = patterns;
+                dtTable.updateData(patterns);
+            }
+
+            // 2. Flagged Transactions
             if (!flTable) {
                 flTable = new DataTable({
                     containerId: 'flagged-transactions',
-                    emptyMessage: 'No flagged transactions',
+                    emptyMessage: 'No flagged transactions match filters.',
                     columns: [
                         { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
                         { key: 'description', label: 'Description', sortable: true, type: 'text' },
@@ -3956,18 +3998,12 @@
                         <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`
                 });
             }
+            const flagged = await api('/api/transactions?is_flagged=1&' + safeQs + viewModeQs);
+            window._flaggedTrans = flagged;
+            document.getElementById('flagged-count').innerText = flagged.length;
             flTable.updateData(flagged);
 
-            // Venmo analysis - Find transactions mathematically mapped to Venmo category OR containing Venmo
-            const venmo = await api('/api/transactions?category=Venmo+-+Payment' + getViewModeParam().replace('?', '&'));
-            let venmoTotal = 0;
-            const venmoByPerson = {};
-            venmo.forEach(t => {
-                venmoTotal += Math.abs(t.amount);
-                const name = t.cardholder_name || 'Unknown';
-                venmoByPerson[name] = (venmoByPerson[name] || 0) + Math.abs(t.amount);
-            });
-
+            // 3. Venmo Analysis
             if (!vTable) {
                 // Ensure the container exists for Venmo Summary separate from Table
                 if (!document.getElementById('venmo-summary-div')) {
@@ -3977,22 +4013,31 @@
 
                 vTable = new DataTable({
                     containerId: 'venmo-table-div',
-                    emptyMessage: 'No Venmo transactions found.',
+                    emptyMessage: 'No Venmo transactions match filters.',
                     columns: [
                         { key: 'trans_date', label: 'Date', sortable: true, type: 'date' },
-                        { key: 'cardholder_name', label: 'Recipient', sortable: true, type: 'text' },
+                        { key: 'cardholder_name', label: 'Recipient/Account', sortable: true, type: 'text' },
                         { key: 'amount', label: 'Amount', sortable: true, type: 'number' },
                         { key: 'description', label: 'Note/Description', sortable: true, type: 'text' },
                         { key: 'is_flagged', label: 'Flagged', sortable: true, type: 'boolean' }
                     ],
                     renderRow: t => `<tr><td>${t.trans_date}</td><td>${esc(t.cardholder_name || '')}</td>
-                        <td class="amount-negative">$${fmt(Math.abs(t.amount))}</td>
+                        <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
                         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.description)}</td>
                         <td>${t.is_flagged ? '<span class="badge badge-flagged">FLAG</span>' : ''}</td></tr>`
                 });
             }
 
-            // Venmo summary by person
+            const venmo = await api('/api/transactions?category=Venmo+-+Payment&' + safeQs + viewModeQs);
+            window._venmoTransData = venmo;
+            let venmoTotal = 0;
+            const venmoByPerson = {};
+            venmo.forEach(t => {
+                venmoTotal += Math.abs(t.amount);
+                const name = t.cardholder_name || 'Unknown';
+                venmoByPerson[name] = (venmoByPerson[name] || 0) + Math.abs(t.amount);
+            });
+
             let vSummary = `<div class="p-3 mb-2"><strong>Total Venmo: <span class="amount-negative">$${fmt(venmoTotal)}</span></strong> across ${venmo.length} payments</div>`;
             vSummary += '<div class="px-3 pb-2"><strong>By Recipient:</strong></div><div class="px-3 pb-2">';
             Object.entries(venmoByPerson).sort((a, b) => b[1] - a[1]).forEach(([name, total]) => {
@@ -4001,7 +4046,151 @@
             vSummary += '</div>';
 
             document.getElementById('venmo-summary-div').innerHTML = vSummary;
+            document.getElementById('venmo-count').innerText = venmo.length;
             vTable.updateData(venmo);
+        }
+
+        function exportDepositTransfersCSV() {
+            const btn = document.getElementById('btn-export-dt');
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Exporting...';
+                btn.disabled = true;
+            }
+
+            try {
+                const patterns = window._depositTransfers || [];
+
+                let csvContent = '\uFEFF';
+                csvContent += 'Deposit Date,Deposit Amount,Transfer Date,Transfer Amount,Transfer Description,Total Moved,% Moved\n';
+
+                patterns.forEach(p => {
+                    const depDate = p.deposit.trans_date || '';
+                    const depAmt = typeof p.deposit_amount === 'number' ? p.deposit_amount.toFixed(2) : p.deposit_amount;
+                    const totMoved = typeof p.transfer_total === 'number' ? p.transfer_total.toFixed(2) : p.transfer_total;
+                    const pct = typeof p.pct_transferred === 'number' ? p.pct_transferred.toFixed(1) : p.pct_transferred;
+
+                    if (p.transfers && p.transfers.length > 0) {
+                        p.transfers.forEach(t => {
+                            const transDate = t.trans_date || '';
+                            const transAmt = typeof t.amount === 'number' ? Math.abs(t.amount).toFixed(2) : Math.abs(t.amount);
+                            const desc = '"' + (t.description || '').replace(/"/g, '""') + '"';
+                            csvContent += `${depDate},${depAmt},${transDate},${transAmt},${desc},${totMoved},${pct}\n`;
+                        });
+                    } else {
+                        csvContent += `${depDate},${depAmt},,,,${totMoved},${pct}\n`;
+                    }
+                });
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+
+                const dateStr = new Date().toISOString().split('T')[0];
+                link.setAttribute("download", `forensic-analysis-deposits-transfers-${dateStr}.csv`);
+
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (err) {
+                console.error('Export failed:', err);
+                alert('Failed to export CSV. Check console for details.');
+            } finally {
+                if (btn) {
+                    btn.innerHTML = '<i class="fas fa-download"></i> Export CSV';
+                    btn.disabled = false;
+                }
+            }
+        }
+
+        function exportFlaggedTransactionsCSV() {
+            const btn = document.getElementById('btn-export-flagged');
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Exporting...';
+                btn.disabled = true;
+            }
+
+            try {
+                const patterns = window._flaggedTrans || [];
+
+                let csvContent = '\uFEFF';
+                csvContent += 'Transaction Date,Description,Amount,Cardholder Name,Flag Reason\n';
+
+                patterns.forEach(t => {
+                    const transDate = t.trans_date || '';
+                    const desc = '"' + (t.description || '').replace(/"/g, '""') + '"';
+                    const amt = typeof t.amount === 'number' ? Math.abs(t.amount).toFixed(2) : Math.abs(t.amount);
+                    const name = '"' + (t.cardholder_name || '').replace(/"/g, '""') + '"';
+                    const reason = '"' + (t.flag_reason || '').replace(/"/g, '""') + '"';
+
+                    csvContent += `${transDate},${desc},${amt},${name},${reason}\n`;
+                });
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+
+                const dateStr = new Date().toISOString().split('T')[0];
+                link.setAttribute("download", `forensic-analysis-flagged-transactions-${dateStr}.csv`);
+
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (err) {
+                console.error('Export failed:', err);
+                alert('Failed to export CSV. Check console for details.');
+            } finally {
+                if (btn) {
+                    btn.innerHTML = '<i class="fas fa-download"></i> Export CSV';
+                    btn.disabled = false;
+                }
+            }
+        }
+
+        function exportVenmoAnalysisCSV() {
+            const btn = document.getElementById('btn-export-venmo');
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Exporting...';
+                btn.disabled = true;
+            }
+
+            try {
+                const patterns = window._venmoTransData || [];
+
+                let csvContent = '\uFEFF';
+                csvContent += 'Transaction Date,Recipient/Account,Amount,Note/Description,Flagged\n';
+
+                patterns.forEach(t => {
+                    const transDate = t.trans_date || '';
+                    const name = '"' + (t.cardholder_name || '').replace(/"/g, '""') + '"';
+                    const amt = typeof t.amount === 'number' ? Math.abs(t.amount).toFixed(2) : Math.abs(t.amount);
+                    const desc = '"' + (t.description || '').replace(/"/g, '""') + '"';
+                    const flagged = t.is_flagged ? "Yes" : "";
+
+                    csvContent += `${transDate},${name},${amt},${desc},${flagged}\n`;
+                });
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+
+                const dateStr = new Date().toISOString().split('T')[0];
+                link.setAttribute("download", `forensic-analysis-venmo-${dateStr}.csv`);
+
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (err) {
+                console.error('Export failed:', err);
+                alert('Failed to export CSV. Check console for details.');
+            } finally {
+                if (btn) {
+                    btn.innerHTML = '<i class="fas fa-download"></i> Export CSV';
+                    btn.disabled = false;
+                }
+            }
         }
 
         // Old cardholders function removed - replaced by enhanced version below
