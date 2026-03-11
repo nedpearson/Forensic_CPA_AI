@@ -1505,6 +1505,41 @@
             <h4 class="mb-1"><i class="fas fa-magnifying-glass-chart text-danger"></i> Forensic Analysis</h4>
             <p class="text-muted small mb-3">Tracking money flow: deposits, transfers, and suspicious patterns</p>
 
+            <!-- Forensic Analysis Filter Bar (Phase 1) -->
+            <div class="filter-bar mb-3" id="analysis-filter-bar">
+                <div class="row g-2 align-items-end">
+                    <div class="col">
+                        <label class="form-label small text-muted mb-0">Keyword Search</label>
+                        <input type="text" class="form-control form-control-sm" id="analysis-search"
+                            placeholder="Coming Phase 2" disabled>
+                    </div>
+                    <div class="col">
+                        <label class="form-label small text-muted mb-0">Start Date</label>
+                        <input type="date" class="form-control form-control-sm" id="analysis-date-from">
+                    </div>
+                    <div class="col">
+                        <label class="form-label small text-muted mb-0">End Date</label>
+                        <input type="date" class="form-control form-control-sm" id="analysis-date-to">
+                    </div>
+                    <div class="col">
+                        <label class="form-label small text-muted mb-0">Type</label>
+                        <select class="form-select form-select-sm" id="analysis-type">
+                            <option value="">Both</option>
+                            <option value="deposit">Deposits</option>
+                            <option value="transfer">Transfers</option>
+                        </select>
+                    </div>
+                    <div class="col-auto pb-1">
+                        <button class="btn btn-sm btn-info" onclick="readAnalysisFilters()"><i
+                                class="fas fa-filter"></i> Apply</button>
+                    </div>
+                    <div class="col-auto pb-1">
+                        <button class="btn btn-sm btn-outline-light" onclick="clearAnalysisFilters()"><i
+                                class="fas fa-times"></i> Clear</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="card-dark mb-3">
                 <div class="card-header" style="background:rgba(248,81,73,0.1);">
                     <span><i class="fas fa-exchange-alt text-danger me-1"></i> Deposit-to-Transfer Tracking</span>
@@ -3820,6 +3855,44 @@
         }
 
         // ===== FORENSIC ANALYSIS =====
+        function readAnalysisFilters() {
+            const filters = FilterStore.getState();
+            // We do NOT pull from category or search in Phase 1 per requirements
+            // Keyword search is disabled in UI but ready for Phase 2 state
+            
+            const fromDate = document.getElementById('analysis-date-from').value;
+            const toDate = document.getElementById('analysis-date-to').value;
+            const typeValue = document.getElementById('analysis-type').value;
+
+            const newFilters = {
+                ...filters,
+                date_from: fromDate || null,
+                date_to: toDate || null,
+                trans_type: typeValue || null
+            };
+
+            FilterStore.setState(newFilters);
+        }
+
+        function clearAnalysisFilters() {
+            document.getElementById('analysis-date-from').value = '';
+            document.getElementById('analysis-date-to').value = '';
+            document.getElementById('analysis-type').value = '';
+            // Disabled search box clears explicitly in preparation for Phase 2
+            document.getElementById('analysis-search').value = '';
+            
+            readAnalysisFilters();
+        }
+
+        // Add a subscription hook to keep the visual UI in sync when filters change elsewhere (like in Transactions tab)
+        FilterStore.subscribe((state) => {
+            // Only update if not currently focused to avoid typing jank
+            if (document.activeElement.id !== 'analysis-date-from' && document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = state.date_from || '';
+            if (document.activeElement.id !== 'analysis-date-to' && document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = state.date_to || '';
+            if (document.activeElement.id !== 'analysis-type' && document.getElementById('analysis-type')) document.getElementById('analysis-type').value = state.trans_type || '';
+        });
+        
+
         let dtTable, flTable, vTable;
 
         async function loadAnalysis(filters) {
@@ -3827,6 +3900,10 @@
 
             // Strip out restrictive drilldown filters for the deposit analysis so it isn't starved of deposits
             const safeFilters = { ...filters };
+            // Populate the UI based on state
+            if (document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = safeFilters.date_from || '';
+            if (document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = safeFilters.date_to || '';
+            if (document.getElementById('analysis-type')) document.getElementById('analysis-type').value = safeFilters.trans_type || '';
             delete safeFilters.category;
             delete safeFilters.trans_type;
             delete safeFilters.search;
@@ -4488,6 +4565,10 @@
         async function loadRecipients(filters) {
             if (!filters) filters = FilterStore.getState();
             const safeFilters = { ...filters };
+            // Populate the UI based on state
+            if (document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = safeFilters.date_from || '';
+            if (document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = safeFilters.date_to || '';
+            if (document.getElementById('analysis-type')) document.getElementById('analysis-type').value = safeFilters.trans_type || '';
             delete safeFilters.trans_type; // Recipients always uses outflows
             const qs = serializeFilters(safeFilters);
             recipientData = await api('/api/analysis/recipients?' + qs);
@@ -4567,6 +4648,10 @@
         async function loadDepositAging(filters) {
             if (!filters) filters = FilterStore.getState();
             const safeFilters = { ...filters };
+            // Populate the UI based on state
+            if (document.getElementById('analysis-date-from')) document.getElementById('analysis-date-from').value = safeFilters.date_from || '';
+            if (document.getElementById('analysis-date-to')) document.getElementById('analysis-date-to').value = safeFilters.date_to || '';
+            if (document.getElementById('analysis-type')) document.getElementById('analysis-type').value = safeFilters.trans_type || '';
             delete safeFilters.trans_type; // Aging always searches for deposits
             delete safeFilters.category; // Categories usually mask deposits
             const qs = serializeFilters(safeFilters);

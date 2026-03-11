@@ -368,11 +368,17 @@ def init_db():
             user_id INTEGER REFERENCES fcpa_users(id),
             provider TEXT NOT NULL,
             account_id TEXT,
+            account_name TEXT,
             status TEXT DEFAULT 'Not connected',
             scopes TEXT,
             access_token TEXT,
             refresh_token TEXT,
             expires_at INTEGER,
+            refresh_token_expires_at INTEGER,
+            last_sync_started_at TIMESTAMP,
+            last_sync_completed_at TIMESTAMP,
+            last_successful_webhook_at TIMESTAMP,
+            last_error TEXT,
             metadata TEXT,
             connected_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -448,6 +454,30 @@ def init_db():
             merchant_id INTEGER REFERENCES fcpa_merchants(id) ON DELETE CASCADE,
             raw_pattern TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS fcpa_quickbooks_webhooks (
+            id SERIAL PRIMARY KEY,
+            realm_id TEXT NOT NULL,
+            webhook_payload TEXT NOT NULL,
+            processed INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            retry_count INTEGER DEFAULT 0,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS fcpa_sync_jobs (
+            id SERIAL PRIMARY KEY,
+            company_id INTEGER REFERENCES fcpa_companies(id),
+            provider TEXT NOT NULL,
+            sync_type TEXT NOT NULL, 
+            status TEXT DEFAULT 'running', 
+            records_processed INTEGER DEFAULT 0,
+            error_message TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_lookup_cache (
@@ -629,6 +659,31 @@ def init_db():
     if 'status' not in [row['name'] for row in cursor.fetchall()]:
         cursor.execute("ALTER TABLE fcpa_companies ADD COLUMN status TEXT DEFAULT 'active'")
 
+    # External integrations backfill migration
+    for col, ctype in [
+        ('account_name', 'TEXT'),
+        ('refresh_token_expires_at', 'INTEGER'),
+        ('last_sync_started_at', 'TIMESTAMP'),
+        ('last_sync_completed_at', 'TIMESTAMP'),
+        ('last_successful_webhook_at', 'TIMESTAMP'),
+        ('last_error', 'TEXT')
+    ]:
+        try: cursor.execute(f"ALTER TABLE fcpa_integrations ADD COLUMN {col} {ctype}")
+        except psycopg2.Error: pass
+
+    # QuickBooks & external sync provenance migration
+    for table_name in ['fcpa_accounts', 'fcpa_transactions', 'fcpa_merchants', 'fcpa_categories']:
+        for col, ctype in [
+            ('source_provider', 'TEXT'),
+            ('source_entity_type', 'TEXT'),
+            ('source_entity_id', 'TEXT'),
+            ('source_realm_id', 'TEXT'),
+            ('synced_at', 'TIMESTAMP'),
+            ('raw_metadata', 'TEXT')
+        ]:
+            try: cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {ctype}")
+            except psycopg2.Error: pass
+
     # Migration for unique fcpa_integrations constraint
     try:
         # Check if the UNIQUE constraint uses company_id
@@ -651,11 +706,17 @@ def init_db():
                     company_id INTEGER REFERENCES fcpa_companies(id),
                     provider TEXT NOT NULL,
                     account_id TEXT,
+                    account_name TEXT,
                     status TEXT DEFAULT 'Not connected',
                     scopes TEXT,
                     access_token TEXT,
                     refresh_token TEXT,
                     expires_at INTEGER,
+                    refresh_token_expires_at INTEGER,
+                    last_sync_started_at TIMESTAMP,
+                    last_sync_completed_at TIMESTAMP,
+                    last_successful_webhook_at TIMESTAMP,
+                    last_error TEXT,
                     metadata TEXT,
                     connected_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2414,7 +2475,7 @@ def get_integrations(user_id, company_id=None):
     close_db(conn)
     return [dict(row) for row in rows]
 
-def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None, company_id=None):
+def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None, company_id=None, refresh_token_expires_at=None, account_name=None):
     if company_id is None:
         company_id = _get_active_company_id_shim()
     conn = get_db()
@@ -2429,17 +2490,19 @@ def upsert_integration(user_id, provider, status='Connected', scopes=None, acces
     cursor.execute("""
         INSERT INTO fcpa_integrations (
             user_id, company_id, provider, status, scopes, access_token, refresh_token,
-            expires_at, metadata, connected_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            expires_at, refresh_token_expires_at, account_name, metadata, connected_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(company_id, provider) DO UPDATE SET
             status = excluded.status,
             scopes = excluded.scopes,
             access_token = excluded.access_token,
             refresh_token = excluded.refresh_token,
             expires_at = excluded.expires_at,
+            refresh_token_expires_at = excluded.refresh_token_expires_at,
+            account_name = COALESCE(excluded.account_name, fcpa_integrations.account_name),
             metadata = excluded.metadata,
             updated_at = CURRENT_TIMESTAMP
-    """, (user_id, company_id, provider, status, scopes, access_token, refresh_token, expires_at, metadata))
+    """, (user_id, company_id, provider, status, scopes, access_token, refresh_token, expires_at, refresh_token_expires_at, account_name, metadata))
     conn.commit()
     close_db(conn)
 

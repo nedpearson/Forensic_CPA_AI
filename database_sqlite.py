@@ -366,11 +366,17 @@ CREATE TABLE IF NOT EXISTS case_notes (
             user_id INTEGER REFERENCES users(id),
             provider TEXT NOT NULL,
             account_id TEXT,
+            account_name TEXT,
             status TEXT DEFAULT 'Not connected',
             scopes TEXT,
             access_token TEXT,
             refresh_token TEXT,
             expires_at INTEGER,
+            refresh_token_expires_at INTEGER,
+            last_sync_started_at TIMESTAMP,
+            last_sync_completed_at TIMESTAMP,
+            last_successful_webhook_at TIMESTAMP,
+            last_error TEXT,
             metadata TEXT,
             connected_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -446,6 +452,30 @@ CREATE TABLE IF NOT EXISTS case_notes (
             merchant_id INTEGER REFERENCES merchants(id) ON DELETE CASCADE,
             raw_pattern TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS quickbooks_webhooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            realm_id TEXT NOT NULL,
+            webhook_payload TEXT NOT NULL,
+            processed INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            retry_count INTEGER DEFAULT 0,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER REFERENCES companies(id),
+            provider TEXT NOT NULL,
+            sync_type TEXT NOT NULL, 
+            status TEXT DEFAULT 'running', 
+            records_processed INTEGER DEFAULT 0,
+            error_message TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS lookup_cache (
@@ -627,6 +657,31 @@ CREATE TABLE IF NOT EXISTS case_notes (
     if 'status' not in [row['name'] for row in cursor.fetchall()]:
         cursor.execute("ALTER TABLE companies ADD COLUMN status TEXT DEFAULT 'active'")
 
+    # External integrations backfill migration
+    for col, ctype in [
+        ('account_name', 'TEXT'),
+        ('refresh_token_expires_at', 'INTEGER'),
+        ('last_sync_started_at', 'TIMESTAMP'),
+        ('last_sync_completed_at', 'TIMESTAMP'),
+        ('last_successful_webhook_at', 'TIMESTAMP'),
+        ('last_error', 'TEXT')
+    ]:
+        try: cursor.execute(f"ALTER TABLE integrations ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError: pass
+
+    # QuickBooks & external sync provenance migration
+    for table_name in ['accounts', 'transactions', 'merchants', 'categories']:
+        for col, ctype in [
+            ('source_provider', 'TEXT'),
+            ('source_entity_type', 'TEXT'),
+            ('source_entity_id', 'TEXT'),
+            ('source_realm_id', 'TEXT'),
+            ('synced_at', 'TIMESTAMP'),
+            ('raw_metadata', 'TEXT')
+        ]:
+            try: cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {ctype}")
+            except sqlite3.OperationalError: pass
+
     # Migration for unique integrations constraint
     try:
         # Check if the UNIQUE constraint uses company_id
@@ -649,11 +704,17 @@ CREATE TABLE IF NOT EXISTS case_notes (
                     company_id INTEGER REFERENCES companies(id),
                     provider TEXT NOT NULL,
                     account_id TEXT,
+                    account_name TEXT,
                     status TEXT DEFAULT 'Not connected',
                     scopes TEXT,
                     access_token TEXT,
                     refresh_token TEXT,
                     expires_at INTEGER,
+                    refresh_token_expires_at INTEGER,
+                    last_sync_started_at TIMESTAMP,
+                    last_sync_completed_at TIMESTAMP,
+                    last_successful_webhook_at TIMESTAMP,
+                    last_error TEXT,
                     metadata TEXT,
                     connected_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2412,7 +2473,7 @@ def get_integrations(user_id, company_id=None):
     conn.close()
     return [dict(row) for row in rows]
 
-def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None, company_id=None):
+def upsert_integration(user_id, provider, status='Connected', scopes=None, access_token=None, refresh_token=None, expires_at=None, metadata=None, company_id=None, refresh_token_expires_at=None, account_name=None):
     if company_id is None:
         company_id = _get_active_company_id_shim()
     conn = get_db()
@@ -2427,17 +2488,19 @@ def upsert_integration(user_id, provider, status='Connected', scopes=None, acces
     cursor.execute("""
         INSERT INTO integrations (
             user_id, company_id, provider, status, scopes, access_token, refresh_token,
-            expires_at, metadata, connected_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            expires_at, refresh_token_expires_at, account_name, metadata, connected_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(company_id, provider) DO UPDATE SET
             status = excluded.status,
             scopes = excluded.scopes,
             access_token = excluded.access_token,
             refresh_token = excluded.refresh_token,
             expires_at = excluded.expires_at,
+            refresh_token_expires_at = excluded.refresh_token_expires_at,
+            account_name = COALESCE(excluded.account_name, integrations.account_name),
             metadata = excluded.metadata,
             updated_at = CURRENT_TIMESTAMP
-    """, (user_id, company_id, provider, status, scopes, access_token, refresh_token, expires_at, metadata))
+    """, (user_id, company_id, provider, status, scopes, access_token, refresh_token, expires_at, refresh_token_expires_at, account_name, metadata))
     conn.commit()
     conn.close()
 
