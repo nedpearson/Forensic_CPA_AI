@@ -22,6 +22,7 @@
             color: #c9d1d9;
             font-family: 'Segoe UI', system-ui, sans-serif;
             margin: 0;
+            color-scheme: dark;
         }
 
         a {
@@ -32,6 +33,10 @@
         a:hover {
             color: #79c0ff;
             text-decoration: underline;
+        }
+
+        .text-muted {
+            color: #8b949e !important;
         }
 
         /* Sidebar */
@@ -398,6 +403,11 @@
         }
 
         /* Forms */
+        .form-control::placeholder {
+            color: #8b949e;
+            opacity: 1;
+        }
+
         .form-control,
         .form-select {
             background: #0d1117;
