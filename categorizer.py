@@ -404,13 +404,20 @@ def detect_deposit_transfer_patterns(user_id, filters=None):
 
     patterns = []
     for dep in deposits:
-        dep_date = dep['trans_date']
+        dep_date = dep.get('trans_date')
+        if not dep_date:
+            continue
+            
         related_transfers = []
         transfer_total = 0
 
         for xfer in transfers:
+            xfer_date = xfer.get('trans_date')
+            if not xfer_date:
+                continue
+                
             # Within 7 days after deposit
-            if xfer['trans_date'] >= dep_date and xfer['trans_date'] <= _add_days(dep_date, 7):
+            if xfer_date >= dep_date and xfer_date <= _add_days(dep_date, 7):
                 related_transfers.append(xfer)
                 transfer_total += abs(xfer['amount'])
 

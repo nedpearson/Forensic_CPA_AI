@@ -5511,8 +5511,12 @@
                     window.location.href = '/login?next=' + nextUrl;
                     return new Promise(() => { }); // Halt execution to prevent UI flashing before navigation completes
                 }
-                return await r.json();
-            } catch (e) { toast('Error: ' + e.message); return []; }
+                const data = await r.json();
+                if (!r.ok) {
+                    throw new Error(data.error || `HTTP ${r.status}`);
+                }
+                return data;
+            } catch (e) { console.error(e); toast('Error: ' + e.message, 'danger'); return []; }
         }
 
         function fmt(n) { return (n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
