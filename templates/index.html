@@ -404,23 +404,28 @@
 
         /* Forms */
         .form-control::placeholder {
-            color: #8b949e;
+            color: #8b949e !important;
             opacity: 1;
         }
 
         .form-control,
         .form-select {
-            background: #0d1117;
-            border-color: #30363d;
-            color: #c9d1d9;
+            background: #0d1117 !important;
+            border-color: #30363d !important;
+            color: #c9d1d9 !important;
         }
 
         .form-control:focus,
         .form-select:focus {
-            background: #0d1117;
-            border-color: #58a6ff;
-            color: #c9d1d9;
-            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+            background: #0d1117 !important;
+            border-color: #58a6ff !important;
+            color: #fff !important;
+            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15) !important;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(1);
+            cursor: pointer;
         }
 
         .modal-content {
@@ -3899,6 +3904,7 @@
         // ===== FORENSIC ANALYSIS =====
         function readAnalysisFilters() {
             const filters = FilterStore.getState();
+            const prevStateStr = JSON.stringify(filters);
 
             const fromDate = document.getElementById('analysis-date-from').value;
             const toDate = document.getElementById('analysis-date-to').value;
@@ -3913,7 +3919,13 @@
                 search: searchValue || null
             };
 
-            FilterStore.setState(newFilters);
+            FilterStore.update(newFilters);
+
+            // If the user clicked apply but the inputs matched the active filters exactly,
+            // FilterStore.update won't trigger notify(). We manually trigger a reload here.
+            if (JSON.stringify(FilterStore.getState()) === prevStateStr) {
+                loadPageData('analysis');
+            }
         }
 
         function clearAnalysisFilters() {

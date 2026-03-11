@@ -1808,11 +1808,15 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
         return where, params
 
     if filters.get('date_from'):
+        val = filters['date_from']
+        if len(val) == 10: val += " 00:00:00"
         where += f" AND {prefix}trans_date >= ?"
-        params.append(filters['date_from'])
+        params.append(val)
     if filters.get('date_to'):
+        val = filters['date_to']
+        if len(val) == 10: val += " 23:59:59"
         where += f" AND {prefix}trans_date <= ?"
-        params.append(filters['date_to'])
+        params.append(val)
     if filters.get('cardholder'):
         where += f" AND {prefix}cardholder_name LIKE ?"
         params.append(f"%{filters['cardholder']}%")
@@ -1839,8 +1843,19 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
     if str(filters.get('is_transfer')) == '1':
         where += f" AND {prefix}is_transfer = 1"
     if filters.get('search'):
-        where += f" AND {prefix}description LIKE ?"
-        params.append(f"%{filters['search']}%")
+        st = f"%{filters['search']}%"
+        where += f""" AND (
+            {prefix}description LIKE ? OR 
+            {prefix}category LIKE ? OR 
+            {prefix}subcategory LIKE ? OR 
+            {prefix}cardholder_name LIKE ? OR 
+            {prefix}payment_method LIKE ? OR 
+            {prefix}check_number LIKE ? OR 
+            {prefix}flag_reason LIKE ? OR 
+            {prefix}user_notes LIKE ? OR
+            {prefix}account_id IN (SELECT id FROM accounts WHERE account_name LIKE ? AND user_id = ? AND company_id = ?)
+        )"""
+        params.extend([st] * 9 + [user_id, company_id])
     if filters.get('min_amount'):
         where += f" AND ABS({prefix}amount) >= ?"
         params.append(float(filters['min_amount']))
