@@ -3951,7 +3951,6 @@
             delete queryFilters.category;
 
             const safeQs = serializeFilters(queryFilters);
-            const viewModeQs = getViewModeParam().replace('?', '&') || '';
 
             // 1. Deposit-Transfer Patterns
             if (!dtTable) {
@@ -3980,7 +3979,7 @@
                 window._depositTransfers = [];
                 dtTable.updateData([]);
             } else {
-                const patterns = await api('/api/analysis/deposit-transfers?' + safeQs + viewModeQs);
+                const patterns = await api('/api/analysis/deposit-transfers?' + safeQs);
                 patterns.forEach(p => {
                     p.transfers_html = p.transfers.map(t => `<div class="small">${t.trans_date}: ${esc(t.description).substring(0, 50)} <span class="amount-negative">$${fmt(Math.abs(t.amount))}</span></div>`).join('');
                 });
@@ -4008,7 +4007,7 @@
                         <td><button class="btn btn-sm btn-outline-light py-0 px-1" onclick="editTransaction(${t.id});allTransactions=window._flaggedTrans;"><i class="fas fa-edit fa-xs"></i></button></td></tr>`
                 });
             }
-            const flagged = await api('/api/transactions?is_flagged=1&' + safeQs + viewModeQs);
+            const flagged = await api('/api/transactions?is_flagged=1&' + safeQs);
             window._flaggedTrans = flagged;
             document.getElementById('flagged-count').innerText = flagged.length;
             flTable.updateData(flagged);
@@ -4038,7 +4037,7 @@
                 });
             }
 
-            const venmo = await api('/api/transactions?category=Venmo+-+Payment&' + safeQs + viewModeQs);
+            const venmo = await api('/api/transactions?category=Venmo+-+Payment&' + safeQs);
             window._venmoTransData = venmo;
             let venmoTotal = 0;
             const venmoByPerson = {};
