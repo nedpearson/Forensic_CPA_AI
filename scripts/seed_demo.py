@@ -49,7 +49,9 @@ def seed_demo_environment():
     else:
         cursor.execute(f"INSERT INTO {table_prefix}companies (name, created_by, owner_user_id) VALUES ({placeholder}, {placeholder}, {placeholder})", ("Mock Company LLC (Demo)", user_id, user_id))
         company_id = cursor.fetchone()['id'] if is_pg else cursor.lastrowid
-        cursor.execute(f"INSERT INTO {table_prefix}company_memberships (user_id, company_id, role, is_default) VALUES ({placeholder}, {placeholder}, 'owner', 1)", (user_id, company_id))
+        cursor.execute(f"INSERT INTO {table_prefix}company_memberships (user_id, company_id, role, is_default) VALUES ({placeholder}, {placeholder}, 'ADMIN', 1)", (user_id, company_id))
+    # Always ensure demo user has ADMIN role (required for QuickBooks Connect button)
+    cursor.execute(f"UPDATE {table_prefix}company_memberships SET role = 'ADMIN' WHERE user_id = {placeholder}", (user_id,))
     conn.commit()
 
     account_ids = {}
