@@ -963,7 +963,10 @@ def api_integrations_google_test():
 def check_workspace_access(provider):
     """Ensure standard users cannot modify workspace integrations."""
     if provider == 'quickbooks':
-        if getattr(current_user, 'role', 'USER') not in ('ADMIN', 'SUPER_ADMIN'):
+        active_company_id = session.get('active_company_id')
+        from database import get_company_member_role
+        role = get_company_member_role(active_company_id, current_user.id) if active_company_id else getattr(current_user, 'role', 'user')
+        if (role or '').lower() not in ('admin', 'super_admin'):
             return False
     return True
 
