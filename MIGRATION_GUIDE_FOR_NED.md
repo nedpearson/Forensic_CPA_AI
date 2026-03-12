@@ -33,6 +33,23 @@ You can and should continue developing locally using SQLite exactly as you alway
    ```
 4. **Update Supabase SQL:** Supabase does not run Python's `init_db()` to create tables. We maintain a static SQL file at `scripts/supabase_schema_fcpa.sql`. If you add a new table or column, you **must** manually add it to this SQL file so the production database can be updated.
 
+## ¿Es SQLite apropiado para producción?
+
+**La respuesta corta es: Sí, para muchos casos de uso.**
+
+### Ventajas de SQLite en producción:
+- **Simplicidad**: Sin servidores que mantener, sin red de por medio (latencia cero).
+- **Rendimiento**: Para aplicaciones con mucha lectura y poca/media escritura, es extremadamente rápido.
+- **Portabilidad**: Tu base de datos es un solo archivo fácil de respaldar.
+- **WAL Mode**: Tu aplicación usa el modo *Write-Ahead Logging* (WAL), lo que permite lecturas y escrituras simultáneas de forma eficiente.
+
+### Cuándo cambiar a Postgres (Supabase):
+- **Carga de escritura masiva**: Si cientos de usuarios guardan datos al mismo tiempo.
+- **Escalabilidad horizontal**: Si necesitas correr la aplicación en múltiples servidores a la vez.
+- **Ecosistema**: Si quieres aprovechar las herramientas de administración, backups automáticos y seguridad de nivel empresarial que ofrece Supabase.
+
+**Para una herramienta de auditoría forense como esta, que suele ser utilizada por equipos pequeños o de forma individual, SQLite es más que suficiente y muy confiable.**
+
 ## 🛑 Critical Changes & Gotchas
 
 * **Table Prefix:** All tables in PostgreSQL are now prefixed with `fcpa_` (e.g., `fcpa_users`, `fcpa_companies`). The `convert_db.py` script automatically handles adding this prefix to your SQLite queries.
