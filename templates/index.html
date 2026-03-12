@@ -2751,6 +2751,7 @@
                     </div>
                 </div>
                 <div class="modal-footer pt-3">
+                    <button class="btn btn-sm btn-outline-info me-auto" onclick="qbProceedWithDemoConnect()"><i class="fas fa-magic me-1"></i> Demo Mode</button>
                     <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button class="btn btn-sm btn-success" onclick="qbProceedWithConnect()"><i
                             class="fas fa-external-link-alt me-1"></i> Proceed to Intuit</button>
@@ -5153,6 +5154,21 @@
                     } else {
                         toast(res.error, 'danger');
                     }
+                }
+            } catch (err) {
+                console.error("QBO error:", err);
+                toast('Integration failed: ' + err.message, 'danger');
+            }
+        }
+
+        async function qbProceedWithDemoConnect() {
+            try {
+                toast("Connecting Demo Environment...", "info");
+                const res = await api('/api/integrations/quickbooks/demo_connect', 'POST');
+                if (res && res.status === 'success') {
+                    bootstrap.Modal.getInstance(document.getElementById('qbConnectModal'))?.hide();
+                    toast("QuickBooks connected in Demo Mode!", "success");
+                    loadIntegrations();
                 }
             } catch (err) {
                 console.error("QBO error:", err);

@@ -29,27 +29,39 @@ def seed_demo_environment():
     # 2. Add sample accounts
     accounts = scenario.get("accounts", [])
     
-    account_ids = {}
-    for acc in accounts:
-        acc_id = database.add_account(
-            user_id, acc["name"], acc["number"], acc["type"], acc["institution"]
-        )
-        account_ids[acc["type"]] = acc_id
-    
-    # 3. Add sample taxonomy configs
-    topics = scenario.get("taxonomy", [])
-    conn = database.get_db()
-    
     # Check if we are using Postgres or SQLite to properly format queries
     is_pg = os.environ.get('DB_DIALECT', 'sqlite').lower() == 'postgres'
     placeholder = '%s' if is_pg else '?'
     table_prefix = 'fcpa_' if is_pg else ''
     
+    conn = database.get_db()
     if is_pg:
         from psycopg2.extras import RealDictCursor
         cursor = conn.cursor(cursor_factory=RealDictCursor)
     else:
         cursor = conn.cursor()
+
+    # Guarantee Company Context
+    cursor.execute(f"SELECT cm.company_id FROM {table_prefix}company_memberships cm WHERE cm.user_id = {placeholder} ORDER BY cm.is_default DESC LIMIT 1", (user_id,))
+    comp_row = cursor.fetchone()
+    if comp_row:
+        company_id = comp_row['company_id'] if isinstance(comp_row, dict) else comp_row[0]
+    else:
+        cursor.execute(f"INSERT INTO {table_prefix}companies (name, created_by, owner_user_id) VALUES ({placeholder}, {placeholder}, {placeholder})", ("Mock Company LLC (Demo)", user_id, user_id))
+        company_id = cursor.fetchone()['id'] if is_pg else cursor.lastrowid
+        cursor.execute(f"INSERT INTO {table_prefix}company_memberships (user_id, company_id, role, is_default) VALUES ({placeholder}, {placeholder}, 'owner', 1)", (user_id, company_id))
+    conn.commit()
+
+    account_ids = {}
+    for acc in accounts:
+        # Pass company_id explicitly to bypass session Shim requirement
+        acc_id = database.add_account(
+            user_id, acc["name"], acc["number"], acc["type"], acc["institution"], company_id=company_id
+        )
+        account_ids[acc["type"]] = acc_id
+    
+    # 3. Add sample taxonomy configs
+    topics = scenario.get("taxonomy", [])
     for topic in topics:
         cursor.execute(
             f"INSERT INTO {table_prefix}taxonomy_config (user_id, name, description, category_type, severity) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})",
@@ -108,7 +120,8 @@ def seed_demo_environment():
             doc_meta["doc_category"], 
             account_ids.get(doc_meta["account"], account_ids['bank']), 
             doc_meta["statement_start_date"], 
-            doc_meta["statement_end_date"]
+            doc_meta["statement_end_date"],
+            company_id=company_id
         )
 
     # Adding mock proof link just to populate the drill down

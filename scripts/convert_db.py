@@ -13,13 +13,29 @@ def convert():
 # PostgreSQL connection pool
 _pg_pool = None
 
+class AutoTranslatingCursor(RealDictCursor):
+    def execute(self, query, vars=None):
+        if vars and '?' in query:
+            query = query.replace('?', '%s')
+        return super().execute(query, vars)
+        
+    def executemany(self, query, vars_list):
+        if vars_list and '?' in query:
+            query = query.replace('?', '%s')
+        return super().executemany(query, vars_list)
+
+class ForensicConnection(psycopg2.extensions.connection):
+    def cursor(self, *args, **kwargs):
+        kwargs.setdefault('cursor_factory', AutoTranslatingCursor)
+        return super().cursor(*args, **kwargs)
+
 def get_db():
     global _pg_pool
     if _pg_pool is None:
         db_url = os.environ.get('DATABASE_URL')
         if not db_url:
             raise ValueError("DATABASE_URL is not set for PostgreSQL.")
-        _pg_pool = psycopg2.pool.SimpleConnectionPool(1, 10, db_url)
+        _pg_pool = psycopg2.pool.SimpleConnectionPool(1, 10, db_url, connection_factory=ForensicConnection)
     
     conn = _pg_pool.getconn()
     conn.autocommit = False # keep transaction behavior similar to sqlite

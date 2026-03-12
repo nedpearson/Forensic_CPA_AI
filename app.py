@@ -1182,6 +1182,41 @@ def api_integrations_quickbooks_test():
 
     return jsonify({"status": "success", "test_results": results})
 
+@app.route('/api/integrations/quickbooks/demo_connect', methods=['POST'])
+@login_required
+def api_qb_demo_connect():
+    from database import upsert_integration, get_db
+    active_company_id = session.get('active_company_id')
+    if not active_company_id:
+        return jsonify({"error": "No active company context. Switch to a company first."}), 400
+        
+    try:
+        from datetime import datetime
+        upsert_integration(
+            current_user.id, "quickbooks", status="Connected",
+            metadata={"realmId": "193514528190000", "last_sync": datetime.utcnow().isoformat(), "synced_count": 82},
+            company_id=active_company_id, access_token="mock_token", refresh_token="mock_refresh", account_name="Ned's Sandbox Company"
+        )
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        table_prefix = "fcpa_" if os.environ.get('DB_DIALECT', 'sqlite').lower() == 'postgres' else ""
+            
+        cursor.execute(f"SELECT id FROM {table_prefix}accounts WHERE company_id = ? ORDER BY id ASC LIMIT 1", (active_company_id,))
+        acc = cursor.fetchone()
+        
+        if acc:
+            acc_id = acc['id'] if isinstance(acc, dict) else acc[0]
+            for i in range(1, 15):
+                cursor.execute(f"INSERT INTO {table_prefix}transactions (user_id, account_id, trans_date, description, amount, trans_type, payment_method, category, source_system, source_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                    (current_user.id, acc_id, f'2023-10-{i:02d}', f'Demo Vendor {i}', -250.0 * i, 'debit', 'sync', 'Software', 'quickbooks', f'qb_mock_{i}'))
+        conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        logger.error(f"Demo QB error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/integrations/quickbooks/disconnect', methods=['POST'])
 @login_required
 def api_integrations_quickbooks_disconnect():

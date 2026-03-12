@@ -1,5 +1,5 @@
 import psycopg2
-import psycopg2.pool
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 """
 Database layer for Forensic Auditor.
@@ -58,13 +58,29 @@ else:
 # PostgreSQL connection pool
 _pg_pool = None
 
+class AutoTranslatingCursor(RealDictCursor):
+    def execute(self, query, vars=None):
+        if vars and '%s' in query:
+            query = query.replace('%s', '%s')
+        return super().execute(query, vars)
+        
+    def executemany(self, query, vars_list):
+        if vars_list and '%s' in query:
+            query = query.replace('%s', '%s')
+        return super().executemany(query, vars_list)
+
+class ForensicConnection(psycopg2.extensions.connection):
+    def cursor(self, *args, **kwargs):
+        kwargs.setdefault('cursor_factory', AutoTranslatingCursor)
+        return super().cursor(*args, **kwargs)
+
 def get_db():
     global _pg_pool
     if _pg_pool is None:
         db_url = os.environ.get('DATABASE_URL')
         if not db_url:
             raise ValueError("DATABASE_URL is not set for PostgreSQL.")
-        _pg_pool = psycopg2.pool.SimpleConnectionPool(1, 10, db_url)
+        _pg_pool = psycopg2.pool.SimpleConnectionPool(1, 10, db_url, connection_factory=ForensicConnection)
     
     conn = _pg_pool.getconn()
     conn.autocommit = False # keep transaction behavior similar to sqlite
@@ -76,6 +92,10 @@ def close_db(conn):
         _pg_pool.putconn(conn)
 
 
+def close_db(conn):
+    if conn:
+        close_db(conn)
+
 
 def init_db():
     """Initialize all database tables."""
@@ -85,9 +105,9 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-    cursor.execute("""
+    cursor.executescript("""
         CREATE TABLE IF NOT EXISTS fcpa_users (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             is_demo INTEGER DEFAULT 0,
@@ -96,7 +116,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_companies (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             legal_name TEXT,
             created_by INTEGER REFERENCES fcpa_users(id),
@@ -107,7 +127,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_company_memberships (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id) ON DELETE CASCADE,
             company_id INTEGER REFERENCES fcpa_companies(id) ON DELETE CASCADE,
             role TEXT NOT NULL DEFAULT 'viewer',
@@ -120,7 +140,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_company_invitations (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER REFERENCES fcpa_companies(id) ON DELETE CASCADE,
             email TEXT NOT NULL,
             invited_by_user_id INTEGER REFERENCES fcpa_users(id) ON DELETE SET NULL,
@@ -148,7 +168,7 @@ def init_db():
 
 
         CREATE TABLE IF NOT EXISTS fcpa_accounts (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             account_name TEXT NOT NULL,
             account_number TEXT,
@@ -161,7 +181,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_documents (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             filename TEXT NOT NULL,
             original_path TEXT,
@@ -181,7 +201,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_transactions (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER,
             account_id INTEGER,
@@ -219,7 +239,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_categories (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             parent_category TEXT,
@@ -238,7 +258,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_category_rules (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             pattern TEXT NOT NULL,
             category TEXT NOT NULL,
@@ -252,7 +272,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_audit_log (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER,
             action TEXT NOT NULL,
@@ -264,7 +284,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_proof_links (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
@@ -275,7 +295,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_transaction_sources (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             transaction_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
@@ -285,8 +305,26 @@ def init_db():
             UNIQUE(transaction_id, document_id)
         );
 
-        CREATE TABLE IF NOT EXISTS fcpa_case_notes (
-            id SERIAL PRIMARY KEY,
+        
+        CREATE TABLE IF NOT EXISTS fcpa_advisor_company_state (
+            company_id INTEGER PRIMARY KEY REFERENCES fcpa_companies(id) ON DELETE CASCADE,
+            status TEXT DEFAULT 'never_run',
+            needs_refresh INTEGER DEFAULT 0,
+            last_run_at TIMESTAMP,
+            last_failure_at TIMESTAMP,
+            last_result_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS advisor_report_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id INTEGER NOT NULL REFERENCES fcpa_companies(id) ON DELETE CASCADE,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            period_start TIMESTAMP,
+            period_end TIMESTAMP,
+            snapshot_json TEXT
+        );
+CREATE TABLE IF NOT EXISTS fcpa_case_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             title TEXT NOT NULL,
             content TEXT NOT NULL,
@@ -298,7 +336,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_drilldown_logs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             source_tab TEXT NOT NULL,
             widget_id TEXT NOT NULL,
@@ -309,7 +347,7 @@ def init_db():
         );
         
         CREATE TABLE IF NOT EXISTS fcpa_saved_filters (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             filters TEXT NOT NULL,
@@ -317,7 +355,7 @@ def init_db():
         );
         
         CREATE TABLE IF NOT EXISTS fcpa_document_extractions (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER NOT NULL,
             extraction_data TEXT,  -- JSON string of the extracted fields/layout
@@ -330,7 +368,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_taxonomy_config (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             name TEXT NOT NULL,
             description TEXT NOT NULL,
@@ -340,7 +378,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_document_categorizations (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             document_id INTEGER NOT NULL,
             extraction_id INTEGER,
@@ -355,16 +393,8 @@ def init_db():
             FOREIGN KEY (extraction_id) REFERENCES fcpa_document_extractions(id) ON DELETE SET NULL
         );
 
-        CREATE TABLE IF NOT EXISTS fcpa_saved_filters (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES fcpa_users(id),
-            name TEXT NOT NULL,
-            filters TEXT NOT NULL,  -- JSON object of filter params
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
         CREATE TABLE IF NOT EXISTS fcpa_integrations (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             provider TEXT NOT NULL,
             account_id TEXT,
@@ -388,7 +418,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchants (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             canonical_name TEXT NOT NULL,
             default_category_id INTEGER REFERENCES fcpa_categories(id),
@@ -420,7 +450,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_advisor_remediation_tasks (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER NOT NULL,
             finding_id TEXT NOT NULL,
             analysis_run_id TEXT NOT NULL,
@@ -437,7 +467,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchant_context_rules (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             merchant_id INTEGER REFERENCES fcpa_merchants(id) ON DELETE CASCADE,
             context_type TEXT NOT NULL,  -- e.g., 'account_type'
@@ -449,15 +479,15 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_merchant_aliases (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER REFERENCES fcpa_users(id),
             merchant_id INTEGER REFERENCES fcpa_merchants(id) ON DELETE CASCADE,
             raw_pattern TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS fcpa_quickbooks_webhooks (
-            id SERIAL PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS quickbooks_webhooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             realm_id TEXT NOT NULL,
             webhook_payload TEXT NOT NULL,
             processed INTEGER DEFAULT 0,
@@ -468,8 +498,8 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS fcpa_sync_jobs (
-            id SERIAL PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS sync_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER REFERENCES fcpa_companies(id),
             provider TEXT NOT NULL,
             sync_type TEXT NOT NULL, 
@@ -481,7 +511,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS fcpa_lookup_cache (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             lookup_key TEXT NOT NULL UNIQUE,
             category_signal TEXT,
             confidence REAL,
@@ -513,24 +543,24 @@ def init_db():
     # Dynamic migrations for fcpa_documents table tracking fields
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN status TEXT DEFAULT 'queued'")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parsed_transaction_count INTEGER DEFAULT 0")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN import_transaction_count INTEGER DEFAULT 0")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN failure_reason TEXT")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_merchants ADD COLUMN parent_merchant_id INTEGER REFERENCES fcpa_merchants(id)")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     
     # Categories dynamic migrations
@@ -546,27 +576,27 @@ def init_db():
         ('reimbursable_default', 'INTEGER DEFAULT 0')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_categories ADD COLUMN {col} {ctype}")
-        except psycopg2.Error: pass
+        except sqlite3.OperationalError: pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN content_sha256 TEXT")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN txn_fingerprint TEXT")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN deduped_skipped_count INTEGER DEFAULT 0")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parent_document_id INTEGER REFERENCES fcpa_documents(id)")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
 
     # Add advanced categorization foundation columns
@@ -578,14 +608,14 @@ def init_db():
         ('categorization_explanation', 'TEXT')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_transactions ADD COLUMN {col} {ctype}")
-        except psycopg2.Error: pass
+        except sqlite3.OperationalError: pass
 
     for col, ctype in [
         ('hit_count', 'INTEGER DEFAULT 1'),
         ('last_applied', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_category_rules ADD COLUMN {col} {ctype}")
-        except psycopg2.Error: pass
+        except sqlite3.OperationalError: pass
 
     try:
         # Backfill fcpa_transaction_sources for existing fcpa_transactions
@@ -594,16 +624,16 @@ def init_db():
             SELECT user_id, id, document_id FROM fcpa_transactions WHERE document_id IS NOT NULL
         """)
         conn.commit()
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
 
     try:
         # Backfill missing cardholder_name from account_name for legacy fcpa_transactions
-        cursor.execute("""
+        cursor.executescript("""
             UPDATE fcpa_transactions 
             SET cardholder_name = (SELECT account_name FROM fcpa_accounts WHERE fcpa_accounts.id = fcpa_transactions.account_id)
             WHERE cardholder_name IS NULL OR cardholder_name IN ('', 'checking', 'credit', 'depository');
@@ -613,7 +643,7 @@ def init_db():
             WHERE card_last_four IS NULL OR card_last_four = '';
         """)
         conn.commit()
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
 
     # Create uniqueness constraints after all columns are confirmed to exist
@@ -627,8 +657,8 @@ def init_db():
     if not root_user:
         import werkzeug.security
         hashed = werkzeug.security.generate_password_hash("root")
-        cursor.execute("INSERT INTO fcpa_users (email, password_hash) VALUES (%s, %s) RETURNING id", ("root@system.local", hashed))
-        root_id = cursor.fetchone()['id']
+        cursor.execute("INSERT INTO fcpa_users (email, password_hash) VALUES (%s, %s)", ("root@system.local", hashed))
+        root_id = cursor.lastrowid
     else:
         root_id = root_user['id']
 
@@ -659,7 +689,7 @@ def init_db():
     if 'status' not in [row['name'] for row in cursor.fetchall()]:
         cursor.execute("ALTER TABLE fcpa_companies ADD COLUMN status TEXT DEFAULT 'active'")
 
-    # External integrations backfill migration
+    # External fcpa_integrations backfill migration
     for col, ctype in [
         ('account_name', 'TEXT'),
         ('refresh_token_expires_at', 'INTEGER'),
@@ -669,7 +699,7 @@ def init_db():
         ('last_error', 'TEXT')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_integrations ADD COLUMN {col} {ctype}")
-        except psycopg2.Error: pass
+        except sqlite3.OperationalError: pass
 
     # QuickBooks & external sync provenance migration
     for table_name in ['fcpa_accounts', 'fcpa_transactions', 'fcpa_merchants', 'fcpa_categories']:
@@ -682,7 +712,7 @@ def init_db():
             ('raw_metadata', 'TEXT')
         ]:
             try: cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {ctype}")
-            except psycopg2.Error: pass
+            except sqlite3.OperationalError: pass
 
     # Migration for unique fcpa_integrations constraint
     try:
@@ -699,9 +729,9 @@ def init_db():
                     break
         
         if needs_integration_rebuild:
-            cursor.execute('''
+            cursor.executescript('''
                 CREATE TABLE IF NOT EXISTS fcpa_integrations_new (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER REFERENCES fcpa_users(id),
                     company_id INTEGER REFERENCES fcpa_companies(id),
                     provider TEXT NOT NULL,
@@ -729,7 +759,7 @@ def init_db():
                 ALTER TABLE fcpa_integrations_new RENAME TO fcpa_integrations;
             ''')
             conn.commit()
-    except psycopg2.Error:
+    except sqlite3.OperationalError:
         pass
 
     # Phase 1: Multi-Tenant Schema Compatibility Backfill
@@ -745,13 +775,13 @@ def init_db():
         if not cursor.fetchone():
             default_name = f"{u_email.split('@')[0].capitalize()}'s Workspace"
             cursor.execute(
-                "INSERT INTO fcpa_companies (name, created_by, owner_user_id) VALUES (%s, %s, %s) RETURNING id",
+                "INSERT INTO fcpa_companies (name, created_by, owner_user_id) VALUES (%s, %s, %s)",
                 (default_name, u_id, u_id)
             )
-            new_comp_id = cursor.fetchone()['id']
+            new_comp_id = cursor.lastrowid
             
             cursor.execute(
-                "INSERT INTO fcpa_company_memberships (user_id, company_id, role, is_default) VALUES (%s, %s, 'owner', 1) RETURNING id",
+                "INSERT INTO fcpa_company_memberships (user_id, company_id, role, is_default) VALUES (%s, %s, 'owner', 1)",
                 (u_id, new_comp_id)
             )
 
@@ -770,7 +800,7 @@ def init_db():
                 )
                 WHERE company_id IS NULL AND user_id IS NOT NULL
             """)
-        except psycopg2.Error:
+        except sqlite3.OperationalError:
             pass
 
     conn.commit()
@@ -928,7 +958,7 @@ def create_company_invitation(company_id, email, intended_role, invited_by_user_
             (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (company_id, email, intended_role, invited_by_user_id, token_hash, expires_at))
-        invite_id = cursor.fetchone()['id']
+        invite_id = cursor.lastrowid
         conn.commit()
         return {'id': invite_id, 'raw_token': raw_token, 'expires_at': expires_at}, None
     except Exception as e:
@@ -1027,8 +1057,8 @@ def create_user(email, password, role='USER'):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("INSERT INTO fcpa_users (email, password_hash, role) VALUES (%s, %s, %s) RETURNING id", (email, hashed, role))
-        user_id = cursor.fetchone()['id']
+        cursor.execute("INSERT INTO fcpa_users (email, password_hash, role) VALUES (%s, %s, %s)", (email, hashed, role))
+        user_id = cursor.lastrowid
         conn.commit()
         seed_taxonomy(user_id)
         return user_id
@@ -1075,10 +1105,10 @@ def create_demo_user(wipe_data=False):
         else:
             # Create new
             cursor.execute(
-                "INSERT INTO fcpa_users (email, password_hash, is_demo) VALUES (%s, %s, 1) RETURNING id", 
+                "INSERT INTO fcpa_users (email, password_hash, is_demo) VALUES (%s, %s, 1)", 
                 (email, hashed)
             )
-            user_id = cursor.fetchone()['id']
+            user_id = cursor.lastrowid
             
         conn.commit()
         return user_id
@@ -1121,13 +1151,13 @@ def add_account(user_id, account_name, account_number, account_type, institution
     db_conn = conn or get_db()
     cursor = db_conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "INSERT INTO fcpa_accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, notes)
     )
-    account_id = cursor.fetchone()['id']
+    account_id = cursor.lastrowid
     if not is_external_conn:
         db_conn.commit()
-        close_db(conn)
+        db_close_db(conn)
     return account_id
 
 
@@ -1145,10 +1175,10 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
     row = cursor.fetchone()
     if row:
         if not is_external_conn:
-            close_db(conn)
+            db_close_db(conn)
         return row['id']
     if not is_external_conn:
-        close_db(conn)
+        db_close_db(conn)
     return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn, company_id=company_id)
 
 def get_duplicate_document(user_id, content_sha256):
@@ -1175,18 +1205,18 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
         row = cursor.fetchone()
         if row:
             if not is_external_conn:
-                close_db(conn)
+                db_close_db(conn)
             return row['id']
 
     cursor.execute(
-        "INSERT INTO fcpa_documents (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "INSERT INTO fcpa_documents (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start_date, statement_end_date, notes, content_sha256, parent_document_id, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (user_id, company_id, filename, original_path, file_type, doc_category, account_id, statement_start, statement_end, notes, content_sha256, parent_document_id, status)
     )
-    doc_id = cursor.fetchone()['id']
+    doc_id = cursor.lastrowid
     
     if not is_external_conn:
         db_conn.commit()
-        close_db(conn)
+        db_close_db(conn)
         
     return doc_id
 
@@ -1208,14 +1238,14 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
         doc = cursor.fetchone()
         if not doc:
             if not is_external_conn:
-                close_db(conn)
+                db_close_db(conn)
             return False
             
         # Block deleting fcpa_documents currently locked by background threads
         if doc['status'] == 'processing':
             print(f"Cannot delete document {doc_id} while it is actively processing.")
             if not is_external_conn:
-                close_db(conn)
+                db_close_db(conn)
             return False
             
         doc_ids_to_delete = [doc_id]
@@ -1264,11 +1294,11 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
                 db_conn.rollback()
             print(f"Error during document deletion: {e}")
             if not is_external_conn:
-                close_db(conn)
+                db_close_db(conn)
             return False
             
         if not is_external_conn:
-            close_db(conn)
+            db_close_db(conn)
         return True
 
 
@@ -1308,7 +1338,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                 if current_status == 'approved':
                     print(f"Workflow State Error: Document {doc_id} is already in terminal state ('approved') and cannot be modified.")
                     if not is_external_conn:
-                        close_db(conn)
+                        db_close_db(conn)
                     return False
                     
                 if status is not None and current_status != status: # If it's a real transition attempt
@@ -1316,7 +1346,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                         print(f"Workflow State Error: Invalid transition from '{current_status}' to '{status}' for document {doc_id}")
                         if not is_external_conn:
                             db_conn.rollback()
-                            close_db(conn)
+                            db_close_db(conn)
                         else:
                             raise ValueError(f"Invalid transition from '{current_status}' to '{status}'")
                         return False
@@ -1342,7 +1372,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                 
             if not updates:
                 if not is_external_conn:
-                    close_db(conn)
+                    db_close_db(conn)
                 return True
                 
             params.extend([doc_id, user_id, company_id])
@@ -1359,7 +1389,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             raise e
         finally:
             if not is_external_conn:
-                close_db(conn)
+                db_close_db(conn)
             
         return True
 
@@ -1432,7 +1462,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
                         VALUES (%s, %s, %s)
                     """, (user_id, trans_id, doc_id))
                     conn.commit()
-                except psycopg2.Error:
+                except sqlite3.OperationalError:
                     pass
             close_db(conn)
             return trans_id, False
@@ -1455,7 +1485,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
         kwargs.get('merchant_id'), kwargs.get('categorization_confidence'), kwargs.get('categorization_source'),
         kwargs.get('categorization_status'), kwargs.get('categorization_explanation')
     ))
-    trans_id = cursor.fetchone()['id']
+    trans_id = cursor.lastrowid
     
     if doc_id:
         try:
@@ -1463,7 +1493,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
                 INSERT OR IGNORE INTO fcpa_transaction_sources (user_id, transaction_id, document_id)
                 VALUES (%s, %s, %s)
             """, (user_id, trans_id, doc_id))
-        except psycopg2.Error:
+        except sqlite3.OperationalError:
             pass
             
     conn.commit()
@@ -1588,7 +1618,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         raise e
     finally:
         if not is_external_conn:
-            close_db(conn)
+            db_close_db(conn)
         
     return added_count, skipped_count, doc_stats
 
@@ -1615,7 +1645,7 @@ def update_transaction(user_id, trans_id, company_id=None, **fields):
         # Log the change
         if str(old.get(field)) != str(value):
             cursor.execute(
-                "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, new_value, field_changed) VALUES (%s, %s, 'update', %s, %s, %s) RETURNING id",
+                "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, new_value, field_changed) VALUES (%s, %s, 'update', %s, %s, %s)",
                 (user_id, trans_id, str(old.get(field)), str(value), field)
             )
 
@@ -1645,7 +1675,7 @@ def delete_transaction(user_id, trans_id, company_id=None):
     old = cursor.fetchone()
     if old:
         cursor.execute(
-            "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (%s, %s, 'delete', %s, 'all') RETURNING id",
+            "INSERT INTO fcpa_audit_log (user_id, transaction_id, action, old_value, field_changed) VALUES (%s, %s, 'delete', %s, 'all')",
             (user_id, trans_id, str(dict(old)))
         )
     cursor.execute("DELETE FROM fcpa_transactions WHERE id = %s AND user_id = %s AND company_id = %s", (trans_id, user_id, company_id))
@@ -1737,7 +1767,7 @@ def add_category(user_id, name, parent_category=None, category_type='other', col
             INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, company_id, name, parent_category, category_type, color, icon))
-        cat_id = cursor.fetchone()['id']
+        cat_id = cursor.lastrowid
         conn.commit()
         return cat_id
     except Exception as e:
@@ -1820,7 +1850,7 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
         where += f" AND {prefix}trans_date <= %s"
         params.append(val)
     if filters.get('cardholder'):
-        where += f" AND {prefix}cardholder_name ILIKE %s"
+        where += f" AND {prefix}cardholder_name LIKE %s"
         params.append(f"%{filters['cardholder']}%")
     if filters.get('card_last_four'):
         where += f" AND {prefix}card_last_four = %s"
@@ -1847,15 +1877,15 @@ def build_filter_clause(user_id, filters=None, table_alias='', company_id=None):
     if filters.get('search'):
         st = f"%{filters['search']}%"
         where += f""" AND (
-            {prefix}description ILIKE %s OR 
-            {prefix}category ILIKE %s OR 
-            {prefix}subcategory ILIKE %s OR 
-            {prefix}cardholder_name ILIKE %s OR 
-            {prefix}payment_method ILIKE %s OR 
-            {prefix}check_number ILIKE %s OR 
-            {prefix}flag_reason ILIKE %s OR 
-            {prefix}user_notes ILIKE %s OR
-            {prefix}account_id IN (SELECT id FROM fcpa_accounts WHERE account_name ILIKE %s AND user_id = %s AND company_id = %s)
+            {prefix}description LIKE %s OR 
+            {prefix}category LIKE %s OR 
+            {prefix}subcategory LIKE %s OR 
+            {prefix}cardholder_name LIKE %s OR 
+            {prefix}payment_method LIKE %s OR 
+            {prefix}check_number LIKE %s OR 
+            {prefix}flag_reason LIKE %s OR 
+            {prefix}user_notes LIKE %s OR
+            {prefix}account_id IN (SELECT id FROM fcpa_accounts WHERE account_name LIKE %s AND user_id = %s AND company_id = %s)
         )"""
         params.extend([st] * 9 + [user_id, company_id])
     if filters.get('min_amount'):
@@ -2045,7 +2075,7 @@ def add_category_rule(user_id, pattern, category, subcategory=None, is_personal=
     else:
         # Insert a fresh rule
         cursor.execute(
-            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, CURRENT_TIMESTAMP) RETURNING id",
+            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority, hit_count, last_applied) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, CURRENT_TIMESTAMP)",
             (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority)
         )
         
@@ -2139,10 +2169,10 @@ def add_case_note(user_id, title, content, note_type='general', severity='info',
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_case_notes (user_id, company_id, title, content, note_type, severity, linked_transaction_ids) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "INSERT INTO fcpa_case_notes (user_id, company_id, title, content, note_type, severity, linked_transaction_ids) VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (user_id, company_id, title, content, note_type, severity, json.dumps(linked_transaction_ids or []))
     )
-    note_id = cursor.fetchone()['id']
+    note_id = cursor.lastrowid
     conn.commit()
     close_db(conn)
     return note_id
@@ -2197,8 +2227,8 @@ def get_saved_filters(user_id, company_id=None):
 def add_saved_filter(user_id, name, filters):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s) RETURNING id", (user_id, name, json.dumps(filters)))
-    fid = cursor.fetchone()['id']
+    cursor.execute("INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s)", (user_id, name, json.dumps(filters)))
+    fid = cursor.lastrowid
     conn.commit()
     close_db(conn)
     return fid
@@ -2300,11 +2330,11 @@ def add_saved_filter(user_id, name, filters_dict):
     conn = get_db()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute(
-        "INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s) RETURNING id",
+        "INSERT INTO fcpa_saved_filters (user_id, name, filters) VALUES (%s, %s, %s)",
         (user_id, name, json.dumps(filters_dict))
     )
     conn.commit()
-    fid = cursor.fetchone()['id']
+    fid = cursor.lastrowid
     close_db(conn)
     return fid
 
@@ -2332,7 +2362,7 @@ def log_drilldown(user_id, data):
         data.get('metadata')
     ))
     conn.commit()
-    log_id = cursor.fetchone()['id']
+    log_id = cursor.lastrowid
     close_db(conn)
     return log_id
 
@@ -2344,7 +2374,7 @@ def add_document_extraction(user_id, document_id, status='pending'):
         VALUES (%s, %s, %s)
     """, (user_id, document_id, status))
     conn.commit()
-    ext_id = cursor.fetchone()['id']
+    ext_id = cursor.lastrowid
     close_db(conn)
     return ext_id
 
@@ -2409,10 +2439,10 @@ def add_taxonomy_config(user_id, name, description, category_type, severity, com
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute(
-            "INSERT INTO fcpa_taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            "INSERT INTO fcpa_taxonomy_config (user_id, company_id, name, description, category_type, severity) VALUES (%s, %s, %s, %s, %s, %s)",
             (user_id, company_id, name, description, category_type, severity)
         )
-        _id = cursor.fetchone()['id']
+        _id = cursor.lastrowid
         conn.commit()
         return _id
     except psycopg2.IntegrityError:
@@ -2450,7 +2480,7 @@ def add_document_categorization(user_id, document_id, extraction_id, categorizat
         provider, model, next_version, status, error_message
     ))
     conn.commit()
-    cat_id = cursor.fetchone()['id']
+    cat_id = cursor.lastrowid
     close_db(conn)
     return cat_id
 
@@ -2576,7 +2606,7 @@ def seed_taxonomy(user_id, passed_cursor=None, company_id=None):
 
     for cat in default_categories:
         cursor.execute(
-            "INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "INSERT INTO fcpa_categories (user_id, company_id, name, parent_category, category_type, color, icon) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (user_id, company_id) + cat
         )
 
@@ -2625,7 +2655,7 @@ def seed_taxonomy(user_id, passed_cursor=None, company_id=None):
 
     for rule in default_rules:
         cursor.execute(
-            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "INSERT INTO fcpa_category_rules (user_id, company_id, pattern, category, subcategory, is_personal, is_business, is_transfer, priority) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (user_id, company_id) + rule
         )
             
@@ -2707,7 +2737,7 @@ def add_merchant_context_rule(user_id: int, merchant_id: int, context_type: str,
         mapped_category_id=excluded.mapped_category_id, priority=excluded.priority
     """, (user_id, merchant_id, context_type, str(context_value), mapped_category_id, priority))
     conn.commit()
-    rule_id = cursor.fetchone()['id']
+    rule_id = cursor.lastrowid
     close_db(conn)
     return rule_id
 
@@ -2758,7 +2788,7 @@ def update_advisor_company_state(company_id: int, status: str = None, needs_refr
     # Ensure a row exists first
     cursor.execute("SELECT 1 FROM fcpa_advisor_company_state WHERE company_id = %s", (company_id,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO fcpa_advisor_company_state (company_id) VALUES (%s) RETURNING id", (company_id,))
+        cursor.execute("INSERT INTO fcpa_advisor_company_state (company_id) VALUES (%s)", (company_id,))
         
     updates = ["updated_at = CURRENT_TIMESTAMP"]
     params = []
