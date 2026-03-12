@@ -421,10 +421,10 @@ def api_demo_login():
     membership = cursor.fetchone()
     conn.close()
     
-    user_role = 'ADMIN'
+    user_role = 'admin'
     if membership:
         session['active_company_id'] = membership['company_id'] if isinstance(membership, dict) else membership[0]
-        user_role = (membership['role'] if isinstance(membership, dict) else membership[1]) or 'ADMIN'
+        user_role = (membership['role'] if isinstance(membership, dict) else membership[1]) or 'admin'
 
     user_obj = User(id=user_id, email="demo@forensiccpa.ai", role=user_role)
     login_user(user_obj, remember=True)

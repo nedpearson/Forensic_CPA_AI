@@ -5016,7 +5016,7 @@
                     const connObj = connectedList.find(c => c.provider === p.id);
                     const status = connObj ? connObj.status : 'Not connected';
                     const isWorkspace = (p.id === 'quickbooks');
-                    const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes(userRole);
+                    const canManage = !isWorkspace || ['ADMIN', 'SUPER_ADMIN'].includes((userRole || '').toUpperCase());
 
                     let statusBadge = '';
                     let actionButtons = '';
