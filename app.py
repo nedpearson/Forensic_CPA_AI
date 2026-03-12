@@ -1226,10 +1226,11 @@ def api_qb_demo_connect():
         return jsonify({"error": "No active company context. Switch to a company first."}), 400
         
     try:
-        from datetime import datetime
+        from datetime import datetime, timedelta
+        import random
         upsert_integration(
             current_user.id, "quickbooks", status="Connected",
-            metadata={"realmId": "193514528190000", "last_sync": datetime.utcnow().isoformat(), "synced_count": 82},
+            metadata={"realmId": "193514528190000", "last_sync": datetime.utcnow().isoformat(), "synced_count": 95},
             company_id=active_company_id, access_token="mock_token", refresh_token="mock_refresh", account_name="Ned's Sandbox Company"
         )
         
@@ -1237,15 +1238,119 @@ def api_qb_demo_connect():
         cursor = conn.cursor()
         
         table_prefix = "fcpa_" if os.environ.get('DB_DIALECT', 'sqlite').lower() == 'postgres' else ""
-            
+        
         cursor.execute(f"SELECT id FROM {table_prefix}accounts WHERE company_id = ? ORDER BY id ASC LIMIT 1", (active_company_id,))
         acc = cursor.fetchone()
         
         if acc:
             acc_id = acc['id'] if isinstance(acc, dict) else acc[0]
-            for i in range(1, 15):
-                cursor.execute(f"INSERT INTO {table_prefix}transactions (user_id, account_id, trans_date, description, amount, trans_type, payment_method, category, source_system, source_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
-                    (current_user.id, acc_id, f'2023-10-{i:02d}', f'Demo Vendor {i}', -250.0 * i, 'debit', 'sync', 'Software', 'quickbooks', f'qb_mock_{i}'))
+            
+            # Clean up old demo data to avoid duplicates
+            cursor.execute(f"DELETE FROM {table_prefix}transactions WHERE company_id = ? AND source_system = 'quickbooks'", (active_company_id,))
+            
+            # --- Rich demo transactions covering the last 12 months ---
+            base_date = datetime(2024, 3, 1)
+            
+            demo_transactions = [
+                # === PAYROLL & DEPOSITS (income) ===
+                ("2024-03-05", "Payroll Deposit - Q1", 18500.00, "deposit", "ACH Transfer", "Payroll", "EMP001", "qb_dep_001"),
+                ("2024-06-05", "Payroll Deposit - Q2", 18500.00, "deposit", "ACH Transfer", "Payroll", "EMP001", "qb_dep_002"),
+                ("2024-09-05", "Payroll Deposit - Q3", 19200.00, "deposit", "ACH Transfer", "Payroll", "EMP001", "qb_dep_003"),
+                ("2024-12-05", "Payroll Deposit - Q4", 19200.00, "deposit", "ACH Transfer", "Payroll", "EMP001", "qb_dep_004"),
+                ("2024-03-15", "Client Payment - Davis & Assoc.", 8750.00, "deposit", "Wire Transfer", "Client Revenue", "CLI001", "qb_dep_005"),
+                ("2024-04-20", "Client Payment - Hallmark Design", 5200.00, "deposit", "Wire Transfer", "Client Revenue", "CLI002", "qb_dep_006"),
+                ("2024-05-10", "Client Payment - Nexus Corp.", 12400.00, "deposit", "Wire Transfer", "Client Revenue", "CLI003", "qb_dep_007"),
+                ("2024-07-18", "Client Payment - Westgate LLC", 9300.00, "deposit", "Wire Transfer", "Client Revenue", "CLI004", "qb_dep_008"),
+                ("2024-10-22", "Client Payment - Sierra Group", 6800.00, "deposit", "Wire Transfer", "Client Revenue", "CLI005", "qb_dep_009"),
+                ("2024-11-15", "Client Payment - Orion Partners", 14200.00, "deposit", "Wire Transfer", "Client Revenue", "CLI006", "qb_dep_010"),
+
+                # === SOFTWARE & SUBSCRIPTIONS ===
+                ("2024-03-01", "QuickBooks Online Subscription", -85.00, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_001"),
+                ("2024-04-01", "QuickBooks Online Subscription", -85.00, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_002"),
+                ("2024-05-01", "QuickBooks Online Subscription", -85.00, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_003"),
+                ("2024-06-01", "QuickBooks Online Subscription", -85.00, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_004"),
+                ("2024-03-08", "Microsoft 365 Business", -22.00, "debit", "Credit Card", "Software", "Sarah Chen", "qb_sw_005"),
+                ("2024-04-08", "Microsoft 365 Business", -22.00, "debit", "Credit Card", "Software", "Sarah Chen", "qb_sw_006"),
+                ("2024-05-08", "Microsoft 365 Business", -22.00, "debit", "Credit Card", "Software", "Sarah Chen", "qb_sw_007"),
+                ("2024-03-12", "Adobe Creative Cloud", -54.99, "debit", "Credit Card", "Software", "Mike Torres", "qb_sw_008"),
+                ("2024-04-12", "Adobe Creative Cloud", -54.99, "debit", "Credit Card", "Software", "Mike Torres", "qb_sw_009"),
+                ("2024-05-12", "Adobe Creative Cloud", -54.99, "debit", "Credit Card", "Software", "Mike Torres", "qb_sw_010"),
+                ("2024-03-20", "Zoom Pro Plan", -15.99, "debit", "Credit Card", "Software", "Sarah Chen", "qb_sw_011"),
+                ("2024-04-20", "Zoom Pro Plan", -15.99, "debit", "Credit Card", "Software", "Sarah Chen", "qb_sw_012"),
+                ("2024-03-25", "Slack Business+", -12.50, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_013"),
+                ("2024-04-25", "Slack Business+", -12.50, "debit", "Credit Card", "Software", "John Martinez", "qb_sw_014"),
+
+                # === TRAVEL & MEALS ===
+                ("2024-03-14", "Delta Airlines - Chicago Trip", -620.00, "debit", "Corporate Card", "Travel", "John Martinez", "qb_tr_001"),
+                ("2024-03-15", "Marriott Hotel - 3 nights", -390.00, "debit", "Corporate Card", "Travel", "John Martinez", "qb_tr_002"),
+                ("2024-03-16", "Uber Business - Airport", -42.50, "debit", "Corporate Card", "Travel", "John Martinez", "qb_tr_003"),
+                ("2024-04-22", "American Airlines - NY Conference", -840.00, "debit", "Corporate Card", "Travel", "Sarah Chen", "qb_tr_004"),
+                ("2024-04-23", "Hilton Times Square - 4 nights", -980.00, "debit", "Corporate Card", "Travel", "Sarah Chen", "qb_tr_005"),
+                ("2024-06-10", "Southwest Airlines - LA Meeting", -310.00, "debit", "Corporate Card", "Travel", "Mike Torres", "qb_tr_006"),
+                ("2024-09-18", "Marriott - Denver Conference", -520.00, "debit", "Corporate Card", "Travel", "John Martinez", "qb_tr_007"),
+                ("2024-03-17", "Morton's Steakhouse - Client Dinner", -312.80, "debit", "Corporate Card", "Meals & Entertainment", "John Martinez", "qb_me_001"),
+                ("2024-04-05", "Starbucks - Team Meeting", -48.60, "debit", "Corporate Card", "Meals & Entertainment", "Sarah Chen", "qb_me_002"),
+                ("2024-05-02", "Nobu Restaurant - Client Lunch", -185.40, "debit", "Corporate Card", "Meals & Entertainment", "Mike Torres", "qb_me_003"),
+                ("2024-07-14", "Capital Grille - Board Dinner", -624.00, "debit", "Corporate Card", "Meals & Entertainment", "John Martinez", "qb_me_004"),
+                ("2024-08-22", "True Food Kitchen", -95.20, "debit", "Corporate Card", "Meals & Entertainment", "Sarah Chen", "qb_me_005"),
+                ("2024-11-08", "Ruth's Chris - Year-end Dinner", -890.50, "debit", "Corporate Card", "Meals & Entertainment", "John Martinez", "qb_me_006"),
+
+                # === OFFICE & SUPPLIES ===
+                ("2024-03-02", "Amazon Business - Office Supplies", -234.56, "debit", "Corporate Card", "Office Supplies", "Sarah Chen", "qb_of_001"),
+                ("2024-04-15", "Staples - Printer Paper & Toner", -189.99, "debit", "Corporate Card", "Office Supplies", "Sarah Chen", "qb_of_002"),
+                ("2024-06-20", "Amazon Business - Desk Accessories", -312.00, "debit", "Corporate Card", "Office Supplies", "Mike Torres", "qb_of_003"),
+                ("2024-09-10", "IKEA - Stand-up Desk", -649.00, "debit", "Credit Card", "Office Equipment", "Mike Torres", "qb_of_004"),
+                ("2024-10-25", "HP - Laser Printer", -489.00, "debit", "Credit Card", "Office Equipment", "Sarah Chen", "qb_of_005"),
+
+                # === MARKETING ===
+                ("2024-03-10", "Google Ads - Q1 Campaign", -1200.00, "debit", "Corporate Card", "Marketing", "Sarah Chen", "qb_mk_001"),
+                ("2024-04-10", "Google Ads - April", -950.00, "debit", "Corporate Card", "Marketing", "Sarah Chen", "qb_mk_002"),
+                ("2024-05-10", "LinkedIn Ads - Lead Gen", -600.00, "debit", "Corporate Card", "Marketing", "Sarah Chen", "qb_mk_003"),
+                ("2024-06-10", "Facebook Ads - Q2 Retargeting", -780.00, "debit", "Corporate Card", "Marketing", "Sarah Chen", "qb_mk_004"),
+                ("2024-07-15", "HubSpot CRM - Annual Renewal", -5400.00, "debit", "Corporate Card", "Marketing", "John Martinez", "qb_mk_005"),
+                ("2024-08-10", "Google Ads - Q3 Campaign", -1400.00, "debit", "Corporate Card", "Marketing", "Sarah Chen", "qb_mk_006"),
+                ("2024-10-05", "Trade Show Booth - AICPA", -3200.00, "debit", "Credit Card", "Marketing", "John Martinez", "qb_mk_007"),
+
+                # === PROFESSIONAL SERVICES ===
+                ("2024-04-01", "Baker McKenzie - Legal Retainer", -2500.00, "payment", "Wire Transfer", "Legal & Professional", "John Martinez", "qb_ps_001"),
+                ("2024-07-01", "Baker McKenzie - Legal Retainer", -2500.00, "payment", "Wire Transfer", "Legal & Professional", "John Martinez", "qb_ps_002"),
+                ("2024-03-28", "CPA Firm - Tax Preparation", -4800.00, "payment", "Check", "Legal & Professional", "John Martinez", "qb_ps_003"),
+                ("2024-06-15", "IT Consulting - Network Setup", -3600.00, "payment", "Wire Transfer", "IT Services", "Mike Torres", "qb_ps_004"),
+                ("2024-09-05", "Cybersecurity Audit", -8500.00, "payment", "Wire Transfer", "IT Services", "Mike Torres", "qb_ps_005"),
+
+                # === UTILITIES & RENT ===
+                ("2024-03-01", "Office Rent - March", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_001"),
+                ("2024-04-01", "Office Rent - April", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_002"),
+                ("2024-05-01", "Office Rent - May", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_003"),
+                ("2024-06-01", "Office Rent - June", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_004"),
+                ("2024-07-01", "Office Rent - July", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_005"),
+                ("2024-08-01", "Office Rent - August", -4200.00, "payment", "ACH Transfer", "Rent & Utilities", "John Martinez", "qb_ut_006"),
+                ("2024-03-05", "AT&T Business Internet", -189.99, "debit", "ACH Transfer", "Rent & Utilities", "Mike Torres", "qb_ut_007"),
+                ("2024-04-05", "AT&T Business Internet", -189.99, "debit", "ACH Transfer", "Rent & Utilities", "Mike Torres", "qb_ut_008"),
+                ("2024-05-05", "AT&T Business Internet", -189.99, "debit", "ACH Transfer", "Rent & Utilities", "Mike Torres", "qb_ut_009"),
+                ("2024-03-20", "WeWork Meeting Rooms", -350.00, "debit", "Corporate Card", "Rent & Utilities", "Sarah Chen", "qb_ut_010"),
+
+                # === INSURANCE ===
+                ("2024-03-01", "Hiscox Business Insurance - Q1", -1250.00, "payment", "ACH Transfer", "Insurance", "John Martinez", "qb_ins_001"),
+                ("2024-06-01", "Hiscox Business Insurance - Q2", -1250.00, "payment", "ACH Transfer", "Insurance", "John Martinez", "qb_ins_002"),
+                ("2024-09-01", "Hiscox Business Insurance - Q3", -1250.00, "payment", "ACH Transfer", "Insurance", "John Martinez", "qb_ins_003"),
+
+                # === SUSPICIOUS / FLAGGED (for forensic analysis value) ===
+                ("2024-08-03", "Wire Transfer - Unknown Vendor", -15000.00, "payment", "Wire Transfer", "Uncategorized", None, "qb_flag_001"),
+                ("2024-09-14", "Cash Withdrawal - ATM", -2000.00, "debit", "Cash", "Uncategorized", None, "qb_flag_002"),
+                ("2024-10-30", "Vendor Payment - No Invoice", -5500.00, "payment", "Check", "Uncategorized", None, "qb_flag_003"),
+                ("2024-11-20", "Personal Purchase - Apple Store", -3299.00, "debit", "Corporate Card", "Uncategorized", "Mike Torres", "qb_flag_004"),
+                ("2024-12-01", "Round Dollar Transfer", -10000.00, "payment", "Wire Transfer", "Uncategorized", None, "qb_flag_005"),
+            ]
+            
+            for (date, desc, amount, ttype, method, category, cardholder, src_id) in demo_transactions:
+                cursor.execute(
+                    f"INSERT OR IGNORE INTO {table_prefix}transactions "
+                    f"(user_id, company_id, account_id, trans_date, description, amount, trans_type, payment_method, category, cardholder_name, source_system, source_transaction_id) "
+                    f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'quickbooks', ?)",
+                    (current_user.id, active_company_id, acc_id, date, desc, amount, ttype, method, category, cardholder, src_id)
+                )
+        
         conn.commit()
         return jsonify({"status": "success"})
     except Exception as e:
