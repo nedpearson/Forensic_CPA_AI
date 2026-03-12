@@ -747,9 +747,13 @@ def api_integrations_status():
                 res['last_sync_completed_at'] = conn.get('last_sync_completed_at')
             return res
             
+        # Use membership role (admin/owner/etc) not user-level role
+        from database import get_company_member_role
+        membership_role = get_company_member_role(active_company_id, current_user.id) if active_company_id else getattr(current_user, 'role', 'USER')
+
         return jsonify({
             "status": "success",
-            "role": getattr(current_user, 'role', 'USER'),
+            "role": membership_role,
             "integrations": [
                 build_payload("google_drive"),
                 build_payload("google_calendar"),
