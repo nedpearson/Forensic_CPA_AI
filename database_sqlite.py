@@ -200,6 +200,8 @@ def init_db():
             categorization_source TEXT,
             categorization_confidence REAL,
             categorization_explanation TEXT,
+            source_system TEXT,
+            source_transaction_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES documents(id),
