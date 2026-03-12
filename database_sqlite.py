@@ -471,6 +471,7 @@ CREATE TABLE IF NOT EXISTS case_notes (
         CREATE TABLE IF NOT EXISTS sync_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER REFERENCES companies(id),
+            user_id INTEGER REFERENCES users(id),
             provider TEXT NOT NULL,
             sync_type TEXT NOT NULL, 
             status TEXT DEFAULT 'running', 
