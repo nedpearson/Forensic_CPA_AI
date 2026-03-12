@@ -408,7 +408,25 @@ def api_demo_login():
         logger.error(f"Auth Event: Demo initialization exception: {e}")
         return jsonify({'error': f"Initialization failed: {str(e)}"}), 500
         
-    user_obj = User(id=user_id, email="demo@forensiccpa.ai", role='USER')
+    # Set session with company context so dashboard API calls succeed
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT cm.company_id, cm.role 
+        FROM company_memberships cm 
+        WHERE cm.user_id = ? 
+        ORDER BY cm.is_default DESC LIMIT 1
+    """, (user_id,))
+    membership = cursor.fetchone()
+    conn.close()
+    
+    user_role = 'ADMIN'
+    if membership:
+        session['active_company_id'] = membership['company_id'] if isinstance(membership, dict) else membership[0]
+        user_role = (membership['role'] if isinstance(membership, dict) else membership[1]) or 'ADMIN'
+
+    user_obj = User(id=user_id, email="demo@forensiccpa.ai", role=user_role)
     login_user(user_obj, remember=True)
     logger.info(f"Auth Event: Demo login successful for user {user_id}")
     return jsonify({'msg': 'Demo login successful', 'user_id': user_id}), 200
