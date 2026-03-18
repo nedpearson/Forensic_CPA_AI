@@ -3198,6 +3198,34 @@ def seed_comprehensive_demo_data(user_id: int, company_id: int):
                     INSERT INTO advisor_remediation_tasks (company_id, finding_id, analysis_run_id, task_description, status)
                     VALUES (?, ?, ?, ?, 'open')
                 """, (company_id, f["id"], run_id, act))
+        # 7. SEED DOCUMENTS AND PROOF LINKS
+        cursor.execute("""
+            INSERT INTO documents (user_id, filename, file_type, doc_category, status, parsed_transaction_count, import_transaction_count)
+            VALUES (?, 'Apple_Store_Receipt.pdf', 'pdf', 'proof', 'parsed', 1, 1)
+        """, (user_id,))
+        doc_id = cursor.lastrowid
+        
+        # Link the document to Mike Torres' Apple Store transaction
+        # Find the Apple Store transaction (if it exists)
+        cursor.execute("SELECT id FROM transactions WHERE company_id = ? AND description LIKE 'Apple Store%' LIMIT 1", (company_id,))
+        apple_tx = cursor.fetchone()
+        if apple_tx:
+            cursor.execute("""
+                INSERT INTO proof_links (user_id, transaction_id, document_id)
+                VALUES (?, ?, ?)
+            """, (user_id, apple_tx[0], doc_id))
+
+        # 8. SEED AUDIT LOG
+        audit_events = [
+            (apple_tx[0] if apple_tx else None, "transaction_flagged", "0", "1", "is_flagged"),
+            (None, "ai_advisor_scan_completed", None, "found 2 issues", "advisor_run"),
+            (None, "user_login", None, "Mike Torres logged in from unknown IP", "session")
+        ]
+        for tx_id, action, old_v, new_v, field in audit_events:
+            cursor.execute("""
+                INSERT INTO audit_log (user_id, transaction_id, action, old_value, new_value, field_changed)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, tx_id, action, old_v, new_v, field))
 
         conn.commit()
     except Exception as e:
