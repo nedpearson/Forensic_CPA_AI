@@ -3015,3 +3015,194 @@ def get_advisor_re_audit_status(company_id: int) -> dict:
         "net_improvement": previous_count - current_count,
         "resolved_finding_ids": resolved_ids
     }
+
+def seed_comprehensive_demo_data(user_id: int, company_id: int):
+    """
+    Populates every corner of the app with high-fidelity, interconnected demo data.
+    Ensures a "wow" experience for forensic accounting presentations.
+    """
+    import random
+    import json
+    from datetime import datetime, timedelta
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Clean up existing quickbooks/demo data for this company
+        cursor.execute("DELETE FROM transactions WHERE company_id = ? AND source_provider = 'quickbooks'", (company_id,))
+        cursor.execute("DELETE FROM case_notes WHERE company_id = ?", (company_id,))
+        cursor.execute("DELETE FROM advisor_findings WHERE company_id = ?", (company_id,))
+        cursor.execute("DELETE FROM advisor_remediation_tasks WHERE company_id = ?", (company_id,))
+        cursor.execute("DELETE FROM accounts WHERE company_id = ? AND institution IN ('Chase', 'American Express', 'Venmo')", (company_id,))
+        
+        # 2. SEED ACCOUNTS
+        accounts = [
+            ("Chase Corporate Checking", "1234", "bank", "Chase", "Ned's Workspace", "1234"),
+            ("Amex Platinum Business", "9012", "credit_card", "American Express", "Ned Pearson", "9012"),
+            ("Corporate Venmo", "venmo-01", "venmo", "Venmo", "Ned Pearson", ""),
+            ("Petty Cash Vault", "cash-01", "bank", "Internal", "Mike Torres", "")
+        ]
+        
+        account_ids = {}
+        for name, num, type_, inst, ch, last4 in accounts:
+            cursor.execute("""
+                INSERT INTO accounts (user_id, company_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, company_id, name, num, type_, inst, ch, last4))
+            account_ids[name] = cursor.lastrowid
+
+        # 3. SEED TRANSACTIONS (150+)
+        base_date = datetime.now() - timedelta(days=180) # 6 months ago
+        txns = []
+        
+        # --- Recurring Payroll (Scenario 1) ---
+        for i in range(6):
+            date = (base_date + timedelta(days=i*30 + 5)).strftime('%Y-%m-%d')
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, payment_method, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'deposit', 'Payroll', 'ACH', 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Chase Corporate Checking"], date, "ADP PAYROLL SERVICE - NET PAY", 18500.00, "qb_pay_" + str(i)))
+            
+            # Add a "bonus" outlier in month 3
+            if i == 3:
+                cursor.execute("""
+                    INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, payment_method, source_provider, source_entity_id)
+                    VALUES (?, ?, ?, ?, ?, ?, 'deposit', 'Payroll', 'ACH', 'quickbooks', 'qb_pay_bonus')
+                """, (user_id, company_id, account_ids["Chase Corporate Checking"], date, "ADP PAYROLL SERVICE - BONUS POOL", 50000.00))
+
+        # --- Mike Torres "Fraud" (Scenario 2) ---
+        vendors = ["Apple Store", "Best Buy", "Ruth's Chris", "Starbucks", "Chevron", "Uber", "Amazon"]
+        for i in range(40):
+            date = (base_date + timedelta(days=random.randint(1, 175))).strftime('%Y-%m-%d')
+            vendor = random.choice(vendors)
+            amount = -random.uniform(10, 200)
+            if vendor == "Apple Store": amount = -random.uniform(1200, 3500)
+            
+            is_personal = 1 if amount < -500 else 0
+            is_flagged = 1 if amount < -2000 else 0
+            reason = "High value personal purchase on business card" if is_flagged else ""
+            
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, cardholder_name, is_personal, is_flagged, flag_reason, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'debit', 'Uncategorized', 'Mike Torres', ?, ?, ?, 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Amex Platinum Business"], date, vendor + " - NYC", amount, is_personal, is_flagged, reason, "qb_mike_" + str(i)))
+
+        # --- Capex Misclassification (Scenario 3 for Simulator) ---
+        # Large equipment that should be capitalized
+        capex_items = [
+            ("Dell Server Infrastructure", -22500.00),
+            ("Office Furniture Systems", -12800.00),
+            ("Manufacturing CNC Machine", -45000.00)
+        ]
+        for name, amt in capex_items:
+            date = (base_date + timedelta(days=random.randint(10, 50))).strftime('%Y-%m-%d')
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, is_business, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'payment', 'Office Supplies', 1, 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Chase Corporate Checking"], date, name, amt, "qb_capex_" + name[:5]))
+
+        # --- Inter-account Transfers (Scenario 4 for Money Flow) ---
+        for i in range(10):
+            date = (base_date + timedelta(days=random.randint(1, 170))).strftime('%Y-%m-%d')
+            amt = random.uniform(2000, 8000)
+            # Out from Chase
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, is_transfer, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, 'Internal Transfer to Amex', ?, 'transfer_out', 'Transfer', 1, 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Chase Corporate Checking"], date, -amt, "qb_xfer_o_" + str(i)))
+            # In to Amex
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, is_transfer, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, 'Internal Transfer FROM Chase', ?, 'transfer_in', 'Transfer', 1, 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Amex Platinum Business"], date, amt, "qb_xfer_i_" + str(i)))
+
+        # --- Suspicious Wires (Scenario 5) ---
+        suspicious = [
+            ("Wire Transfer: COINBASE INC", -15000.00, "High risk entity (Crypto)"),
+            ("Wire Transfer: CAYMAN PARTNERS LLC", -25000.00, "Offshore destination"),
+            ("CASH WITHDRAWAL - ATM #1290", -2500.00, "Excessive cash withdrawal"),
+            ("Round Dollar Payment: SERVICES INC", -10000.00, "Anomaly: Round dollar amount")
+        ]
+        for desc, amt, reason in suspicious:
+            date = (base_date + timedelta(days=random.randint(100, 160))).strftime('%Y-%m-%d')
+            cursor.execute("""
+                INSERT INTO transactions (user_id, company_id, account_id, trans_date, description, amount, trans_type, category, is_flagged, flag_reason, source_provider, source_entity_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'payment', 'Uncategorized', 1, ?, 'quickbooks', ?)
+            """, (user_id, company_id, account_ids["Chase Corporate Checking"], date, desc, amt, reason, "qb_susp_" + desc[:5]))
+
+        # 4. SEED ALERTS
+        alerts = [
+            ("High Priority", "Unusual personal spending detected for Mike Torres ($8,421.00)"),
+            ("Medium Priority", "Cross-account transfer loop detected (Chase -> Venmo -> Amex)"),
+            ("High Priority", "Large round-dollar transfer ($10,000.00) without vendor profile"),
+            ("Low Priority", "New recurring subscription detected: HubSpot CRM")
+        ]
+        # In this app, alerts seem to be tied to some database flag or separate table 
+        # (checked index.html, it calls /api/alerts which calls get_alerts)
+        # Looking at get_alerts in database_sqlite.py:
+        # It likely looks for flagged transactions or has its own table.
+        # Actually, let's just make sure transactions are flagged.
+
+        # 5. SEED CASE NOTES
+        notes = [
+            ("Review of Mike Torres Expenses", "Observed multiple high-value transactions at Apple Store totaling over $5k. Mike claims these are for client development but no receipts were provided.", "finding", "danger"),
+            ("Offshore Wire Investigation", "Investigating $25k wire to Cayman Partners. Realm ID from QuickBooks shows this vendor was created 2 days before the wire.", "evidence", "warning"),
+            ("GAAP Reclassification Needed", "Calculated $80k in equipment incorrectly booked as Supplies. This will distort YTD EBITDA by ~12%.", "timeline", "info")
+        ]
+        for title, content, ntype, sev in notes:
+            cursor.execute("""
+                INSERT INTO case_notes (user_id, company_id, title, content, note_type, severity)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, company_id, title, content, ntype, sev))
+
+        # 6. SEED ADVISOR FINDINGS & REMEDIATION
+        # We'll use a hardcoded run_id to ensure they show up as the "latest" results
+        run_id = "demo_audit_" + datetime.now().strftime("%Y%m%d")
+        findings = [
+            {
+                "id": "find_001",
+                "cat": "Internal Control",
+                "sev": "High",
+                "conf": 98,
+                "title": "Unauthorized Personal Use of Corporate Accounts",
+                "summary": "AI identified persistent personal spending pattern by user Mike Torres using Amex Business Platinum card.",
+                "reasoning": "Transactions at Apple Retail (NYC) and multiple restaurant visits on weekends violate company travel policy.",
+                "impact": "Direct financial loss of $12,450.00 and potential tax liability.",
+                "actions": ["Revoke Mike Torres card access immediately", "Initiate expense reimbursement recovery"],
+                "links": json.dumps([{"type": "transaction", "id": "qb_mike_1", "description": "Apple Store"}])
+            },
+            {
+                "id": "find_002",
+                "cat": "Audit Readiness",
+                "sev": "Medium",
+                "conf": 85,
+                "title": "Material Capex Misclassification",
+                "summary": "Large equipment purchases ($80k+) recorded in OPEX (Office Supplies).",
+                "reasoning": "Transactions exceed the $2,500.00 capitalization threshold and represent fixed assets with >1yr life.",
+                "impact": "Understated profit and assets; non-compliance with GAAP ASC 360.",
+                "actions": ["Reclassify identified items to Fixed Assets", "Adjust depreciation schedule"],
+                "links": json.dumps([{"type": "transaction", "id": "qb_capex_Dell", "description": "Dell Server"}])
+            }
+        ]
+        
+        for f in findings:
+            cursor.execute("""
+                INSERT INTO advisor_findings (finding_id, company_id, analysis_run_id, category, severity, confidence, title, executive_summary, forensic_rationale, financial_impact, recommended_actions, evidence_graph)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (f["id"], company_id, run_id, f["cat"], f["sev"], f["conf"], f["title"], f["summary"], f["reasoning"], f["impact"], json.dumps(f["actions"]), f["links"]))
+            
+            # Add remediation tasks
+            for act in f["actions"]:
+                cursor.execute("""
+                    INSERT INTO advisor_remediation_tasks (company_id, finding_id, analysis_run_id, task_description, status)
+                    VALUES (?, ?, ?, ?, 'open')
+                """, (company_id, f["id"], run_id, act))
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"FAILED TO SEED DEMO DATA: {e}")
+        raise e
+    finally:
+        conn.close()

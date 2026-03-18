@@ -1,11 +1,12 @@
 import sqlite3
 
-db_path = '/var/www/Forensic_CPA_AI/data/forensic_audit.db'
+import os
+db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'forensic_audit.db')
 conn = sqlite3.connect(db_path)
 c = conn.cursor()
 
 # 1. Remove all QuickBooks demo transactions
-c.execute("DELETE FROM transactions WHERE source_system = 'quickbooks'")
+c.execute("DELETE FROM transactions WHERE source_provider = 'quickbooks'")
 print(f"Deleted {c.rowcount} QuickBooks demo transactions")
 
 # 2. Disconnect QuickBooks integration (set to 'Disconnected')
