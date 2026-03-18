@@ -2935,7 +2935,13 @@ def get_remediation_tasks(company_id: int) -> list:
         WHERE t.company_id = ?
         ORDER BY t.created_at DESC
     ''', (company_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
+    rows = []
+    for r in cursor.fetchall():
+        row = dict(r)
+        for k, v in row.items():
+            if hasattr(v, 'isoformat'):
+                row[k] = v.isoformat()
+        rows.append(row)
     conn.close()
     return rows
 

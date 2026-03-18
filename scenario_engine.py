@@ -138,7 +138,7 @@ def run_simulation(
             "status": "success",
             "scenario": scenario_type.replace('_', ' ').title(),
             "baseline": baseline_financials,
-            "adjusted": adjusted_financials,
+            "simulated": adjusted_financials,
             "delta": round(delta, 2),
             "assumptions": reasoning['assumptions'],
             "confidence": reasoning['confidence'],
