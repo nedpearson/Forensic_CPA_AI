@@ -3848,30 +3848,34 @@ def api_export_finding(finding_id):
         
     return send_file(io.BytesIO(content), mimetype=mimetype, as_attachment=True, download_name=filename)
 
-if __name__ == '__main__':
-    import sys
+import sys
 
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    init_db()
-    
-    # PRODUCTION-SAFE CONFIG GUARDS for QuickBooks
-    qb_enabled = os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true'
-    if qb_enabled:
-        print("  [INIT] QuickBooks Integration: ENABLED. Validating config...")
-        try:
-            from shared.quickbooks_client import QuickBooksOAuthService
-            QuickBooksOAuthService.validate_config()
-            print("  [INIT] QuickBooks config validation PASSED.")
-            
-            qb_debug = os.environ.get('QUICKBOOKS_DEBUG', os.environ.get('QUICKBOOKS_DEBUG_MODE', 'false')).lower() == 'true'
-            if qb_debug:
-                print("  [WARNING] QuickBooks Diagnostic Debugging is ENABLED. Do not use in production!")
-        except Exception as e:
-            print(f"\n  [FATAL STARTUP ERROR] QUICKBOOKS_ENABLED=true but config is invalid:\n  --> {e}\n")
-            print("  Shutting down. Either fix your .env file or set QUICKBOOKS_ENABLED=false.\n")
-            sys.exit(1)
-    else:
-        print("  [INIT] QuickBooks Integration: DISABLED.")
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Initialize database (creates tables and bootstraps super admin if configured)
+init_db()
+
+# PRODUCTION-SAFE CONFIG GUARDS for QuickBooks
+qb_enabled = os.environ.get('QUICKBOOKS_ENABLED', os.environ.get('ENABLE_QB', 'false')).lower() == 'true'
+if qb_enabled:
+    print("  [INIT] QuickBooks Integration: ENABLED. Validating config...")
+    try:
+        from shared.quickbooks_client import QuickBooksOAuthService
+        QuickBooksOAuthService.validate_config()
+        print("  [INIT] QuickBooks config validation PASSED.")
+        
+        qb_debug = os.environ.get('QUICKBOOKS_DEBUG', os.environ.get('QUICKBOOKS_DEBUG_MODE', 'false')).lower() == 'true'
+        if qb_debug:
+            print("  [WARNING] QuickBooks Diagnostic Debugging is ENABLED. Do not use in production!")
+    except Exception as e:
+        print(f"\n  [FATAL STARTUP ERROR] QUICKBOOKS_ENABLED=true but config is invalid:\n  --> {e}\n")
+        print("  Shutting down. Either fix your .env file or set QUICKBOOKS_ENABLED=false.\n")
+        sys.exit(1)
+else:
+    print("  [INIT] QuickBooks Integration: DISABLED.")
+
+if __name__ == '__main__':
+
 
     # Support PORT from environment (LocalProgramControlCenter) or command-line arg
     port = int(os.environ.get('PORT', 3004))
