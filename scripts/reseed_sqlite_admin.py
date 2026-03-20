@@ -20,13 +20,15 @@ def seed_sqlite_admin(email, password):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
+    # 1. Handle User
     user = cursor.execute("SELECT id, role, password_hash FROM users WHERE email=?", (email,)).fetchone()
+    user_id = None
     
     if user:
-        print(f"User {email} already exists (ID: {user['id']}, Role: {user['role']}).")
+        user_id = user['id']
+        print(f"User {email} already exists (ID: {user_id}, Role: {user['role']}).")
         pwd_hash = generate_password_hash(password)
         cursor.execute("UPDATE users SET password_hash=?, role='SUPER_ADMIN' WHERE email=?", (pwd_hash, email))
-        conn.commit()
         print("-> Updated role to SUPER_ADMIN and reset password.")
     else:
         print(f"Creating new user {email}...")
@@ -35,14 +37,52 @@ def seed_sqlite_admin(email, password):
             "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
             (email, pwd_hash, 'SUPER_ADMIN')
         )
-        new_id = cursor.lastrowid
-        conn.commit()
-        print(f"-> Created SUPER_ADMIN with ID: {new_id}")
+        user_id = cursor.lastrowid
+        print(f"-> Created SUPER_ADMIN with ID: {user_id}")
 
+    # 2. Handle Default Company
+    company_name = "Pearson Forensic Audit"
+    company = cursor.execute("SELECT id FROM companies WHERE name=?", (company_name,)).fetchone()
+    company_id = None
+    
+    if company:
+        company_id = company['id']
+        print(f"Company '{company_name}' already exists (ID: {company_id}).")
+    else:
+        print(f"Creating default company '{company_name}'...")
+        cursor.execute(
+            "INSERT INTO companies (name, created_by, owner_user_id) VALUES (?, ?, ?)",
+            (company_name, user_id, user_id)
+        )
+        company_id = cursor.lastrowid
+        print(f"-> Created company with ID: {company_id}")
+
+    # 3. Handle Membership
+    membership = cursor.execute(
+        "SELECT id FROM company_memberships WHERE user_id=? AND company_id=?", 
+        (user_id, company_id)
+    ).fetchone()
+    
+    if membership:
+        print(f"User is already a member of the company.")
+        cursor.execute(
+            "UPDATE company_memberships SET role='owner', is_default=1 WHERE user_id=? AND company_id=?",
+            (user_id, company_id)
+        )
+    else:
+        print(f"Linking user to company...")
+        cursor.execute(
+            "INSERT INTO company_memberships (user_id, company_id, role, is_default) VALUES (?, ?, ?, ?)",
+            (user_id, company_id, 'owner', 1)
+        )
+        print(f"-> Linked user {user_id} to company {company_id} as owner.")
+
+    conn.commit()
     conn.close()
+    print("\nExtraction finished successfully. Ned should now have a default company context.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed super admin on SQLite database")
+    parser = argparse.ArgumentParser(description="Seed super admin and default company on SQLite database")
     parser.add_argument('--email', default="nedpearson@gmail.com", help="Email of the super admin")
     parser.add_argument('--password', default="1Pearson2", help="Password for the super admin")
     
