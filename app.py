@@ -2806,21 +2806,23 @@ def api_upload_preview():
     file.save(filepath)
 
     file_hash = compute_file_hash(filepath)
-    if ext.lower() != '.zip':
-        existing_doc_id = get_duplicate_document(current_user.id, file_hash)
-        if existing_doc_id:
+    existing_doc_id = get_duplicate_document(current_user.id, file_hash)
+    if existing_doc_id:
+        try:
             os.remove(filepath)
-            return jsonify({
-                'status': 'ok',
-                'mode': 'duplicate',
-                'document_id': existing_doc_id,
-                'message': 'This document has already been uploaded.',
-                'transactions_added': 0,
-                'transactions': [],
-                'account_info': {},
-                'transaction_count': 0,
-                'duplicate_count': 0,
-            })
+        except OSError:
+            pass
+        return jsonify({
+            'status': 'ok',
+            'mode': 'duplicate',
+            'document_id': existing_doc_id,
+            'message': 'This document has already been uploaded.',
+            'transactions_added': 0,
+            'transactions': [],
+            'account_info': {},
+            'transaction_count': 0,
+            'duplicate_count': 0,
+        })
 
     # Zero-Cost Active Memory Cache
     with _preview_lock:
