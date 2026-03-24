@@ -1335,6 +1335,14 @@
                         </select></div>
                     <div class="col"><input type="text" class="form-control form-control-sm" id="dash-cardholder"
                             placeholder="Cardholder..."></div>
+                    <div class="col"><select class="form-select form-select-sm" id="dash-payment-method">
+                            <option value="">All Methods</option>
+                            <option value="check">Check</option>
+                            <option value="venmo">Venmo</option>
+                            <option value="mobile">Mobile</option>
+                            <option value="transfer">Transfer</option>
+                            <option value="debit">Debit</option>
+                        </select></div>
                     <div class="col"><select class="form-select form-select-sm" id="dash-flags">
                             <option value="">All Statuses</option>
                             <option value="flagged">Flagged</option>
@@ -1464,6 +1472,14 @@
                             <option value="deposit">Deposit</option>
                             <option value="fee">Fee</option>
                             <option value="payment">Payment</option>
+                        </select></div>
+                    <div class="col"><select class="form-select form-select-sm" id="filter-payment-method">
+                            <option value="">All Methods</option>
+                            <option value="check">Check</option>
+                            <option value="venmo">Venmo</option>
+                            <option value="mobile">Mobile</option>
+                            <option value="transfer">Transfer</option>
+                            <option value="debit">Debit</option>
                         </select></div>
                     <div class="col"><input type="date" class="form-control form-control-sm" id="filter-date-from">
                     </div>
@@ -3132,6 +3148,7 @@
             setVal('filter-category', filters.category);
             setVal('filter-cardholder', filters.cardholder);
             setVal('filter-type', filters.trans_type);
+            setVal('filter-payment-method', filters.payment_method);
             setVal('filter-date-from', filters.date_from);
             setVal('filter-date-to', filters.date_to);
             setVal('filter-min-amt', filters.min_amount);
@@ -3150,6 +3167,7 @@
             setVal('dash-account', filters.account_id);
             setVal('dash-category', filters.category);
             setVal('dash-cardholder', filters.cardholder);
+            setVal('dash-payment-method', filters.payment_method);
             const dashFlags = document.getElementById('dash-flags');
             if (dashFlags) {
                 if (filters.is_flagged) dashFlags.value = 'flagged';
@@ -3167,6 +3185,7 @@
                 category: getVal('filter-category'),
                 cardholder: getVal('filter-cardholder'),
                 trans_type: getVal('filter-type'),
+                payment_method: getVal('filter-payment-method'),
                 date_from: getVal('filter-date-from'),
                 date_to: getVal('filter-date-to'),
                 min_amount: getVal('filter-min-amt'),
@@ -3360,6 +3379,7 @@
                 account_id: getVal('dash-account'),
                 category: getVal('dash-category'),
                 cardholder: getVal('dash-cardholder'),
+                payment_method: getVal('dash-payment-method'),
                 is_flagged: null, is_personal: null, is_business: null, is_transfer: null,
                 date_preset: 'custom'
             };
@@ -3572,7 +3592,7 @@
                             <td class="checkbox-cell"><input type="checkbox" class="row-check" value="${t.id}" ${selectedIds.has(t.id) ? 'checked' : ''}></td>
                             <td style="white-space:nowrap;font-size:0.75rem;">${t.trans_date || ''}</td>
                             <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="editTransaction(${t.id})" title="${esc(t.description)}${t.user_notes ? '\nNotes: ' + esc(t.user_notes) : ''}">${esc(t.description)}</td>
-                            <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">$${fmt(Math.abs(t.amount))}</td>
+                            <td class="${t.amount < 0 ? 'amount-negative' : 'amount-positive'}">${t.amount < 0 ? '-' : ''}$${fmt(Math.abs(t.amount))}</td>
                             <td>${catUI}</td>
                             <td style="font-size:0.75rem;">${esc(t.cardholder_name || '')}</td>
                             <td style="font-size:0.75rem;">${t.card_last_four ? '#' + t.card_last_four : ''}</td>
@@ -3617,7 +3637,8 @@
                         if (t.amount < 0) totalDebits += Math.abs(t.amount); else totalCredits += t.amount;
                     });
                     document.getElementById('trans-count').textContent = `${visibleData.length} transactions`;
-                    document.getElementById('trans-total').textContent = `Debits: $${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: $${fmt(totalCredits - totalDebits)}`;
+                    const net = totalCredits - totalDebits;
+                    document.getElementById('trans-total').textContent = `Debits: -$${fmt(totalDebits)} | Credits: $${fmt(totalCredits)} | Net: ${net < 0 ? '-' : ''}$${fmt(Math.abs(net))}`;
                 }
             }
 
