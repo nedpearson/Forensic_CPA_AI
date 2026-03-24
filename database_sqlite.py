@@ -1156,12 +1156,14 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
         db_conn.close()
     return add_account(user_id, account_name, account_number, account_type, institution, cardholder_name, card_last_four, conn=conn, company_id=company_id)
 
-def get_duplicate_document(user_id, content_sha256):
+def get_duplicate_document(user_id, content_sha256, company_id=None):
+    if company_id is None:
+        company_id = _get_active_company_id_shim()
     if not content_sha256:
         return None
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ?", (user_id, content_sha256))
+    cursor.execute("SELECT id FROM documents WHERE user_id = ? AND content_sha256 = ? AND company_id = ?", (user_id, content_sha256, company_id))
     row = cursor.fetchone()
     conn.close()
     return row['id'] if row else None

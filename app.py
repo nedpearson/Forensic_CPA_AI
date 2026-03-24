@@ -2082,22 +2082,178 @@ def api_upload():
                                 shutil.copyfileobj(f_in, f_out)
                         extracted_paths.append((permanent_path, child_hash))
 
-                    # Parallelize parsing
-                    def parse_task(args):
-                        f_path, c_hash = args
-                        t, ai = parse_document(f_path, doc_type)
-                        return c_hash, t, ai
+                    from flask import copy_current_request_context
+                    import threading
+                    
+                    # Pre-allocate parent document
+                    account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
+                    account_id = get_or_create_account(
+                        user_id=current_user.id,
+                        account_name=account_info['institution'],
+                        account_number=account_info['account_number'],
+                        account_type=account_info['account_type'],
+                        institution=account_info['institution'],
+                        cardholder_name=None,
+                        card_last_four=None,
+                    )
+                    
+                    parent_doc_id = add_document(
+                        user_id=current_user.id,
+                        filename=filename,
+                        original_path=filepath,
+                        file_type='zip',
+                        doc_category=doc_category,
+                        account_id=account_id,
+                        content_sha256=file_hash,
+                        status='queued'
+                    )
 
-                    with ThreadPoolExecutor(max_workers=4) as executor:
-                        future_to_file = {executor.submit(parse_task, item): item for item in extracted_paths}
-                        for future in as_completed(future_to_file):
-                            c_hash, t, ai = future.result()
-                            if t:
-                                for trans in t:
-                                    trans['_source_hash'] = c_hash
-                                transactions.extend(t)
-                            if not account_info and ai:
-                                account_info = ai
+                    @copy_current_request_context
+                    def process_zip_async():
+                        try:
+                            # Update status
+                            from database import update_document_status, add_document, get_db, add_transactions_bulk
+                            update_document_status(current_user.id, parent_doc_id, status='extracting', progress_percent=10)
+                            
+                            def parse_task(args):
+                                f_path, c_hash = args
+                                t, ai = parse_document(f_path, doc_type)
+                                return c_hash, t, ai
+
+                            local_transactions = transactions.copy()
+                            child_doc_map = {}
+                            
+                            update_document_status(current_user.id, parent_doc_id, status='parsing', progress_percent=25)
+                            
+                            for child_hash, (c_filename, c_path) in zip_children_info.items():
+                                c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
+                                c_id = add_document(
+                                    user_id=current_user.id,
+                                    filename=c_filename,
+                                    original_path=c_path,
+                                    file_type=c_ext,
+                                    doc_category=doc_category,
+                                    account_id=account_id,
+                                    content_sha256=child_hash,
+                                    parent_document_id=parent_doc_id,
+                                    status='parsing'
+                                )
+                                child_doc_map[child_hash] = c_id
+
+                            with ThreadPoolExecutor(max_workers=4) as executor:
+                                future_to_file = {executor.submit(parse_task, item): item for item in extracted_paths}
+                                for future in as_completed(future_to_file):
+                                    c_hash, t, ai = future.result()
+                                    if t:
+                                        for trans in t:
+                                            trans['_source_hash'] = c_hash
+                                        local_transactions.extend(t)
+                                    
+                            update_document_status(current_user.id, parent_doc_id, status='processing', progress_percent=75)
+                            
+                            global_cardholder = account_info.get('account_name', '')
+                            global_last_four = str(account_info.get('account_number', ''))[-4:] if account_info.get('account_number') else ''
+
+                            for trans in local_transactions:
+                                if not trans.get('cardholder_name'):
+                                    trans['cardholder_name'] = global_cardholder
+                                if not trans.get('card_last_four'):
+                                    trans['card_last_four'] = global_last_four
+
+                            from categorizer import categorize_transactions_bulk
+                            categorized_results = categorize_transactions_bulk(current_user.id, local_transactions, account_id)
+
+                            transactions_with_hashes = []
+                            target_doc_ids = []
+
+                            for i, trans in enumerate(local_transactions):
+                                target_doc_id = parent_doc_id
+                                child_hash = trans.get('_source_hash')
+                                if child_hash and child_hash in child_doc_map:
+                                    target_doc_id = child_doc_map[child_hash]
+
+                                cat_result = categorized_results[i]
+                                trans['category'] = cat_result['category']
+                                trans['subcategory'] = cat_result['subcategory']
+                                trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
+                                trans['is_transfer'] = cat_result['is_transfer']
+                                trans['is_personal'] = cat_result['is_personal']
+                                trans['is_business'] = cat_result['is_business']
+                                trans['is_flagged'] = cat_result['is_flagged']
+                                trans['flag_reason'] = cat_result['flag_reason']
+                                trans['merchant_id'] = cat_result.get('merchant_id')
+                                trans['categorization_confidence'] = cat_result.get('categorization_confidence')
+                                trans['categorization_source'] = cat_result.get('categorization_source')
+                                trans['categorization_status'] = cat_result.get('categorization_status')
+                                trans['categorization_explanation'] = cat_result.get('categorization_explanation')
+                                trans['is_approved'] = 0
+                                trans['auto_categorized'] = 1
+
+                                txn_fingerprint = compute_transaction_hash(
+                                    account_scope_id=account_id,
+                                    trans_date=trans['trans_date'],
+                                    amount=trans['amount'],
+                                    description=trans['description'],
+                                    post_date=trans.get('post_date', trans.get('trans_date')),
+                                    check_number=trans.get('check_number')
+                                )
+
+                                transactions_with_hashes.append({
+                                    'trans': trans,
+                                    'txn_fingerprint': txn_fingerprint
+                                })
+                                target_doc_ids.append(target_doc_id)
+
+                            added, skipped, trans_doc_stats = add_transactions_bulk(
+                                user_id=current_user.id,
+                                account_id=account_id,
+                                transactions_with_hashes=transactions_with_hashes,
+                                target_doc_ids=target_doc_ids
+                            )
+
+                            uncategorized_txns = []
+                            if added > 0:
+                                conn = get_db()
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    SELECT id, description, amount, trans_date 
+                                    FROM transactions 
+                                    WHERE user_id = ? AND account_id = ? AND category = 'Uncategorized' 
+                                    AND is_approved = 0 ORDER BY id DESC LIMIT ?
+                                """, (current_user.id, account_id, added))
+                                for row in cursor.fetchall():
+                                    uncategorized_txns.append(dict(row))
+                                conn.close()
+
+                            for c_id in child_doc_map.values():
+                                update_document_status(current_user.id, c_id, status='pending_approval')
+
+                            update_document_status(current_user.id, parent_doc_id, status='pending_approval', parsed_count=len(local_transactions), import_count=added, skipped_count=skipped, progress_percent=100)
+
+                            if uncategorized_txns:
+                                from categorizer import run_bulk_ai_categorization
+                                run_bulk_ai_categorization(current_user.id, uncategorized_txns)
+                                
+                            if active_company_id:
+                                from advisor_worker import trigger_async_advisor_refresh
+                                trigger_async_advisor_refresh(active_company_id, current_user.id, "Document Import Completed")
+                        except Exception as e:
+                            app.logger.error(f"Async ZIP parsing failed: {e}")
+                            try:
+                                from database import update_document_status
+                                update_document_status(current_user.id, parent_doc_id, status='failed', failure_reason=str(e))
+                            except:
+                                pass
+
+                    thread = threading.Thread(target=process_zip_async)
+                    thread.start()
+
+                    return jsonify({
+                        'status': 'ok',
+                        'mode': 'async_zip',
+                        'document_id': parent_doc_id,
+                        'message': f'ZIP file {filename} queued for asynchronous processing. Progress can be monitored below.'
+                    })
 
             except Exception as e:
                 zip_errors.append(str(e))
@@ -2108,8 +2264,6 @@ def api_upload():
             if zip_errors and not transactions:
                 raise Exception(f"Failed to process zip archive: {'; '.join(zip_errors)}")
 
-            if not account_info:
-                account_info = {'institution': 'Multiple Documents', 'account_type': 'bank', 'account_number': 'Zip Archive'}
         else:
             transactions, account_info = parse_document(filepath, doc_type)
     except Exception as e:
@@ -2806,7 +2960,7 @@ def api_upload_preview():
     file.save(filepath)
 
     file_hash = compute_file_hash(filepath)
-    existing_doc_id = get_duplicate_document(current_user.id, file_hash)
+    existing_doc_id = get_duplicate_document(current_user.id, file_hash, active_company_id)
     if existing_doc_id:
         try:
             os.remove(filepath)
