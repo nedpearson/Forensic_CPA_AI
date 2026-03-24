@@ -2913,7 +2913,7 @@
     <script>
         window.apiFetch = async function(url, options = {}) {
             try {
-                const response = await window.apiFetch(url, options);
+                const response = await fetch(url, options);
                 if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
                 if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
                 return response;
@@ -6843,7 +6843,7 @@
     <script>
         window.apiFetch = async function(url, options = {}) {
             try {
-                const response = await window.apiFetch(url, options);
+                const response = await fetch(url, options);
                 if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
                 if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
                 return response;
@@ -7030,7 +7030,7 @@
     <script>
         window.apiFetch = async function(url, options = {}) {
             try {
-                const response = await window.apiFetch(url, options);
+                const response = await fetch(url, options);
                 if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
                 if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
                 return response;
