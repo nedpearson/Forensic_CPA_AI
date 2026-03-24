@@ -56,6 +56,10 @@ from parsers import compute_transaction_hash
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'forensic-auditor-local-key')
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('COOKIE_SECURE', 'false').lower() == 'true'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+import datetime
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(hours=8)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
@@ -1227,6 +1231,7 @@ def api_qb_demo_connect():
         
     try:
         from database import upsert_integration, seed_comprehensive_demo_data
+        from datetime import datetime
         upsert_integration(
             current_user.id, "quickbooks", status="Connected",
             metadata={"realmId": "193514528190000", "last_sync": datetime.utcnow().isoformat(), "synced_count": 150},
@@ -1553,6 +1558,10 @@ def api_docs_upload():
         # 3. Trigger extraction asynchronously 
         def extract_task(user_id, document_id, extraction_id, path):
             try:
+                from database import get_db, get_or_create_account, add_transactions_bulk, update_document_status
+                from parsers import parse_bank_statement, compute_transaction_hash
+                from categorizer import categorize_transactions_bulk
+                
                 update_document_status(user_id, document_id, status='processing')
                 analyzer = AzureDocumentIntelligenceAdapter()
                 result = analyzer.analyze_document(path)
@@ -1563,16 +1572,102 @@ def api_docs_upload():
                     status='completed'
                 )
                 
-                # Automatically attempt to extract tabular transactions from Azure payload
                 update_document_status(user_id, document_id, status='parsed')
                 
-                # Currently we only parse PDFs if they enter via this route or ZIPs.
-                # Since the old analyzer approach didn't natively build transactions,
-                # we are adding status support for the UI to be aware of the gap.
+                content = result.get('content', '')
+                if not content:
+                    update_document_status(user_id, document_id, status='approved', parsed_count=0, import_count=0)
+                    return
+                    
+                transactions, account_info = parse_bank_statement(None, pre_extracted_pages=[content])
                 
-                # Update: we need to at least notify the UI that the document has completed processing successfully 
-                # even if we haven't ported the Azure-to-Transaction mapping logic yet.
-                update_document_status(user_id, document_id, status='approved', parsed_count=0, import_count=0)
+                if not transactions:
+                    update_document_status(user_id, document_id, status='approved', parsed_count=0, import_count=0)
+                    return
+
+                # Create/get account
+                account_id = None
+                if account_info.get('account_number'):
+                    account_id = get_or_create_account(
+                        user_id=user_id,
+                        account_name=account_info.get('account_name', account_info.get('institution', 'Unknown')),
+                        account_number=account_info['account_number'],
+                        account_type=account_info.get('account_type', 'bank'),
+                        institution=account_info.get('institution', 'Unknown'),
+                        cardholder_name=account_info.get('account_name'),
+                        card_last_four=account_info.get('account_number', '')[-4:] if account_info.get('account_number') else None,
+                        company_id=active_company_id
+                    )
+
+                # Set parent account ID
+                conn = get_db()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE documents SET account_id = ?, statement_start_date = ?, statement_end_date = ? WHERE id = ?",
+                                   (account_id, account_info.get('statement_start'), account_info.get('statement_end'), document_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                global_cardholder = account_info.get('account_name', '')
+                global_last_four = str(account_info.get('account_number', ''))[-4:] if account_info.get('account_number') else ''
+
+                for trans in transactions:
+                    if not trans.get('cardholder_name'):
+                        trans['cardholder_name'] = global_cardholder
+                    if not trans.get('card_last_four'):
+                        trans['card_last_four'] = global_last_four
+
+                categorized_results = categorize_transactions_bulk(user_id, transactions, account_id)
+                
+                transactions_with_hashes = []
+                for i, trans in enumerate(transactions):
+                    cat_result = categorized_results[i]
+                    trans['category'] = cat_result['category']
+                    trans['subcategory'] = cat_result['subcategory']
+                    trans['payment_method'] = cat_result.get('payment_method', trans.get('payment_method', ''))
+                    trans['is_transfer'] = cat_result['is_transfer']
+                    trans['is_personal'] = cat_result['is_personal']
+                    trans['is_business'] = cat_result['is_business']
+                    trans['is_flagged'] = cat_result['is_flagged']
+                    trans['flag_reason'] = cat_result['flag_reason']
+                    trans['merchant_id'] = cat_result.get('merchant_id')
+                    trans['categorization_confidence'] = cat_result.get('categorization_confidence')
+                    trans['categorization_source'] = cat_result.get('categorization_source')
+                    trans['categorization_status'] = cat_result.get('categorization_status')
+                    trans['categorization_explanation'] = cat_result.get('categorization_explanation')
+                    trans['is_approved'] = 0
+                    trans['auto_categorized'] = 1
+
+                    txn_fingerprint = compute_transaction_hash(
+                        account_scope_id=account_id,
+                        trans_date=trans['trans_date'],
+                        amount=trans['amount'],
+                        description=trans['description'],
+                        post_date=trans.get('post_date', trans.get('trans_date')),
+                        check_number=trans.get('check_number')
+                    )
+
+                    transactions_with_hashes.append({
+                        'trans': trans,
+                        'txn_fingerprint': txn_fingerprint
+                    })
+
+                target_doc_ids = [document_id] * len(transactions)
+
+                added, skipped, trans_doc_stats = add_transactions_bulk(
+                    user_id=user_id,
+                    account_id=account_id,
+                    transactions_with_hashes=transactions_with_hashes,
+                    target_doc_ids=target_doc_ids,
+                    company_id=active_company_id
+                )
+
+                update_document_status(user_id, document_id, status='pending_approval', parsed_count=len(transactions), import_count=added, skipped_count=skipped)
+                
+                if active_company_id:
+                    from advisor_worker import trigger_async_advisor_refresh
+                    trigger_async_advisor_refresh(active_company_id, user_id, "Document Import Completed")
                 
             except Exception as e:
                 update_document_extraction(
@@ -1581,6 +1676,7 @@ def api_docs_upload():
                     status='failed', 
                     error_message=str(e)
                 )
+                from database import update_document_status
                 update_document_status(user_id, document_id, status='failed', failure_reason=str(e))
 
         thread = threading.Thread(target=extract_task, args=(current_user_id, doc_id, ext_id, filepath))
@@ -1894,13 +1990,13 @@ def api_upload():
         if ext.lower() == '.zip':
             import zipfile
             import hashlib
+            import uuid
+            import shutil
             from concurrent.futures import ThreadPoolExecutor, as_completed
             from database import get_db
             
             transactions = []
             account_info = {}
-            extracted_dir = filepath + "_extracted"
-            os.makedirs(extracted_dir, exist_ok=True)
             zip_errors = []
             
             # Zip bomb & slip limits
@@ -1955,7 +2051,7 @@ def api_upload():
                         dup_id = get_duplicate_document(current_user.id, child_hash)
                         if dup_id:
                             app.logger.info(f"Linking existing duplicate zip child: {basename}")
-                            zip_children_info[child_hash] = basename
+                            zip_children_info[child_hash] = (basename, None)
                             
                             # Load missing transactions directly to pass to bulk committer
                             conn = get_db()
@@ -1973,20 +2069,18 @@ def api_upload():
                             continue
                             
                         # If not duplicate, queue for extraction and parsing
-                        zip_children_info[child_hash] = basename
-                        files_to_extract.append((zinfo, child_hash, basename))
+                        unique_filename = f"{uuid.uuid4().hex}_{basename}"
+                        permanent_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                        zip_children_info[child_hash] = (basename, permanent_path)
+                        files_to_extract.append((zinfo, child_hash, permanent_path))
 
-                    # Safely extract the unknown validated files
+                    # Safely extract the unknown validated files directly to persistent storage
                     extracted_paths = []
-                    for zinfo, child_hash, basename in files_to_extract:
-                        safe_path = os.path.abspath(os.path.join(extracted_dir, basename))
-                        # Final path validation against slip
-                        if not safe_path.startswith(os.path.abspath(extracted_dir)):
-                            continue
-                        with open(safe_path, 'wb') as f_out:
+                    for zinfo, child_hash, permanent_path in files_to_extract:
+                        with open(permanent_path, 'wb') as f_out:
                             with zip_ref.open(zinfo) as f_in:
                                 shutil.copyfileobj(f_in, f_out)
-                        extracted_paths.append((safe_path, child_hash))
+                        extracted_paths.append((permanent_path, child_hash))
 
                     # Parallelize parsing
                     def parse_task(args):
@@ -2009,8 +2103,7 @@ def api_upload():
                 zip_errors.append(str(e))
                 app.logger.error(f"Zip extraction failed: {e}")
             finally:
-                # Cleanup temp directory holding the extracted copies
-                shutil.rmtree(extracted_dir, ignore_errors=True)
+                pass # Extracted files are now persistent, no temp directory to delete
                 
             if zip_errors and not transactions:
                 raise Exception(f"Failed to process zip archive: {'; '.join(zip_errors)}")
@@ -2071,12 +2164,12 @@ def api_upload():
     
     child_doc_map = {}
     if ext.lower() == '.zip':
-        for child_hash, c_filename in zip_children_info.items():
+        for child_hash, (c_filename, c_path) in zip_children_info.items():
             c_ext = c_filename.rsplit('.', 1)[1].lower() if '.' in c_filename else 'pdf'
             c_id = add_document(
                 user_id=current_user.id,
                 filename=c_filename,
-                original_path=None,
+                original_path=c_path,
                 file_type=c_ext,
                 doc_category=doc_category,
                 account_id=account_id,
@@ -2369,6 +2462,8 @@ def api_clear_data():
     return jsonify({'status': 'ok', 'message': 'All data cleared'})
 
 
+_cancellation_requests = set()
+
 def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_hash, filename, doc_category, app_context):
     """
     Background job to process a zip file progressively.
@@ -2397,9 +2492,6 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
 
         # Update status to extracting
         update_document_status(user_id, parent_doc_id, status='extracting')
-
-        extracted_dir = filepath + "_extracted"
-        os.makedirs(extracted_dir, exist_ok=True)
         
         # Zip bomb & slip limits
         MAX_FILES = 500
@@ -2430,8 +2522,9 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
                     file_hash_obj = hashlib.sha256()
                     file_size = 0
                     
-                    safe_path = os.path.abspath(os.path.join(extracted_dir, basename))
-                    if not safe_path.startswith(os.path.abspath(extracted_dir)): continue
+                    import uuid
+                    unique_filename = f"{uuid.uuid4().hex}_{basename}"
+                    safe_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
 
                     with open(safe_path, 'wb') as f_out:
                         with zip_ref.open(zinfo) as f_in:
@@ -2462,7 +2555,7 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
                     c_id = add_document(
                         user_id=user_id,
                         filename=basename,
-                        original_path=None,
+                        original_path=safe_path,
                         file_type=c_ext,
                         doc_category=doc_category,
                         account_id=None,
@@ -2493,9 +2586,23 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
 
             from concurrent.futures import ThreadPoolExecutor, as_completed
             # Use bounded pool
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            total_files = len(extracted_paths)
+            completed_files = 0
+            
+            with ThreadPoolExecutor(max_workers=8) as executor:
                 future_to_file = {executor.submit(parse_task, item): item for item in extracted_paths}
                 for future in as_completed(future_to_file):
+                    if parent_doc_id in _cancellation_requests:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        update_document_status(user_id, parent_doc_id, status='cancelled')
+                        _cancellation_requests.remove(parent_doc_id)
+                        return # Early abort
+                
+                    completed_files += 1
+                    progress = int((completed_files / total_files) * 100) if total_files > 0 else 100
+                    if completed_files % max(1, total_files // 10) == 0 or completed_files == total_files:
+                        update_document_status(user_id, parent_doc_id, progress_percent=progress)
+
                     try:
                         c_hash, b_name, t, ai = future.result()
                         if t:
@@ -2631,8 +2738,7 @@ def process_zip_background(user_id, company_id, parent_doc_id, filepath, file_ha
             for child_hash, c_id in child_doc_map.items():
                 update_document_status(user_id, c_id, status='failed', failure_reason="Parent ZIP processing failed")
         finally:
-            shutil.rmtree(extracted_dir, ignore_errors=True)
-
+            pass # Persistent storage used, no temp cleanup
 def process_qbw_background(user_id, company_id, doc_id, filepath, app_context):
     with app_context:
         import time
@@ -3083,6 +3189,29 @@ def api_upload_commit():
         trigger_async_advisor_refresh(active_company_id, current_user.id, "Document/Batch Upload Committed")
 
     return jsonify(success_payload)
+
+
+@app.route('/api/documents/<int:doc_id>/cancel', methods=['POST'])
+@login_required
+def api_document_cancel(doc_id):
+    """Cancel background processing for a document."""
+    from database import get_db, update_document_status
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM documents WHERE id = ? AND user_id = ?", (doc_id, current_user.id))
+    doc = cursor.fetchone()
+    conn.close()
+    
+    if not doc:
+        return jsonify({'error': 'Document not found or unauthorized'}), 404
+        
+    if doc['status'] in ['extracting', 'generating_previews', 'parsing', 'processing', 'queued']:
+        _cancellation_requests.add(doc_id)
+        update_document_status(current_user.id, doc_id, status='cancelled')
+        return jsonify({'status': 'ok', 'message': 'Cancellation requested.'})
+    
+    return jsonify({'error': 'Document is not in a cancellable state.'}), 400
 
 
 @app.route('/api/documents/<int:doc_id>/approve', methods=['POST'])

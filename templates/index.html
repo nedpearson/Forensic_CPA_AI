@@ -2911,6 +2911,17 @@
     <script src="/shared/components/Table.js?v=5"></script>
     <script src="/shared/drilldown.js"></script>
     <script>
+        window.apiFetch = async function(url, options = {}) {
+            try {
+                const response = await window.apiFetch(url, options);
+                if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
+                if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
+                return response;
+            } catch (err) {
+                console.error('API Error:', err);
+                throw err;
+            }
+        };
         // =====
         const initialFilters = hydrateFilters(window.location.search);
         if (!initialFilters.view_mode) {
@@ -3075,7 +3086,7 @@
 
         async function logDrilldownEvent(record) {
             try {
-                await fetch('/api/drilldowns', {
+                await window.apiFetch('/api/drilldowns', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(record)
@@ -3238,7 +3249,7 @@
             if (!table) return;
 
             try {
-                const res = await fetch('/api/business/members');
+                const res = await window.apiFetch('/api/business/members');
                 if (!res.ok) throw new Error('Failed to load members');
 
                 const data = await res.json();
@@ -4271,7 +4282,7 @@
                 fd.append('doc_category', document.getElementById('upload-doc-category').value);
 
                 try {
-                    const resp = await fetch('/api/upload/preview', { method: 'POST', body: fd });
+                    const resp = await window.apiFetch('/api/upload/preview', { method: 'POST', body: fd });
                     const data = await resp.json();
 
                     if (data.error) {
@@ -4422,6 +4433,8 @@
 
         // ===== DOCUMENTS =====
         let docsTable;
+        let _docPollingActive = false;
+
         async function loadDocuments() {
             const docs = await api('/api/documents');
             let html = '';
@@ -4470,12 +4483,22 @@
                 if (d.status === 'pending_approval') {
                     actionHtml += `<button class="btn btn-sm btn-success py-0 px-2 me-1 action-btn" onclick="event.stopPropagation(); approveDocument('${d.id}', this)" title="Approve Document"><i class="fas fa-check"></i> Approve</button>`;
                 }
+                if (['uploading', 'extracting', 'generating_previews', 'processing', 'queued', 'parsing'].includes(d.status)) {
+                    actionHtml += `<button class="btn btn-sm btn-danger py-0 px-2 me-1 action-btn" onclick="event.stopPropagation(); cancelDocument('${d.id}', this)" title="Cancel Processing"><i class="fas fa-times"></i> Cancel</button>`;
+                }
                 actionHtml += `<button class="btn btn-sm btn-outline-danger py-0 px-2 action-btn" onclick="event.stopPropagation(); deleteDocument('${d.id}', this)" title="Delete Document & Truncate Orphan Data"><i class="fas fa-trash"></i></button>`;
 
                 const indent = isChild ? '<span style="margin-left: 1.5rem; border-left: 2px solid #4a5568; padding-left: 10px;"></span>' : '';
 
+                let filenameHtml = `<a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a>`;
+                if (['extracting', 'parsing'].includes(d.status) && typeof d.progress_percent === 'number') {
+                    filenameHtml += `<div class="progress mt-1" style="height: 5px; background-color: #343a40;" title="${d.progress_percent}%">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: ${d.progress_percent}%" aria-valuenow="${d.progress_percent}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>`;
+                }
+
                 let tr = `<tr class="clickable-row ${isChild ? 'child-doc' : 'parent-doc'}" onclick="drillToTransactions({document_id: '${d.id}'})" title="View transactions imported from this document">
-                <td>${indent}<a href="/uploads/${encodeURIComponent(d.filename)}" target="_blank" onclick="event.stopPropagation()"><i class="fas ${icon} me-1"></i>${esc(d.filename)}</a></td>
+                <td>${indent}${filenameHtml}</td>
                 <td>${d.file_type}</td><td>${d.doc_category || ''}</td><td>${d.account_name || ''}</td>
                 <td>${badgeHtml}</td>
                 <td>${d.parsed_transaction_count || 0}</td>
@@ -4517,6 +4540,15 @@
                 // Not supported cleanly due to hierarchy recursion, so we flatten for quicksearch
             }
             docsTable.updateData(roots);
+
+            const isProcessing = docs.some(d => ['uploading', 'extracting', 'generating_previews', 'processing', 'queued', 'parsing'].includes(d.status));
+            if (isProcessing && !_docPollingActive) {
+                _docPollingActive = true;
+                setTimeout(() => {
+                    _docPollingActive = false;
+                    loadDocuments();
+                }, 2000);
+            }
         }
 
         window.filterDocs = function (val) {
@@ -4542,6 +4574,25 @@
             } catch (e) {
                 toast("Error approving document.", "danger");
                 if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Approve'; }
+            }
+        }
+
+        async function cancelDocument(docId, btn) {
+            if (!confirm("Are you sure you want to abort the processing sequence for this ZIP/document?")) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+            try {
+                toast("Signaling abort sequence...", "info");
+                const res = await api(`/api/documents/${docId}/cancel`, 'POST');
+                if (res.error) {
+                    toast(res.error, "danger");
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-times"></i> Cancel'; }
+                } else {
+                    toast(res.message, "warning");
+                    setTimeout(loadDocuments, 500); // refresh UI
+                }
+            } catch (e) {
+                toast("Error communicating cancel command.", "danger");
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-times"></i> Cancel'; }
             }
         }
 
@@ -5532,7 +5583,7 @@
             const opts = { method, headers: {} };
             if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
             try {
-                const r = await fetch(url, opts);
+                const r = await window.apiFetch(url, opts);
                 if (r.status === 401 || r.status === 403) {
                     const nextUrl = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
                     window.location.href = '/login?next=' + nextUrl;
@@ -6171,7 +6222,7 @@
         // ===== AUTH =====
         async function fetchUserProfile() {
             try {
-                const res = await fetch('/api/auth/me');
+                const res = await window.apiFetch('/api/auth/me');
                 if (res.ok) {
                     const user = await res.json();
 
@@ -6216,7 +6267,7 @@
                 if (!name) return fetchUserProfile();
 
                 try {
-                    const res = await fetch('/api/business/create', {
+                    const res = await window.apiFetch('/api/business/create', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name: name })
@@ -6229,7 +6280,7 @@
                 return;
             }
             try {
-                const res = await fetch('/api/business/switch', {
+                const res = await window.apiFetch('/api/business/switch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ company_id: companyId })
@@ -6251,7 +6302,7 @@
                 sessionStorage.clear();
 
                 // 2. Destroy Flask-Login session
-                await fetch('/api/auth/logout', { method: 'POST' });
+                await window.apiFetch('/api/auth/logout', { method: 'POST' });
 
                 // 3. Navigate back to login
                 window.location.href = '/login';
@@ -6271,7 +6322,7 @@
         })();
         // ===== AI ADVISOR LOGIC =====
         function loadAdvisorStatus() {
-            fetch('/api/advisor/status', { credentials: 'include' })
+            window.apiFetch('/api/advisor/status', { credentials: 'include' })
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -6313,7 +6364,7 @@
             if (loadingState) loadingState.style.display = 'block';
 
             const url = isManual ? '/api/advisor/aggregate?force=true' : '/api/advisor/aggregate';
-            fetch(url, { credentials: 'include' })
+            window.apiFetch(url, { credentials: 'include' })
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success' || (data.status === 'running' && data.data)) {
@@ -6355,7 +6406,7 @@
             resultsState.style.display = 'none';
 
             try {
-                const res = await fetch(`/api/advisor/report/contract`);
+                const res = await window.apiFetch(`/api/advisor/report/contract`);
                 const data = await res.json();
 
                 if (!data.data || !data.data.analysis_run_id || data.data.detailed_findings.length === 0) {
@@ -6475,7 +6526,7 @@
             currentAppxPage += delta;
             if (currentAppxPage < 1) currentAppxPage = 1;
             try {
-                const res = await fetch(`/api/advisor/report/appendix?page=${currentAppxPage}&per_page=20`);
+                const res = await window.apiFetch(`/api/advisor/report/appendix?page=${currentAppxPage}&per_page=20`);
                 const data = await res.json();
                 const tbody = document.getElementById('adv-appendix-tbody');
                 tbody.innerHTML = '';
@@ -6635,7 +6686,7 @@
             }
 
             try {
-                const req = await fetch('/api/simulator/run', {
+                const req = await window.apiFetch('/api/simulator/run', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ scenario_type: sc_type, parameters: params })
@@ -6739,7 +6790,7 @@
             if (!modalInst) modalInst = new bootstrap.Modal(modalEl);
             modalInst.show();
 
-            fetch(`/api/advisor/report?mode=${mode}`)
+            window.apiFetch(`/api/advisor/report?mode=${mode}`)
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success') {
@@ -6790,9 +6841,20 @@
     </script>
 
     <script>
+        window.apiFetch = async function(url, options = {}) {
+            try {
+                const response = await window.apiFetch(url, options);
+                if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
+                if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
+                return response;
+            } catch (err) {
+                console.error('API Error:', err);
+                throw err;
+            }
+        };
         async function loadReAuditStatus() {
             try {
-                const res = await fetch('/api/advisor/re_audit_status');
+                const res = await window.apiFetch('/api/advisor/re_audit_status');
                 const data = await res.json();
                 const db = document.getElementById('re-audit-dashboard');
                 if (data.status === 'no_runs') {
@@ -6831,7 +6893,7 @@
 
         async function loadRemediationTasks() {
             try {
-                const res = await fetch('/api/remediation/tasks');
+                const res = await window.apiFetch('/api/remediation/tasks');
                 const data = await res.json();
                 const tbody = document.getElementById('remediation-tasks-tbody');
                 tbody.innerHTML = '';
@@ -6891,7 +6953,7 @@
             const due_date = row.querySelector('.task-due').value;
 
             try {
-                const res = await fetch(`/api/remediation/tasks/${id}`, {
+                const res = await window.apiFetch(`/api/remediation/tasks/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ status, owner, due_date })
@@ -6909,7 +6971,7 @@
             // Trigger runAdvisorAnalysis(true) but handle UX in the Remediation plan context
             const db = document.getElementById('re-audit-dashboard');
             if (db) db.innerHTML = `<div class="text-center p-3"><div class="spinner-border text-success"></div><br><h5>Re-Running Forensic Sweep...</h5><small class="text-muted">Comparing new structural evidence mappings against historical tasks.</small></div>`;
-            fetch('/api/advisor/aggregate?force=true', { credentials: 'include' })
+            window.apiFetch('/api/advisor/aggregate?force=true', { credentials: 'include' })
                 .then(res => res.json())
                 .then(data => {
                     setTimeout(() => {
@@ -6966,6 +7028,17 @@
 
     <!-- Add "Generate Report" button to Advisor header (assuming a header element exists with id 'advisorHeader') -->
     <script>
+        window.apiFetch = async function(url, options = {}) {
+            try {
+                const response = await window.apiFetch(url, options);
+                if (response.status === 401) { window.location.href = '/login'; return new Promise(() => {}); }
+                if (response.status === 403) { showToast('Forbidden', 'You do not have permission.', 'danger'); }
+                return response;
+            } catch (err) {
+                console.error('API Error:', err);
+                throw err;
+            }
+        };
         document.addEventListener('DOMContentLoaded', function () {
             const advisorHeader = document.querySelector('#page-advisor .card-header'); // Or a more specific selector for your header
             if (advisorHeader) {
@@ -7008,7 +7081,7 @@
             document.getElementById('sim-results-content').style.display = 'none';
             document.getElementById('sim-evidence-pane').style.display = 'none';
 
-            fetch('/api/simulator/run', {
+            window.apiFetch('/api/simulator/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ scenario_type: type, parameters: params })

@@ -521,6 +521,10 @@ CREATE TABLE IF NOT EXISTS case_notes (
     except sqlite3.OperationalError:
         pass
     try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN progress_percent INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
         cursor.execute("ALTER TABLE documents ADD COLUMN import_transaction_count INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
@@ -1288,7 +1292,7 @@ VALID_TRANSITIONS = {
     'failed': ['queued', 'uploaded', 'extracting'] # Retry
 }
 
-def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None, company_id=None):
+def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None, company_id=None, progress_percent=None):
     """Update the status and tracking metrics of a document with strict state-machine enforcement."""
     if company_id is None:
         company_id = _get_active_company_id_shim()
@@ -1340,6 +1344,9 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             if failure_reason is not None:
                 updates.append("failure_reason = ?")
                 params.append(failure_reason)
+            if progress_percent is not None:
+                updates.append("progress_percent = ?")
+                params.append(progress_percent)
                 
             if not updates:
                 if not is_external_conn:
@@ -1779,7 +1786,7 @@ def get_documents(user_id, company_id=None):
     cursor.execute("""
         SELECT 
             d.id, d.user_id, d.filename, d.original_path, d.file_type, 
-            d.upload_date, d.status, 
+            d.upload_date, d.status, d.progress_percent,
             COALESCE(d.parsed_transaction_count, 0) + COALESCE(SUM(c.parsed_transaction_count), 0) as parsed_transaction_count,
             COALESCE(d.import_transaction_count, 0) + COALESCE(SUM(c.import_transaction_count), 0) as import_transaction_count,
             COALESCE(d.deduped_skipped_count, 0) + COALESCE(SUM(c.deduped_skipped_count), 0) as deduped_skipped_count,

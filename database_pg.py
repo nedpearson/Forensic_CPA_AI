@@ -540,24 +540,28 @@ CREATE TABLE IF NOT EXISTS fcpa_case_notes (
     # Dynamic migrations for fcpa_documents table tracking fields
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN status TEXT DEFAULT 'queued'")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parsed_transaction_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
+        pass
+    try:
+        cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN progress_percent INTEGER DEFAULT 0")
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN import_transaction_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN failure_reason TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_merchants ADD COLUMN parent_merchant_id INTEGER REFERENCES fcpa_merchants(id)")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     
     # Categories dynamic migrations
@@ -573,27 +577,27 @@ CREATE TABLE IF NOT EXISTS fcpa_case_notes (
         ('reimbursable_default', 'INTEGER DEFAULT 0')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_categories ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
         
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN content_sha256 TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN txn_fingerprint TEXT")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN deduped_skipped_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_documents ADD COLUMN parent_document_id INTEGER REFERENCES fcpa_documents(id)")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     # Add advanced categorization foundation columns
@@ -605,14 +609,14 @@ CREATE TABLE IF NOT EXISTS fcpa_case_notes (
         ('categorization_explanation', 'TEXT')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_transactions ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
 
     for col, ctype in [
         ('hit_count', 'INTEGER DEFAULT 1'),
         ('last_applied', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
     ]:
         try: cursor.execute(f"ALTER TABLE fcpa_category_rules ADD COLUMN {col} {ctype}")
-        except sqlite3.OperationalError: pass
+        except psycopg2.Error: pass
 
     try:
         # Backfill fcpa_transaction_sources for existing fcpa_transactions
@@ -621,11 +625,11 @@ CREATE TABLE IF NOT EXISTS fcpa_case_notes (
             SELECT user_id, id, document_id FROM fcpa_transactions WHERE document_id IS NOT NULL
         """)
         conn.commit()
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
     try:
         cursor.execute("ALTER TABLE fcpa_transactions ADD COLUMN is_approved INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     try:
@@ -640,7 +644,7 @@ CREATE TABLE IF NOT EXISTS fcpa_case_notes (
             WHERE card_last_four IS NULL OR card_last_four = '';
         """)
         conn.commit()
-    except sqlite3.OperationalError:
+    except psycopg2.Error:
         pass
 
     # Create uniqueness constraints after all columns are confirmed to exist
@@ -1172,7 +1176,7 @@ def get_or_create_account(user_id, account_name, account_number, account_type, i
     row = cursor.fetchone()
     if row:
         if not is_external_conn:
-            db_close_db(conn)
+            conn.close()
         return row['id']
     if not is_external_conn:
         db_close_db(conn)
@@ -1202,7 +1206,7 @@ def add_document(user_id, filename, original_path, file_type, doc_category, acco
         row = cursor.fetchone()
         if row:
             if not is_external_conn:
-                db_close_db(conn)
+                conn.close()
             return row['id']
 
     cursor.execute(
@@ -1235,14 +1239,14 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
         doc = cursor.fetchone()
         if not doc:
             if not is_external_conn:
-                db_close_db(conn)
+                conn.close()
             return False
             
         # Block deleting fcpa_documents currently locked by background threads
         if doc['status'] == 'processing':
             print(f"Cannot delete document {doc_id} while it is actively processing.")
             if not is_external_conn:
-                db_close_db(conn)
+                conn.close()
             return False
             
         doc_ids_to_delete = [doc_id]
@@ -1291,11 +1295,11 @@ def delete_document(user_id, doc_id, conn=None, company_id=None):
                 db_conn.rollback()
             print(f"Error during document deletion: {e}")
             if not is_external_conn:
-                db_close_db(conn)
+                conn.close()
             return False
             
         if not is_external_conn:
-            db_close_db(conn)
+            conn.close()
         return True
 
 
@@ -1314,7 +1318,7 @@ VALID_TRANSITIONS = {
     'failed': ['queued', 'uploaded', 'extracting'] # Retry
 }
 
-def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None, company_id=None):
+def update_document_status(user_id, doc_id, status=None, parsed_count=None, import_count=None, skipped_count=None, failure_reason=None, conn=None, company_id=None, progress_percent=None):
     """Update the status and tracking metrics of a document with strict state-machine enforcement."""
     if company_id is None:
         company_id = _get_active_company_id_shim()
@@ -1335,7 +1339,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                 if current_status == 'approved':
                     print(f"Workflow State Error: Document {doc_id} is already in terminal state ('approved') and cannot be modified.")
                     if not is_external_conn:
-                        db_close_db(conn)
+                        conn.close()
                     return False
                     
                 if status is not None and current_status != status: # If it's a real transition attempt
@@ -1343,7 +1347,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
                         print(f"Workflow State Error: Invalid transition from '{current_status}' to '{status}' for document {doc_id}")
                         if not is_external_conn:
                             db_conn.rollback()
-                            db_close_db(conn)
+                            conn.close()
                         else:
                             raise ValueError(f"Invalid transition from '{current_status}' to '{status}'")
                         return False
@@ -1366,10 +1370,13 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             if failure_reason is not None:
                 updates.append("failure_reason = %s")
                 params.append(failure_reason)
+            if progress_percent is not None:
+                updates.append("progress_percent = %s")
+                params.append(progress_percent)
                 
             if not updates:
                 if not is_external_conn:
-                    db_close_db(conn)
+                    conn.close()
                 return True
                 
             params.extend([doc_id, user_id, company_id])
@@ -1386,7 +1393,7 @@ def update_document_status(user_id, doc_id, status=None, parsed_count=None, impo
             raise e
         finally:
             if not is_external_conn:
-                db_close_db(conn)
+                conn.close()
             
         return True
 
@@ -1459,7 +1466,7 @@ def add_transaction(user_id, doc_id, account_id, trans_date, post_date, descript
                         VALUES (%s, %s, %s)
                     """, (user_id, trans_id, doc_id))
                     conn.commit()
-                except sqlite3.OperationalError:
+                except psycopg2.Error:
                     pass
             close_db(conn)
             return trans_id, False
@@ -1615,7 +1622,7 @@ def add_transactions_bulk(user_id, account_id, transactions_with_hashes, target_
         raise e
     finally:
         if not is_external_conn:
-            db_close_db(conn)
+            conn.close()
         
     return added_count, skipped_count, doc_stats
 
@@ -1805,7 +1812,7 @@ def get_documents(user_id, company_id=None):
     cursor.execute("""
         SELECT 
             d.id, d.user_id, d.filename, d.original_path, d.file_type, 
-            d.upload_date, d.status, 
+            d.upload_date, d.status, d.progress_percent,
             COALESCE(d.parsed_transaction_count, 0) + COALESCE(SUM(c.parsed_transaction_count), 0) as parsed_transaction_count,
             COALESCE(d.import_transaction_count, 0) + COALESCE(SUM(c.import_transaction_count), 0) as import_transaction_count,
             COALESCE(d.deduped_skipped_count, 0) + COALESCE(SUM(c.deduped_skipped_count), 0) as deduped_skipped_count,

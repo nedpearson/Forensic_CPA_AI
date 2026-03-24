@@ -60,6 +60,11 @@ Start-Job -ScriptBlock {
     Start-Process $url
 } -ArgumentList $URL | Out-Null
 
+# 5.5 Initialize database
+Write-Host "Initializing database..." -ForegroundColor Yellow
+$env:SUPER_ADMIN_BOOTSTRAP="true"
+python -c "from database import init_db; init_db()"
+
 # 6. Start the App
 Write-Host "Starting Flask Server on port $PORT..." -ForegroundColor Green
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Yellow
